@@ -1,0 +1,28 @@
+<div class="page-header">
+  <h1 class="page-title">Watering Events</h1>
+</div>
+
+<table class="table">
+  <thead>
+    <tr>
+      <th>Zone</th>
+      <th>Command</th>
+      <th>Runtime (s)</th>
+      <th>Reason</th>
+      <th>Status</th>
+      <th>Issued At</th>
+    </tr>
+  </thead>
+  <tbody>
+    <% @watering_events.each do |event| %>
+      <tr>
+        <td><%= event.zone.zone_id %></td>
+        <td><%= event.command %></td>
+        <td><%= event.runtime_seconds || "—" %></td>
+        <td><%= event.reason || "—" %></td>
+        <td><%= event.status || "—" %></td>
+        <td><%= event.issued_at %></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table>

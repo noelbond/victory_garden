@@ -1,0 +1,16 @@
+<div class="page-header">
+  <h1 class="page-title"><%= @crop_profile.crop_name %></h1>
+  <%= link_to "Back to Crops", crop_profiles_path, class: "btn light" %>
+</div>
+
+<div class="card">
+  <ul class="list">
+    <li>Crop ID: <%= @crop_profile.crop_id %></li>
+    <li>Dry Threshold: <%= @crop_profile.dry_threshold %>%</li>
+    <li>Runtime: <%= @crop_profile.runtime_seconds %> s</li>
+    <li>Max Daily Runtime: <%= @crop_profile.max_daily_runtime_seconds %> s</li>
+    <li>Climate: <%= @crop_profile.climate_preference.presence || "—" %></li>
+    <li>Time to Harvest: <%= @crop_profile.time_to_harvest_days || "—" %> days</li>
+    <li>Notes: <%= @crop_profile.notes.presence || "—" %></li>
+  </ul>
+</div>

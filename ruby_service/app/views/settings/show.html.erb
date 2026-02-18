@@ -1,0 +1,48 @@
+<div class="page-header">
+  <h1 class="page-title">Settings</h1>
+</div>
+
+<div class="card">
+  <h3>Connection Setup</h3>
+  <%= form_with model: @setting, url: settings_path do |f| %>
+    <div class="form-grid">
+      <div class="field">
+        <%= f.label :mqtt_host, "MQTT Host" %>
+        <%= f.text_field :mqtt_host, placeholder: "localhost" %>
+      </div>
+      <div class="field">
+        <%= f.label :mqtt_port, "MQTT Port" %>
+        <%= f.number_field :mqtt_port, placeholder: "1883" %>
+      </div>
+      <div class="field">
+        <%= f.label :readings_topic, "Readings Topic" %>
+        <%= f.text_field :readings_topic, placeholder: "watering/readings" %>
+      </div>
+      <div class="field">
+        <%= f.label :actuators_topic, "Actuators Topic" %>
+        <%= f.text_field :actuators_topic, placeholder: "watering/actuators" %>
+      </div>
+      <div class="field">
+        <%= f.label :command_topic, "Command Topic" %>
+        <%= f.text_field :command_topic, placeholder: "watering/commands" %>
+      </div>
+      <div class="field">
+        <%= f.label :config_topic, "Config Topic" %>
+        <%= f.text_field :config_topic, placeholder: "watering/config" %>
+      </div>
+      <div class="field">
+        <%= f.label :bluetooth_enabled, "Bluetooth Enabled" %>
+        <%= f.select :bluetooth_enabled, [[ "No", false ], [ "Yes", true ]] %>
+      </div>
+      <div class="field">
+        <%= f.label :notes, "Notes" %>
+        <%= f.text_field :notes, placeholder: "Optional notes" %>
+      </div>
+    </div>
+
+    <div style="margin-top: 16px;">
+      <%= f.submit "Save", class: "btn" %>
+      <%= button_to "Publish Config", admin_publish_config_path, method: :post, class: "btn light" %>
+    </div>
+  <% end %>
+</div>

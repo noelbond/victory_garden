@@ -1,0 +1,10 @@
+#!/usr/bin/env ruby
+
+require_relative "../config/environment"
+
+consumer = MqttConsumer.new
+
+trap("INT") { exit(0) }
+trap("TERM") { exit(0) }
+
+consumer.run

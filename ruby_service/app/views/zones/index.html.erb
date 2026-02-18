@@ -1,0 +1,37 @@
+<div class="page-header">
+  <h1 class="page-title">Zones</h1>
+  <%= link_to "New Zone", new_zone_path, class: "btn" %>
+</div>
+
+<div class="zone-grid">
+  <% @zones.each do |zone| %>
+    <%= link_to zone_path(zone), class: "card zone-card" do %>
+      <h3><%= zone.name.presence || zone.zone_id %></h3>
+      <div class="muted"><%= zone.zone_id %></div>
+      <div class="badge"><%= zone.active ? "Active" : "Inactive" %></div>
+      <p>Crop: <strong><%= zone.crop_profile.crop_name %></strong></p>
+      <p>Dry Threshold: <%= zone.crop_profile.dry_threshold %>%</p>
+      <p>Node: <%= zone.node_id %></p>
+      <% reading = @latest_readings[zone.id] %>
+      <% status = @latest_statuses[zone.id] %>
+      <div class="status-row">
+        <span class="status-dot <%= reading && reading.recorded_at > 2.hours.ago ? "ok" : "offline" %>"></span>
+        <span class="muted">
+          <%= reading ? "Last seen #{time_ago_in_words(reading.recorded_at)} ago" : "No readings" %>
+        </span>
+      </div>
+      <div class="muted">Actuator: <%= status&.state || "—" %></div>
+
+      <div class="action-menu" onclick="event.preventDefault();">
+        <details>
+          <summary>⋯</summary>
+          <div class="menu">
+            <%= button_to "Water Now", water_now_zone_path(zone), method: :post, class: "menu-btn" %>
+            <%= button_to "Stop", stop_watering_zone_path(zone), method: :post, class: "menu-btn" %>
+            <%= button_to(zone.active ? "Disable" : "Enable", toggle_active_zone_path(zone), method: :post, class: "menu-btn") %>
+          </div>
+        </details>
+      </div>
+    <% end %>
+  <% end %>
+</div>

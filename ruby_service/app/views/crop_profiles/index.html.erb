@@ -1,0 +1,15 @@
+<div class="page-header">
+  <h1 class="page-title">Crop Profiles</h1>
+</div>
+
+<div class="zone-grid">
+  <% @crop_profiles.each do |crop| %>
+    <div class="card">
+      <h3><%= crop.crop_name %></h3>
+      <p>Dry Threshold: <%= crop.dry_threshold %>%</p>
+      <p>Climate: <%= crop.climate_preference.presence || "—" %></p>
+      <p>Time to Harvest: <%= crop.time_to_harvest_days || "—" %> days</p>
+      <%= link_to "View", crop_profile_path(crop), class: "btn light" %>
+    </div>
+  <% end %>
+</div>

@@ -1,0 +1,11 @@
+crops:
+  - crop_id: tomato
+    crop_name: Tomato
+    dry_threshold: 30.0
+    runtime_seconds: 45
+    max_daily_runtime_seconds: 300
+  - crop_id: basil
+    crop_name: Basil
+    dry_threshold: 35.0
+    runtime_seconds: 30
+    max_daily_runtime_seconds: 240

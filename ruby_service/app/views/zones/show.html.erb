@@ -1,0 +1,86 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><%= @zone.name.presence || @zone.zone_id %></h1>
+    <div class="muted"><%= @zone.zone_id %> • Node: <%= @zone.node_id %></div>
+  </div>
+  <div>
+    <%= link_to "Edit Zone", edit_zone_path(@zone), class: "btn" %>
+    <%= link_to "View Crop Profile", crop_profile_path(@zone.crop_profile), class: "btn light" %>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col card">
+    <h3>Status</h3>
+    <ul class="list">
+      <li>Active: <strong><%= @zone.active ? "Yes" : "No" %></strong></li>
+      <li>Crop: <strong><%= @zone.crop_profile.crop_name %></strong></li>
+      <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
+      <li>Climate: <%= @zone.crop_profile.climate_preference.presence || "—" %></li>
+      <li>Time to Harvest: <%= @zone.crop_profile.time_to_harvest_days || "—" %> days</li>
+      <li>
+        Allowed Hours:
+        <% if @zone.allowed_hours.present? %>
+          <%= @zone.allowed_hours["start_hour"] %>–<%= @zone.allowed_hours["end_hour"] %>
+        <% else %>
+          —
+        <% end %>
+      </li>
+    </ul>
+  </div>
+
+  <div class="col card">
+    <h3>Latest Reading</h3>
+    <% if @latest_reading %>
+      <ul class="list">
+        <li>Moisture: <%= @latest_reading.moisture_percent || "—" %>%</li>
+        <li>Raw: <%= @latest_reading.moisture_raw %></li>
+        <li>Battery: <%= @latest_reading.battery_voltage || "—" %> V</li>
+        <li>RSSI: <%= @latest_reading.rssi || "—" %> dBm</li>
+        <li>Recorded: <%= @latest_reading.recorded_at %></li>
+      </ul>
+    <% else %>
+      <p class="muted">No readings yet.</p>
+    <% end %>
+  </div>
+
+  <div class="col card">
+    <h3>Last Watering</h3>
+    <% if @last_watering_event %>
+      <ul class="list">
+        <li>Command: <%= @last_watering_event.command %></li>
+        <li>Runtime: <%= @last_watering_event.runtime_seconds || "—" %> s</li>
+        <li>Reason: <%= @last_watering_event.reason || "—" %></li>
+        <li>Status: <%= @last_watering_event.status || "—" %></li>
+        <li>Issued: <%= @last_watering_event.issued_at %></li>
+      </ul>
+    <% else %>
+      <p class="muted">No watering events yet.</p>
+    <% end %>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <div class="page-header" style="margin-bottom: 8px;">
+    <h3 style="margin: 0;">Water Usage</h3>
+    <div class="chart-controls">
+      <% ["week", "month", "year", "ytd"].each do |r| %>
+        <%= link_to r.upcase, zone_path(@zone, range: r), class: "btn light" %>
+      <% end %>
+    </div>
+  </div>
+  <%= line_chart @water_usage, height: "260px", xtitle: "Time", ytitle: "Seconds" %>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h3>Recent Faults</h3>
+  <% if @recent_faults.any? %>
+    <ul class="list">
+      <% @recent_faults.each do |fault| %>
+        <li><strong><%= fault.fault_code %></strong> — <%= fault.detail %> (<%= fault.recorded_at %>)</li>
+      <% end %>
+    </ul>
+  <% else %>
+    <p class="muted">No faults reported.</p>
+  <% end %>
+</div>

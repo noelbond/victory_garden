@@ -1,0 +1,52 @@
+<%= form_with model: @zone do |f| %>
+  <div class="form-grid">
+    <div class="field">
+      <%= f.label :name, "Zone Name" %>
+      <%= f.text_field :name, placeholder: "Greenhouse Zone 1" %>
+    </div>
+
+    <div class="field">
+      <%= f.label :crop_profile_id, "Crop Profile" %>
+    </div>
+
+    <div class="field">
+      <%= f.label :active, "Active" %>
+      <%= f.select :active, [[ "Yes", true ], [ "No", false ]] %>
+    </div>
+
+    <div class="field">
+      <%= label_tag :allowed_start_hour, "Allowed Start Hour (0-23)" %>
+      <%= number_field_tag "zone[allowed_start_hour]", @zone.allowed_hours&.dig("start_hour"), min: 0, max: 23 %>
+    </div>
+
+    <div class="field">
+      <%= label_tag :allowed_end_hour, "Allowed End Hour (0-23)" %>
+      <%= number_field_tag "zone[allowed_end_hour]", @zone.allowed_hours&.dig("end_hour"), min: 0, max: 23 %>
+    </div>
+  </div>
+
+  <div style="margin-top: 16px;">
+    <%= f.submit class: "btn" %>
+    <%= link_to "Cancel", zones_path, class: "btn light" %>
+  </div>
+  <div class="section-header">
+    <h2>Pick a Crop Profile</h2>
+    <p class="muted">These are read-only presets. Selecting one assigns it to the zone.</p>
+  </div>
+
+  <div class="crop-section">
+    <div class="crop-grid">
+      <% @crop_profiles.each do |crop| %>
+        <div class="crop-option">
+          <%= radio_button_tag "zone[crop_profile_id]", crop.id, @zone.crop_profile_id == crop.id, id: "crop_#{crop.id}" %>
+          <%= label_tag "crop_#{crop.id}", class: "card crop-card" do %>
+            <h3><%= crop.crop_name %></h3>
+            <p>Dry Threshold: <%= crop.dry_threshold %>%</p>
+            <p>Climate: <%= crop.climate_preference.presence || "—" %></p>
+            <p>Time to Harvest: <%= crop.time_to_harvest_days || "—" %> days</p>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  </div>
+<% end %>
