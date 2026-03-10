@@ -1,0 +1,18 @@
+[Unit]
+Description=Victory Garden greenhouse watering loop
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/victory_garden/python_tools
+ExecStart=/home/pi/victory_garden/python_tools/.venv/bin/python -m tools.run_loop
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=greenhouse
+
+[Install]
+WantedBy=multi-user.target

@@ -14,10 +14,12 @@ From `python_tools/`:
 
 - Run tests:
   - `.venv/bin/python -m pytest`
-- Run simulation (uses YAML config):
+- Run simulation (uses YAML config, publishes to MQTT):
   - `.venv/bin/python -m tools.simulate_run`
-- Run loop stub (fake readings):
+- Run one watering-decision pass (publishes to MQTT):
   - `.venv/bin/python -m tools.run_loop`
+
+Both tools require a running MQTT broker. Pass `--mqtt-host` and `--mqtt-port` to override the defaults (`127.0.0.1:1883`).
 
 ## Config
 
@@ -44,7 +46,19 @@ Both the simulation and loop support selecting a zone:
 - `watering/state_store.py`: JSON persistence for ZoneState.
 - `watering/calibration.py`: Placeholder raw -> percent conversion.
 
+## MQTT Topics
+
+Both tools publish to the following topics:
+
+| Topic | Content |
+|---|---|
+| `greenhouse/run_loop/event` | JSON summary of each decision |
+| `greenhouse/simulate/event` | JSON summary of each simulation step |
+| `greenhouse/zones/{zone_id}/moisture_percent` | Latest moisture reading |
+| `greenhouse/zones/{zone_id}/action` | `water` or `none` |
+| `greenhouse/zones/{zone_id}/runtime_seconds_today` | Cumulative runtime for the day |
+
 ## Notes
 
 - Decision logic is pure and deterministic for easy testing.
-- Hardware integration will live elsewhere (MQTT/serial/etc.).
+- Real hardware (relays, sensors) publishes and subscribes to the same MQTT topics.
