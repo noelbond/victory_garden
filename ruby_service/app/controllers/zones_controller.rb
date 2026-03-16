@@ -9,6 +9,7 @@ class ZonesController < ApplicationController
 
   def show
     @latest_reading = @zone.sensor_readings.order(recorded_at: :desc).first
+    @recent_readings = @zone.sensor_readings.order(recorded_at: :desc).limit(10)
     @last_watering_event = @zone.watering_events.order(issued_at: :desc).first
     @latest_actuator_status = @zone.actuator_statuses.order(recorded_at: :desc).first
     @recent_faults = @zone.faults.order(recorded_at: :desc).limit(5)
@@ -54,7 +55,7 @@ class ZonesController < ApplicationController
     command = {
       command: "start_watering",
       zone_id: @zone.zone_id,
-      runtime_seconds: @zone.crop_profile.runtime_seconds,
+      runtime_seconds: @zone.crop_profile.max_pulse_runtime_sec,
       reason: "manual_trigger",
       issued_at: Time.current,
       idempotency_key: "#{@zone.zone_id}-#{Time.current.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}"

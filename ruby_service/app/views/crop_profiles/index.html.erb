@@ -7,6 +7,8 @@
     <div class="card">
       <h3><%= crop.crop_name %></h3>
       <p>Dry Threshold: <%= crop.dry_threshold %>%</p>
+      <p>Max Pulse Runtime: <%= crop.max_pulse_runtime_sec %> s</p>
+      <p>Daily Max Runtime: <%= crop.daily_max_runtime_sec %> s</p>
       <p>Climate: <%= crop.climate_preference.presence || "—" %></p>
       <p>Time to Harvest: <%= crop.time_to_harvest_days || "—" %> days</p>
       <%= link_to "View", crop_profile_path(crop), class: "btn light" %>

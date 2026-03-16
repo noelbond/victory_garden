@@ -11,13 +11,22 @@ class SensorReadingsController < ApplicationController
 
   def ingest_params
     params.require(:sensor_reading).permit(
+      :schema_version,
       :node_id,
       :zone_id,
       :timestamp,
       :moisture_raw,
       :moisture_percent,
+      :soil_temp_c,
       :battery_voltage,
-      :rssi
+      :battery_percent,
+      :wifi_rssi,
+      :uptime_seconds,
+      :wake_count,
+      :ip,
+      :health,
+      :last_error,
+      :publish_reason
     )
   end
 end

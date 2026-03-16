@@ -97,7 +97,7 @@ class TestLoadStateStore:
             "zone1": {
                 "zone_id": "zone1",
                 "day": "2026-02-06",
-                "runtime_seconds_today": -100,  # Invalid
+                "runtime_seconds_today": -100,
             }
         }
 
@@ -108,7 +108,7 @@ class TestLoadStateStore:
             temp_path = Path(f.name)
 
         try:
-            with pytest.raises(Exception):  # Pydantic ValidationError
+            with pytest.raises(Exception):
                 load_state_store(temp_path)
         finally:
             temp_path.unlink()
@@ -137,7 +137,6 @@ class TestSaveStateStore:
             save_state_store(temp_path, states)
             assert temp_path.exists()
 
-            # Verify content
             with open(temp_path) as f:
                 data = json.load(f)
 
@@ -215,10 +214,8 @@ class TestSaveStateStore:
             temp_path = Path(f.name)
 
         try:
-            # Save original
             save_state_store(temp_path, original_states)
 
-            # Overwrite with new data
             new_states = {
                 "zone2": ZoneState(
                     zone_id="zone2", day=today, runtime_seconds_today=100
@@ -226,7 +223,6 @@ class TestSaveStateStore:
             }
             save_state_store(temp_path, new_states)
 
-            # Verify overwritten
             with open(temp_path) as f:
                 data = json.load(f)
 
@@ -250,12 +246,10 @@ class TestSaveStateStore:
         try:
             save_state_store(temp_path, states)
 
-            # Check that JSON is formatted with indent and sorted
             content = temp_path.read_text()
-            assert "\n" in content  # Indented
-            assert "  " in content  # Has spaces for indentation
+            assert "\n" in content
+            assert "  " in content
 
-            # Verify it's valid JSON
             data = json.loads(content)
             assert "zone1" in data
         finally:
@@ -278,7 +272,6 @@ class TestSaveStateStore:
             save_state_store(temp_path, states)
             content = temp_path.read_text()
 
-            # Keys should be sorted alphabetically
             zone1_pos = content.find("zone1")
             zone2_pos = content.find("zone2")
             zone3_pos = content.find("zone3")
@@ -357,13 +350,8 @@ class TestRoundTrip:
             temp_path = Path(f.name)
 
         try:
-            # Save
             save_state_store(temp_path, original_states)
-
-            # Load
             loaded_states = load_state_store(temp_path)
-
-            # Verify
             assert len(loaded_states) == 2
             assert loaded_states["zone1"] == original_states["zone1"]
             assert loaded_states["zone2"] == original_states["zone2"]
@@ -379,7 +367,6 @@ class TestRoundTrip:
             temp_path = Path(f.name)
 
         try:
-            # Cycle 1
             states1 = {
                 "zone1": ZoneState(
                     zone_id="zone1", day=today, runtime_seconds_today=50
@@ -389,7 +376,6 @@ class TestRoundTrip:
             loaded1 = load_state_store(temp_path)
             assert loaded1["zone1"].runtime_seconds_today == 50
 
-            # Cycle 2 - update
             states2 = {
                 "zone1": ZoneState(
                     zone_id="zone1", day=today, runtime_seconds_today=100
@@ -399,7 +385,6 @@ class TestRoundTrip:
             loaded2 = load_state_store(temp_path)
             assert loaded2["zone1"].runtime_seconds_today == 100
 
-            # Cycle 3 - add zone
             states3 = {
                 "zone1": ZoneState(
                     zone_id="zone1", day=today, runtime_seconds_today=100

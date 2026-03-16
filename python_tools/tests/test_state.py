@@ -98,7 +98,6 @@ class TestZoneState:
         )
         state2 = state1.model_copy(deep=True)
 
-        # Should be equal but different instances
         assert state1 == state2
         assert state1 is not state2
 
@@ -130,7 +129,6 @@ class TestZoneState:
             last_moisture_percent=28.7,
         )
         data = state.model_dump(mode="json")
-        # Dates/datetimes should be serialized as ISO strings
         assert isinstance(data["day"], str)
         assert data["day"] == "2026-02-06"
         assert isinstance(data["last_watered_at"], str)
@@ -172,7 +170,6 @@ class TestZoneState:
         assert state1 != state3
 
     def test_zone_state_day_change_scenario(self):
-        # Test scenario where day changes (common use case)
         yesterday = date(2026, 2, 5)
         today = date(2026, 2, 6)
 
@@ -183,28 +180,23 @@ class TestZoneState:
             last_moisture_percent=32.0,
         )
 
-        # When day changes, runtime should reset
         state_today = state_yesterday.model_copy(
             update={"day": today, "runtime_seconds_today": 0}
         )
 
         assert state_today.day == today
         assert state_today.runtime_seconds_today == 0
-        assert state_today.last_moisture_percent == 32.0  # Preserved
+        assert state_today.last_moisture_percent == 32.0
 
     def test_zone_state_incremental_runtime_update(self):
-        # Test scenario of adding runtime after watering
         today = date(2026, 2, 6)
         state = ZoneState(zone_id="z1", day=today, runtime_seconds_today=0)
 
-        # First watering
         state = state.model_copy(update={"runtime_seconds_today": 45})
         assert state.runtime_seconds_today == 45
 
-        # Second watering
         state = state.model_copy(update={"runtime_seconds_today": 45 + 45})
         assert state.runtime_seconds_today == 90
 
-        # Third watering
         state = state.model_copy(update={"runtime_seconds_today": 90 + 45})
         assert state.runtime_seconds_today == 135

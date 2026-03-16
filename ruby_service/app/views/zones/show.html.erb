@@ -16,6 +16,8 @@
       <li>Active: <strong><%= @zone.active ? "Yes" : "No" %></strong></li>
       <li>Crop: <strong><%= @zone.crop_profile.crop_name %></strong></li>
       <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
+      <li>Max Pulse Runtime: <%= @zone.crop_profile.max_pulse_runtime_sec %> s</li>
+      <li>Daily Max Runtime: <%= @zone.crop_profile.daily_max_runtime_sec %> s</li>
       <li>Climate: <%= @zone.crop_profile.climate_preference.presence || "—" %></li>
       <li>Time to Harvest: <%= @zone.crop_profile.time_to_harvest_days || "—" %> days</li>
       <li>
@@ -33,10 +35,17 @@
     <h3>Latest Reading</h3>
     <% if @latest_reading %>
       <ul class="list">
+        <li>Schema: <%= @latest_reading.schema_version || "—" %></li>
         <li>Moisture: <%= @latest_reading.moisture_percent || "—" %>%</li>
         <li>Raw: <%= @latest_reading.moisture_raw %></li>
+        <li>Soil Temp: <%= @latest_reading.soil_temp_c || "—" %> C</li>
         <li>Battery: <%= @latest_reading.battery_voltage || "—" %> V</li>
-        <li>RSSI: <%= @latest_reading.rssi || "—" %> dBm</li>
+        <li>Battery Percent: <%= @latest_reading.battery_percent || "—" %>%</li>
+        <li>WiFi RSSI: <%= @latest_reading.wifi_rssi || "—" %> dBm</li>
+        <li>Wake Count: <%= @latest_reading.wake_count || "—" %></li>
+        <li>Health: <%= @latest_reading.health || "—" %></li>
+        <li>Last Error: <%= @latest_reading.last_error.presence || "—" %></li>
+        <li>Reason: <%= @latest_reading.publish_reason || "—" %></li>
         <li>Recorded: <%= @latest_reading.recorded_at %></li>
       </ul>
     <% else %>
@@ -58,6 +67,27 @@
       <p class="muted">No watering events yet.</p>
     <% end %>
   </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h3>Recent Readings</h3>
+  <% if @recent_readings.any? %>
+    <ul class="list">
+      <% @recent_readings.each do |reading| %>
+        <li>
+          <strong><%= reading.recorded_at %></strong>
+          —
+          moisture: <%= reading.moisture_percent || "—" %>%,
+          temp: <%= reading.soil_temp_c || "—" %> C,
+          battery: <%= reading.battery_percent || "—" %>%,
+          wifi_rssi: <%= reading.wifi_rssi || "—" %> dBm,
+          health: <%= reading.health || "—" %>
+        </li>
+      <% end %>
+    </ul>
+  <% else %>
+    <p class="muted">No reading history yet.</p>
+  <% end %>
 </div>
 
 <div class="card" style="margin-top: 16px;">

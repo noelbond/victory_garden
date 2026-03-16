@@ -2,21 +2,20 @@
 # development, test). The code here should be idempotent so that it can be executed at any point in every environment.
 # The data can then be loaded with the bin/rails db:seed command (or created alongside the database with db:setup).
 #
-# Sample crop profiles (hardcoded)
 tomato = CropProfile.find_or_create_by!(crop_id: "tomato") do |crop|
   crop.crop_name = "Tomato"
   crop.dry_threshold = 30.0
-  crop.runtime_seconds = 45
-  crop.max_daily_runtime_seconds = 300
+  crop.max_pulse_runtime_sec = 45
+  crop.daily_max_runtime_sec = 300
   crop.climate_preference = "Warm, sunny"
   crop.time_to_harvest_days = 75
 end
 
 basil = CropProfile.find_or_create_by!(crop_id: "basil") do |crop|
   crop.crop_name = "Basil"
-  crop.dry_threshold = 35.0
-  crop.runtime_seconds = 30
-  crop.max_daily_runtime_seconds = 240
+  crop.dry_threshold = 40.0
+  crop.max_pulse_runtime_sec = 30
+  crop.daily_max_runtime_sec = 240
   crop.climate_preference = "Warm, humid"
   crop.time_to_harvest_days = 50
 end
@@ -39,10 +38,10 @@ end
 
 ConnectionSetting.find_or_create_by!(mqtt_host: "localhost") do |s|
   s.mqtt_port = 1883
-  s.readings_topic = "watering/readings"
-  s.actuators_topic = "watering/actuators"
-  s.command_topic = "watering/commands"
-  s.config_topic = "watering/config"
+  s.readings_topic = "greenhouse/zones/+/state"
+  s.actuators_topic = "greenhouse/zones/+/actuator_status"
+  s.command_topic = "greenhouse/irrigation/commands"
+  s.config_topic = "greenhouse/config/current"
   s.bluetooth_enabled = false
   s.notes = "Default local broker"
 end

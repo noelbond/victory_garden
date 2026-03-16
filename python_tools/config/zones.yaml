@@ -1,7 +1,8 @@
 zones:
   - zone_id: zone1
     crop_id: tomato
-    node_id: sensor-gh1-zone1
+    node_id: mkr1010-zone1
+
   - zone_id: zone2
     crop_id: basil
     node_id: sensor-gh1-zone2

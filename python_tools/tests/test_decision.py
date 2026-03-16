@@ -86,7 +86,6 @@ class TestBasicDecisions:
 
         cmd, new_state = decide_watering(reading, profile, state, now=now)
 
-        # >= threshold means no watering
         assert cmd is None
         assert new_state.runtime_seconds_today == 0
 
@@ -128,7 +127,6 @@ class TestDailyCapLogic:
             max_daily_runtime_seconds=300,
         )
 
-        # Already used exactly the daily cap
         state = ZoneState(zone_id="zone1", day=now.date(), runtime_seconds_today=300)
 
         reading = SensorReading(
@@ -180,7 +178,6 @@ class TestDailyCapLogic:
             max_daily_runtime_seconds=300,
         )
 
-        # Used 280 seconds, only 20 seconds remaining
         state = ZoneState(zone_id="zone1", day=now.date(), runtime_seconds_today=280)
 
         reading = SensorReading(
@@ -193,7 +190,6 @@ class TestDailyCapLogic:
         cmd, new_state = decide_watering(reading, profile, state, now=now)
 
         assert cmd is not None
-        # Should cap to 20 seconds instead of 45
         assert cmd.runtime_seconds == 20
         assert new_state.runtime_seconds_today == 300
 
@@ -208,7 +204,6 @@ class TestDailyCapLogic:
             max_daily_runtime_seconds=300,
         )
 
-        # Used 299 seconds, only 1 second remaining
         state = ZoneState(zone_id="zone1", day=now.date(), runtime_seconds_today=299)
 
         reading = SensorReading(
@@ -239,7 +234,6 @@ class TestDayRollover:
             max_daily_runtime_seconds=300,
         )
 
-        # State from yesterday with max runtime used
         state = ZoneState(zone_id="zone1", day=yesterday, runtime_seconds_today=300)
 
         reading = SensorReading(
@@ -251,7 +245,6 @@ class TestDayRollover:
 
         cmd, new_state = decide_watering(reading, profile, state, now=now)
 
-        # Should reset day and runtime, allowing watering
         assert cmd is not None
         assert cmd.runtime_seconds == 45
         assert new_state.day == today
@@ -281,7 +274,7 @@ class TestDayRollover:
         cmd, new_state = decide_watering(reading, profile, state, now=now)
 
         assert new_state.day == today
-        assert new_state.runtime_seconds_today == 145  # 100 + 45
+        assert new_state.runtime_seconds_today == 145
 
 
 class TestNullMoistureHandling:
@@ -326,7 +319,6 @@ class TestMultipleWateringsPerDay:
 
         state = ZoneState(zone_id="zone1", day=now.date(), runtime_seconds_today=0)
 
-        # First watering at 8am
         reading1 = SensorReading(
             node_id="sensor-1", zone_id="zone1", moisture_raw=1820, moisture_percent=25.0
         )
@@ -335,7 +327,6 @@ class TestMultipleWateringsPerDay:
         assert cmd1.runtime_seconds == 45
         assert state.runtime_seconds_today == 45
 
-        # Second watering at 10am, still dry
         now = datetime(2026, 2, 6, 10, 0, tzinfo=timezone.utc)
         reading2 = SensorReading(
             node_id="sensor-1", zone_id="zone1", moisture_raw=1820, moisture_percent=26.0
@@ -345,7 +336,6 @@ class TestMultipleWateringsPerDay:
         assert cmd2.runtime_seconds == 45
         assert state.runtime_seconds_today == 90
 
-        # Third watering at 12pm, still dry
         now = datetime(2026, 2, 6, 12, 0, tzinfo=timezone.utc)
         reading3 = SensorReading(
             node_id="sensor-1", zone_id="zone1", moisture_raw=1820, moisture_percent=27.0
@@ -354,14 +344,13 @@ class TestMultipleWateringsPerDay:
         assert cmd3 is not None
         assert state.runtime_seconds_today == 135
 
-        # Eventually hits cap
         state = state.model_copy(update={"runtime_seconds_today": 280})
         reading4 = SensorReading(
             node_id="sensor-1", zone_id="zone1", moisture_raw=1820, moisture_percent=28.0
         )
         cmd4, state = decide_watering(reading4, profile, state, now=now)
         assert cmd4 is not None
-        assert cmd4.runtime_seconds == 20  # Capped to remaining
+        assert cmd4.runtime_seconds == 20
         assert state.runtime_seconds_today == 300
 
 
@@ -409,14 +398,12 @@ class TestStateUpdates:
 
         state = ZoneState(zone_id="zone1", day=now.date())
 
-        # Test when watering happens
         reading = SensorReading(
             node_id="sensor-1", zone_id="zone1", moisture_raw=1820, moisture_percent=25.0
         )
         _, new_state = decide_watering(reading, profile, state, now=now)
         assert new_state.last_moisture_percent == 25.0
 
-        # Test when no watering happens
         reading = SensorReading(
             node_id="sensor-1", zone_id="zone1", moisture_raw=2000, moisture_percent=45.0
         )
@@ -436,14 +423,12 @@ class TestStateUpdates:
 
         state = ZoneState(zone_id="zone1", day=now.date())
 
-        # When watering happens, last_watered_at is set
         reading = SensorReading(
             node_id="sensor-1", zone_id="zone1", moisture_raw=1820, moisture_percent=25.0
         )
         _, new_state = decide_watering(reading, profile, state, now=now)
         assert new_state.last_watered_at == now
 
-        # When no watering happens, last_watered_at remains None
         reading = SensorReading(
             node_id="sensor-1", zone_id="zone1", moisture_raw=2000, moisture_percent=45.0
         )
@@ -471,7 +456,6 @@ class TestEdgeCases:
 
         cmd, new_state = decide_watering(reading, profile, state, now=now)
 
-        # runtime <= 0, so no command
         assert cmd is None
 
     def test_decide_watering_zero_max_daily_runtime(self):
@@ -493,13 +477,11 @@ class TestEdgeCases:
 
         cmd, new_state = decide_watering(reading, profile, state, now=now)
 
-        # Daily cap is 0, no watering allowed
         assert cmd is None
 
     def test_decide_watering_extreme_dry_threshold(self):
         now = datetime(2026, 2, 6, 12, 0, tzinfo=timezone.utc)
 
-        # Threshold at 100% - nothing should ever water
         profile = CropProfile(
             crop_id="test",
             crop_name="Test",
@@ -527,7 +509,6 @@ class TestEdgeCases:
     def test_decide_watering_extreme_dry_threshold_zero(self):
         now = datetime(2026, 2, 6, 12, 0, tzinfo=timezone.utc)
 
-        # Threshold at 0% - only water when completely dry
         profile = CropProfile(
             crop_id="test",
             crop_name="Test",
@@ -543,4 +524,4 @@ class TestEdgeCases:
         )
 
         cmd, _ = decide_watering(reading, profile, state, now=now)
-        assert cmd is None  # >= threshold
+        assert cmd is None

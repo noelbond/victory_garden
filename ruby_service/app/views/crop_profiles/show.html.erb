@@ -7,8 +7,8 @@
   <ul class="list">
     <li>Crop ID: <%= @crop_profile.crop_id %></li>
     <li>Dry Threshold: <%= @crop_profile.dry_threshold %>%</li>
-    <li>Runtime: <%= @crop_profile.runtime_seconds %> s</li>
-    <li>Max Daily Runtime: <%= @crop_profile.max_daily_runtime_seconds %> s</li>
+    <li>Max Pulse Runtime: <%= @crop_profile.max_pulse_runtime_sec %> s</li>
+    <li>Daily Max Runtime: <%= @crop_profile.daily_max_runtime_sec %> s</li>
     <li>Climate: <%= @crop_profile.climate_preference.presence || "—" %></li>
     <li>Time to Harvest: <%= @crop_profile.time_to_harvest_days || "—" %> days</li>
     <li>Notes: <%= @crop_profile.notes.presence || "—" %></li>

@@ -1,64 +1,82 @@
 # Victory Garden Python Tools
 
-Python tooling for an open-source IoT vegetable watering system. This repo is the "functional core" for:
-- Schemas (sensor readings, water commands, actuator status)
-- Crop profiles (per-crop thresholds and runtimes)
-- Decision logic (when to water)
-- Config loading (YAML)
-- State persistence (JSON)
-- Simulation tools (no hardware required)
+Python is the live watering controller and the shared functional core for the project.
+
+## Responsibilities
+
+- Load crop and zone config
+- Validate node payloads
+- Track per-zone daily runtime state
+- Decide when to water based on `dry_threshold`
+- Schedule retained `request_reading` commands after watering settles
+- Provide a simulation tool for the MQTT contract
 
 ## Quick Start
 
-From `python_tools/`:
+From [`python_tools/`](/Users/noel/coding/python/victory_garden/python_tools):
 
 - Run tests:
   - `.venv/bin/python -m pytest`
-- Run simulation (uses YAML config, publishes to MQTT):
+- Run the simulator:
   - `.venv/bin/python -m tools.simulate_run`
-- Run one watering-decision pass (publishes to MQTT):
+- Run the live controller loop:
   - `.venv/bin/python -m tools.run_loop`
 
-Both tools require a running MQTT broker. Pass `--mqtt-host` and `--mqtt-port` to override the defaults (`127.0.0.1:1883`).
+Both tools expect a running MQTT broker. Override the broker with `--mqtt-host` and `--mqtt-port` if needed.
 
-## Config
+## Crop Config Schema
 
-- `config/crops.yaml` defines crop profiles.
-- `config/zones.yaml` maps zones to crops and sensor nodes.
+[`config/crops.yaml`](/Users/noel/coding/python/victory_garden/python_tools/config/crops.yaml) uses:
+
+- `crop_id`
+- `crop_name`
+- `dry_threshold`
+- `max_pulse_runtime_sec`
+- `daily_max_runtime_sec`
+- `climate_preference`
+- `time_to_harvest_days`
+
+## Zone Config Schema
+
+[`config/zones.yaml`](/Users/noel/coding/python/victory_garden/python_tools/config/zones.yaml) maps:
+
+- `zone_id`
+- `crop_id`
+- `node_id`
 
 Validation rules:
-- Duplicate `crop_id` or `zone_id` is an error.
-- `zones.yaml` must reference existing `crop_id` values in `crops.yaml`.
 
-## Zone Selection (CLI)
-
-Both the simulation and loop support selecting a zone:
-
-- `.venv/bin/python -m tools.simulate_run --zone-id zone2`
-- `.venv/bin/python -m tools.run_loop --zone-id zone1`
-
-## Core Concepts
-
-- `watering/schemas.py`: Pydantic models for IO (SensorReading, WaterCommand, ActuatorStatus).
-- `watering/profiles.py`: CropProfile (dry threshold, runtime seconds, daily max).
-- `watering/decision.py`: `decide_watering()` turns readings + profile + state into a WaterCommand.
-- `watering/state.py`: ZoneState (daily runtime, last watered, last moisture).
-- `watering/state_store.py`: JSON persistence for ZoneState.
-- `watering/calibration.py`: Placeholder raw -> percent conversion.
+- Duplicate `crop_id` or `zone_id` is an error
+- every zone must reference an existing crop profile
 
 ## MQTT Topics
 
-Both tools publish to the following topics:
+The Python controller consumes and publishes:
 
-| Topic | Content |
+| Topic | Purpose |
 |---|---|
-| `greenhouse/run_loop/event` | JSON summary of each decision |
-| `greenhouse/simulate/event` | JSON summary of each simulation step |
-| `greenhouse/zones/{zone_id}/moisture_percent` | Latest moisture reading |
-| `greenhouse/zones/{zone_id}/action` | `water` or `none` |
-| `greenhouse/zones/{zone_id}/runtime_seconds_today` | Cumulative runtime for the day |
+| `greenhouse/zones/{zone_id}/state` | node state payload with required fields and nullable optional telemetry |
+| `greenhouse/zones/{zone_id}/command` | retained `request_reading` command |
+| `greenhouse/run_loop/event` | watering decision summary |
+| `greenhouse/run_loop/skip` | skipped-decision summary |
+| `greenhouse/zones/{zone_id}/controller/moisture_percent` | controller input moisture |
+| `greenhouse/zones/{zone_id}/controller/action` | `water` or `none` |
+| `greenhouse/zones/{zone_id}/controller/runtime_seconds_today` | cumulative runtime |
+| `greenhouse/zones/{zone_id}/controller/skip_reason` | cooldown or duplicate-read reason |
+
+## Delayed Reread Behavior
+
+When the controller waters a zone:
+
+1. it records the watering event in state
+2. it waits 5 minutes for water to settle
+3. it publishes a retained `request_reading` command
+4. it processes the next node reading
+
+If the zone has already reached `daily_max_runtime_sec`, the reread is not scheduled.
 
 ## Notes
 
-- Decision logic is pure and deterministic for easy testing.
-- Real hardware (relays, sensors) publishes and subscribes to the same MQTT topics.
+- The decision function remains deterministic and easy to test.
+- The controller uses the canonical `greenhouse/*` topic contract.
+- The current seeded thresholds are `30` for tomato and `40` for basil, reflecting current normalized sensor policy informed by crop watering preference rather than a universal absolute soil standard.

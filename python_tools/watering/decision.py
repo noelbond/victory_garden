@@ -39,11 +39,11 @@ def decide_watering(
     if moisture >= profile.dry_threshold:
         return None, state
 
-    if state.runtime_seconds_today >= profile.max_daily_runtime_seconds:
+    if state.runtime_seconds_today >= profile.daily_max_runtime_sec:
         return None, state
 
-    remaining = profile.max_daily_runtime_seconds - state.runtime_seconds_today
-    runtime = min(profile.runtime_seconds, remaining)
+    remaining = profile.daily_max_runtime_sec - state.runtime_seconds_today
+    runtime = min(profile.max_pulse_runtime_sec, remaining)
     if runtime <= 0:
         return None, state
 

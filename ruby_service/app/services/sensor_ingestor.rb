@@ -11,10 +11,20 @@ class SensorIngestor
       zone: zone,
       node_id: @payload.fetch("node_id"),
       recorded_at: @payload.fetch("timestamp"),
+      schema_version: @payload["schema_version"],
       moisture_raw: @payload.fetch("moisture_raw"),
       moisture_percent: @payload["moisture_percent"],
+      soil_temp_c: @payload["soil_temp_c"],
       battery_voltage: @payload["battery_voltage"],
-      rssi: @payload["rssi"]
+      battery_percent: @payload["battery_percent"],
+      wifi_rssi: @payload["wifi_rssi"],
+      uptime_seconds: @payload["uptime_seconds"],
+      wake_count: @payload["wake_count"],
+      ip_address: @payload["ip"],
+      health: @payload["health"],
+      last_error: @payload["last_error"],
+      publish_reason: @payload["publish_reason"],
+      raw_payload: @payload
     )
 
     command = DecisionService.new(zone: zone, reading: reading).call

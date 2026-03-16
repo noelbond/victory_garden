@@ -20,14 +20,14 @@ class TestSensorReading:
             moisture_raw=1820,
             moisture_percent=31.4,
             battery_voltage=3.78,
-            rssi=-67,
+            wifi_rssi=-67,
         )
         assert reading.node_id == "sensor-gh1-zone1"
         assert reading.zone_id == "zone1"
         assert reading.moisture_raw == 1820
         assert reading.moisture_percent == 31.4
         assert reading.battery_voltage == 3.78
-        assert reading.rssi == -67
+        assert reading.wifi_rssi == -67
         assert isinstance(reading.timestamp, datetime)
 
     def test_sensor_reading_minimal(self):
@@ -38,12 +38,11 @@ class TestSensorReading:
         )
         assert reading.moisture_percent is None
         assert reading.battery_voltage is None
-        assert reading.rssi is None
+        assert reading.wifi_rssi is None
 
     def test_sensor_reading_timestamp_auto_generated(self):
         reading1 = SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000)
         reading2 = SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000)
-        # Timestamps should be close but might differ slightly
         assert abs((reading1.timestamp - reading2.timestamp).total_seconds()) < 1
 
     def test_sensor_reading_empty_node_id_fails(self):
@@ -76,9 +75,9 @@ class TestSensorReading:
 
     def test_sensor_reading_rssi_out_of_range(self):
         with pytest.raises(ValidationError):
-            SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000, rssi=-131)
+            SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000, wifi_rssi=-131)
         with pytest.raises(ValidationError):
-            SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000, rssi=1)
+            SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000, wifi_rssi=1)
 
     def test_sensor_reading_extra_field_forbidden(self):
         with pytest.raises(ValidationError) as exc:
@@ -91,14 +90,13 @@ class TestSensorReading:
         assert "extra_field" in str(exc.value).lower()
 
     def test_sensor_reading_boundary_values(self):
-        # Test exact boundaries
         reading = SensorReading(
             node_id="s1",
             zone_id="z1",
             moisture_raw=0,
             moisture_percent=0.0,
             battery_voltage=0.0,
-            rssi=-130,
+            wifi_rssi=-130,
         )
         assert reading.moisture_raw == 0
         assert reading.moisture_percent == 0.0
@@ -109,7 +107,7 @@ class TestSensorReading:
             moisture_raw=65535,
             moisture_percent=100.0,
             battery_voltage=10.0,
-            rssi=0,
+            wifi_rssi=0,
         )
         assert reading.moisture_raw == 65535
         assert reading.moisture_percent == 100.0

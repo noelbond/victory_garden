@@ -29,6 +29,8 @@ class ActuatorStatusIngestor
       )
     end
 
+    request_fresh_reading(zone, status)
+
     status
   end
 
@@ -48,5 +50,26 @@ class ActuatorStatusIngestor
              end
 
     event.update!(status: mapped)
+  end
+
+  def request_fresh_reading(zone, status)
+    return unless status.state == "COMPLETED"
+    return if status.idempotency_key.blank?
+    return if daily_runtime_met?(zone, status.recorded_at)
+
+    RequestReadingJob.set(wait: 5.minutes).perform_later(
+      zone_id: zone.zone_id,
+      command_id: "#{status.idempotency_key}-reread"
+    )
+  end
+
+  def daily_runtime_met?(zone, time)
+    day_scope = time.beginning_of_day..time.end_of_day
+    runtime_today = WateringEvent.where(
+      zone: zone,
+      command: "start_watering",
+      issued_at: day_scope
+    ).sum(:runtime_seconds)
+    runtime_today >= zone.crop_profile.daily_max_runtime_sec
   end
 end

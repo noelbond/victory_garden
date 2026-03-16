@@ -1,116 +1,108 @@
 # Victory Garden Rails Control Plane
 
-Rails is the control plane + UI + system of record.
+Rails is the UI, configuration authority, and historical reporting layer.
 
-Responsibilities:
-- Own configuration (crop profiles, zones, schedules, safety limits)
-- Orchestrate decisions (not real-time control)
-- Record history (readings, commands, actuator status, faults)
-- Present info to humans (UI)
+## Responsibilities
+
+- manage crop profiles and zones
+- consume node state, including optional telemetry fields when present
+- record watering events, actuator status, and faults
+- publish irrigation commands and device configuration
+- schedule delayed reread requests 5 minutes after completed watering
 
 ## Setup
 
-From `ruby_service/`:
+From [`ruby_service/`](/Users/noel/coding/python/victory_garden/ruby_service):
 
-- Install gems:
-  - `bundle install`
-- Create DB:
-  - `bin/rails db:create db:migrate`
+- `bundle install`
+- `bin/rails db:create db:migrate`
 
-## Key Models
+## Main Models
 
-- `CropProfile`: per-crop thresholds and runtime
-- `Zone`: mapping of zone → crop + sensor node
-- `SensorReading`: incoming sensor data
-- `WateringEvent`: decisions/commands
-- `ActuatorStatus`: status updates from devices
-- `Fault`: faults/alerts
+- `CropProfile`
+- `Zone`
+- `SensorReading`
+- `WateringEvent`
+- `ActuatorStatus`
+- `Fault`
+- `ConnectionSetting`
 
-## Services
+## MQTT Defaults
 
-- `DecisionService`: decides when to water
-- `WateringPolicy`: allowed hours checks
-- `SensorIngestor`: validates + stores readings + triggers decision
-- `CommandPublishJob`: publishes commands to MQTT
-- `ConfigPublishJob`: publishes config to MQTT
+- `MQTT_HOST`: `localhost`
+- `MQTT_PORT`: `1883`
+- `MQTT_READINGS_TOPIC`: `greenhouse/zones/+/state`
+- `MQTT_ACTUATORS_TOPIC`: `greenhouse/zones/+/actuator_status`
+- `MQTT_COMMAND_TOPIC`: `greenhouse/irrigation/commands`
+- `MQTT_CONFIG_TOPIC`: `greenhouse/config/current`
 
-## Jobs
+## Consumed Payloads
 
-- `SensorIngestJob`: background ingest + decision
-- `CommandPublishJob`: publish watering command
-- `ConfigPublishJob`: publish config to devices
+Node state:
 
-## MQTT
-
-Set environment variables:
-
-- `MQTT_HOST` (default: `localhost`)
-- `MQTT_PORT` (default: `1883`)
-- `MQTT_COMMAND_TOPIC` (default: `watering/commands`)
-- `MQTT_CONFIG_TOPIC` (default: `watering/config`)
-- `MQTT_READINGS_TOPIC` (default: `watering/readings`)
-- `MQTT_ACTUATORS_TOPIC` (default: `watering/actuators`)
-
-## Ingestion Endpoint
-
-POST `/ingest/sensor_readings`
-
-Expected JSON payload:
-
-```
+```json
 {
-  "sensor_reading": {
-    "node_id": "sensor-gh1-zone1",
-    "zone_id": "zone1",
-    "timestamp": "2026-02-06T12:00:00Z",
-    "moisture_raw": 1820,
-    "moisture_percent": 31.4,
-    "battery_voltage": 3.78,
-    "rssi": -67
-  }
+  "schema_version": "node-state/v1",
+  "timestamp": "2026-02-06T12:00:00Z",
+  "zone_id": "zone1",
+  "node_id": "mkr1010-zone1",
+  "moisture_raw": 1820,
+  "moisture_percent": 31.4,
+  "soil_temp_c": 24.8,
+  "battery_voltage": 4.02,
+  "battery_percent": 89,
+  "wifi_rssi": -53,
+  "uptime_seconds": 607,
+  "wake_count": 1042,
+  "ip": "192.168.4.21",
+  "health": "ok",
+  "last_error": "none",
+  "publish_reason": "scheduled"
 }
 ```
 
-Response: `202 Accepted` with `{ "status": "queued" }`
+Actuator status:
 
-POST `/ingest/actuator_statuses`
-
-Expected JSON payload:
-
-```
+```json
 {
-  "actuator_status": {
-    "zone_id": "zone1",
-    "state": "COMPLETED",
-    "timestamp": "2026-02-06T12:01:00Z",
-    "idempotency_key": "zone1-20260206T120000Z-1",
-    "actual_runtime_seconds": 45,
-    "flow_ml": 820,
-    "fault_code": null,
-    "fault_detail": null
-  }
+  "zone_id": "zone1",
+  "state": "COMPLETED",
+  "timestamp": "2026-02-06T12:01:00Z",
+  "idempotency_key": "zone1-20260206T120000Z-1",
+  "actual_runtime_seconds": 45,
+  "flow_ml": 820,
+  "fault_code": null,
+  "fault_detail": null
 }
 ```
 
-Response: `202 Accepted` with `{ "status": "queued" }`
+## Reread Flow
+
+When an actuator status of `COMPLETED` arrives:
+
+1. Rails updates the watering event
+2. Rails checks whether the zone already hit `daily_max_runtime_sec`
+3. If not, Rails schedules a `RequestReadingJob` for 5 minutes later
+4. That job publishes a retained `request_reading` command to `greenhouse/zones/{zone_id}/command`
+
+## Config Publish Payload
+
+Published crop config includes:
+
+- `crop_id`
+- `crop_name`
+- `dry_threshold`
+- `max_pulse_runtime_sec`
+- `daily_max_runtime_sec`
+- `climate_preference`
+- `time_to_harvest_days`
 
 ## MQTT Consumer
 
-Standalone consumer process:
+Run:
 
-```
+```bash
 bin/mqtt_consumer
 ```
 
-This subscribes to `MQTT_READINGS_TOPIC` and `MQTT_ACTUATORS_TOPIC` and enqueues
-`SensorIngestJob` or `ActuatorStatusIngestJob` based on topic.
-
-## Config Publish Trigger
-
-POST `/admin/publish_config`
-
-Response: `202 Accepted` with `{ "status": "queued" }`
-
-## Notes
-
-Rails does not do real-time control or hardware safety. Actuators must enforce safety limits.
+It subscribes to node state and actuator-status topics and enqueues the matching ingest jobs.

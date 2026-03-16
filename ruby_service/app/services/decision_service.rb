@@ -11,10 +11,10 @@ class DecisionService
     profile = @zone.crop_profile
     return nil if @reading.moisture_percent >= profile.dry_threshold
 
-    remaining = profile.max_daily_runtime_seconds - runtime_today
+    remaining = profile.daily_max_runtime_sec - runtime_today
     return nil if remaining <= 0
 
-    runtime = [profile.runtime_seconds, remaining].min
+    runtime = [profile.max_pulse_runtime_sec, remaining].min
     {
       command: "start_watering",
       zone_id: @zone.zone_id,

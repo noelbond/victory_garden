@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal, Optional
+from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 def utcnow() -> datetime:
     return datetime.now(tz=timezone.utc)
@@ -21,7 +21,22 @@ class SensorReading(BaseModel):
     moisture_percent: Optional[float] = Field(default=None, ge=0, le=100, examples=[31.4])
 
     battery_voltage: Optional[float] = Field(default=None, ge=0, le=10, examples=[3.78])
-    rssi: Optional[int] = Field(default=None, ge=-130, le=0, examples=[-67])
+    battery_percent: Optional[int] = Field(default=None, ge=0, le=100, examples=[89])
+    wifi_rssi: Optional[int] = Field(
+        default=None,
+        ge=-130,
+        le=0,
+        examples=[-67],
+        validation_alias=AliasChoices("wifi_rssi", "rssi"),
+        serialization_alias="wifi_rssi",
+    )
+    soil_temp_c: Optional[float] = Field(default=None, examples=[24.8])
+    uptime_seconds: Optional[int] = Field(default=None, ge=0, examples=[607])
+    wake_count: Optional[int] = Field(default=None, ge=0, examples=[1042])
+    ip: Optional[str] = Field(default=None, max_length=50, examples=["192.168.4.21"])
+    health: Optional[str] = Field(default=None, max_length=50, examples=["ok"])
+    last_error: Optional[str] = Field(default=None, max_length=300, examples=["none"])
+    publish_reason: Optional[str] = Field(default=None, max_length=50, examples=["scheduled"])
 
 class HubCommand(str, Enum):
     START_WATER = "start_watering"

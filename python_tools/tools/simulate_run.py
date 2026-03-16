@@ -38,6 +38,30 @@ def publish_event(
     client.publish(f"greenhouse/zones/{zone_id}/moisture_percent", str(moisture))
     client.publish(f"greenhouse/zones/{zone_id}/action", action)
     client.publish(f"greenhouse/zones/{zone_id}/runtime_seconds_today", str(total_today))
+    client.publish(
+        f"greenhouse/zones/{zone_id}/state",
+        json.dumps(
+            {
+                "schema_version": "node-state/v1",
+                "timestamp": now.isoformat(),
+                "zone_id": zone_id,
+                "node_id": f"sim-{zone_id}",
+                "moisture_raw": 1820,
+                "moisture_percent": moisture,
+                "soil_temp_c": None,
+                "battery_voltage": None,
+                "battery_percent": None,
+                "wifi_rssi": None,
+                "uptime_seconds": None,
+                "wake_count": None,
+                "ip": None,
+                "health": None,
+                "last_error": None,
+                "publish_reason": "simulated",
+            }
+        ),
+        retain=True,
+    )
 
 
 def main() -> None:

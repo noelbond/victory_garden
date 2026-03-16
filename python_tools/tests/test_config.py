@@ -23,15 +23,19 @@ class TestCropsConfig:
                     "crop_id": "tomato",
                     "crop_name": "Tomato",
                     "dry_threshold": 30.0,
-                    "runtime_seconds": 45,
-                    "max_daily_runtime_seconds": 300,
+                    "max_pulse_runtime_sec": 45,
+                    "daily_max_runtime_sec": 300,
+                    "climate_preference": "Warm, sunny",
+                    "time_to_harvest_days": 75,
                 },
                 {
                     "crop_id": "basil",
                     "crop_name": "Basil",
-                    "dry_threshold": 35.0,
-                    "runtime_seconds": 30,
-                    "max_daily_runtime_seconds": 240,
+                    "dry_threshold": 40.0,
+                    "max_pulse_runtime_sec": 30,
+                    "daily_max_runtime_sec": 240,
+                    "climate_preference": "Warm, humid",
+                    "time_to_harvest_days": 50,
                 },
             ]
         }
@@ -55,11 +59,11 @@ class TestCropsConfig:
         data = {
             "crops": [
                 {
-                    "crop_id": "",  # Invalid: empty
+                    "crop_id": "",
                     "crop_name": "Tomato",
                     "dry_threshold": 30.0,
-                    "runtime_seconds": 45,
-                    "max_daily_runtime_seconds": 300,
+                    "max_pulse_runtime_sec": 45,
+                    "daily_max_runtime_sec": 300,
                 }
             ]
         }
@@ -135,13 +139,17 @@ class TestLoadCrops:
   - crop_id: tomato
     crop_name: Tomato
     dry_threshold: 30.0
-    runtime_seconds: 45
-    max_daily_runtime_seconds: 300
+    max_pulse_runtime_sec: 45
+    daily_max_runtime_sec: 300
+    climate_preference: Warm, sunny
+    time_to_harvest_days: 75
   - crop_id: basil
     crop_name: Basil
-    dry_threshold: 35.0
-    runtime_seconds: 30
-    max_daily_runtime_seconds: 240
+    dry_threshold: 40.0
+    max_pulse_runtime_sec: 30
+    daily_max_runtime_sec: 240
+    climate_preference: Warm, humid
+    time_to_harvest_days: 50
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
@@ -155,7 +163,7 @@ class TestLoadCrops:
             assert crops["tomato"].crop_name == "Tomato"
             assert crops["tomato"].dry_threshold == 30.0
             assert crops["basil"].crop_name == "Basil"
-            assert crops["basil"].runtime_seconds == 30
+            assert crops["basil"].max_pulse_runtime_sec == 30
         finally:
             temp_path.unlink()
 
@@ -181,8 +189,8 @@ class TestLoadCrops:
   - crop_id: tomato
     crop_name: Tomato
     dry_threshold: invalid_number
-    runtime_seconds: 45
-    max_daily_runtime_seconds: 300
+    max_pulse_runtime_sec: 45
+    daily_max_runtime_sec: 300
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
@@ -198,9 +206,8 @@ class TestLoadCrops:
         yaml_content = """crops:
   - crop_id: tomato
     crop_name: Tomato
-    # Missing dry_threshold
-    runtime_seconds: 45
-    max_daily_runtime_seconds: 300
+    max_pulse_runtime_sec: 45
+    daily_max_runtime_sec: 300
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
@@ -213,18 +220,17 @@ class TestLoadCrops:
             temp_path.unlink()
 
     def test_load_crops_duplicate_crop_ids(self):
-        # Duplicate IDs are not allowed
         yaml_content = """crops:
   - crop_id: tomato
     crop_name: Tomato A
     dry_threshold: 30.0
-    runtime_seconds: 45
-    max_daily_runtime_seconds: 300
+    max_pulse_runtime_sec: 45
+    daily_max_runtime_sec: 300
   - crop_id: tomato
     crop_name: Tomato B
     dry_threshold: 35.0
-    runtime_seconds: 50
-    max_daily_runtime_seconds: 350
+    max_pulse_runtime_sec: 50
+    daily_max_runtime_sec: 350
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
@@ -299,7 +305,6 @@ class TestLoadZones:
     def test_load_zones_missing_required_field(self):
         yaml_content = """zones:
   - zone_id: zone1
-    # Missing crop_id
     node_id: sensor-1
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -313,7 +318,6 @@ class TestLoadZones:
             temp_path.unlink()
 
     def test_load_zones_duplicate_zone_ids(self):
-        # Duplicate IDs are not allowed
         yaml_content = """zones:
   - zone_id: zone1
     crop_id: tomato

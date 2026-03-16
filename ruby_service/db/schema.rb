@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_02_09_173000) do
+ActiveRecord::Schema[8.0].define(version: 2026_02_09_210200) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -46,8 +46,8 @@ ActiveRecord::Schema[8.0].define(version: 2026_02_09_173000) do
     t.string "crop_id", null: false
     t.string "crop_name", null: false
     t.decimal "dry_threshold", precision: 5, scale: 2, null: false
-    t.integer "runtime_seconds", null: false
-    t.integer "max_daily_runtime_seconds", null: false
+    t.integer "max_pulse_runtime_sec", null: false
+    t.integer "daily_max_runtime_sec", null: false
     t.text "notes"
     t.boolean "active", default: true, null: false
     t.datetime "created_at", null: false
@@ -76,9 +76,19 @@ ActiveRecord::Schema[8.0].define(version: 2026_02_09_173000) do
     t.integer "moisture_raw", null: false
     t.decimal "moisture_percent", precision: 5, scale: 2
     t.decimal "battery_voltage", precision: 4, scale: 2
-    t.integer "rssi"
+    t.integer "wifi_rssi"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "schema_version"
+    t.decimal "soil_temp_c", precision: 5, scale: 2
+    t.integer "battery_percent"
+    t.bigint "uptime_seconds"
+    t.bigint "wake_count"
+    t.string "ip_address"
+    t.string "health"
+    t.text "last_error"
+    t.string "publish_reason"
+    t.jsonb "raw_payload", default: {}, null: false
     t.index ["zone_id", "recorded_at"], name: "index_sensor_readings_on_zone_id_and_recorded_at"
     t.index ["zone_id"], name: "index_sensor_readings_on_zone_id"
   end
