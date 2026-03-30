@@ -8,7 +8,7 @@ Requires=mosquitto.service
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/victory_garden/python_tools
-ExecStart=/home/pi/victory_garden/python_tools/.venv/bin/python -m tools.run_loop
+ExecStart=/home/pi/victory_garden/python_tools/.venv/bin/python -m main
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
