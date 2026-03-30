@@ -17,6 +17,12 @@ Payload schema versions:
 - node-command-ack/v1
   Command acknowledgements published to greenhouse/zones/{zone_id}/command_ack
 
+- node-config/v1
+  Config consumed from greenhouse/nodes/{node_id}/config
+
+- node-config-ack/v1
+  Config acknowledgements published to greenhouse/nodes/{node_id}/config_ack
+
 This node uses greenhouse/* as the canonical MQTT transport, generates topics
 from ZONE_ID, and publishes a single state payload with nullable optional fields.
 */
@@ -28,16 +34,22 @@ from ZONE_ID, and publishes a single state payload with nullable optional fields
 #include <ArduinoLowPower.h>
 #include "Adafruit_seesaw.h"
 #include "node_config.h"
+#include "node_storage.h"
+#include "provisioning.h"
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 Adafruit_seesaw ss;
+NodeStoredConfig currentConfig;
 
 unsigned long wakeCount = 0;
 int consecutiveFailureCount = 0;
 char lastError[96] = "none";
 bool pendingRequestReading = false;
 char pendingCommandId[64] = "";
+bool pendingConfigUpdate = false;
+char pendingConfigPayload[768] = "";
+char pendingConfigVersion[64] = "";
 
 char topicState[96];
 char topicStatus[96];
@@ -55,9 +67,15 @@ char topicHealth[96];
 char topicPublishStatus[96];
 char topicCommand[96];
 char topicCommandAck[96];
+char topicNodeConfig[96];
+char topicNodeConfigAck[96];
 
 void buildTopic(char* buffer, size_t size, const char* suffix) {
-  snprintf(buffer, size, "greenhouse/zones/%s/%s", ZONE_ID, suffix);
+  snprintf(buffer, size, "greenhouse/zones/%s/%s", currentConfig.zone_id, suffix);
+}
+
+void buildNodeTopic(char* buffer, size_t size, const char* suffix) {
+  snprintf(buffer, size, "greenhouse/nodes/%s/%s", currentConfig.node_id, suffix);
 }
 
 void setupTopics() {
@@ -77,6 +95,40 @@ void setupTopics() {
   buildTopic(topicPublishStatus, sizeof(topicPublishStatus), "publish_status");
   buildTopic(topicCommand, sizeof(topicCommand), "command");
   buildTopic(topicCommandAck, sizeof(topicCommandAck), "command_ack");
+  buildNodeTopic(topicNodeConfig, sizeof(topicNodeConfig), "config");
+  buildNodeTopic(topicNodeConfigAck, sizeof(topicNodeConfigAck), "config_ack");
+}
+
+const char* mqttClientId() {
+  return currentConfig.mqtt_client_id[0] != '\0' ? currentConfig.mqtt_client_id : MQTT_CLIENT_ID;
+}
+
+void configureDefaultsForProvisionedMode() {
+  setNodeConfigDefaults(&currentConfig);
+}
+
+bool shouldBootstrapFromDefaults(const NodeStoredConfig& config) {
+  if (strcmp(config.wifi_ssid, "") == 0 || strcmp(config.wifi_password, "") == 0) {
+    return false;
+  }
+
+  if (strcmp(config.wifi_ssid, "your-wifi-ssid") == 0 ||
+      strcmp(config.wifi_password, "your-wifi-password") == 0) {
+    return false;
+  }
+
+  if (strcmp(config.wifi_ssid, "compile-only-ssid") == 0 ||
+      strcmp(config.wifi_password, "compile-only-password") == 0) {
+    return false;
+  }
+
+  if (strcmp(config.mqtt_broker, "") == 0 ||
+      strcmp(config.node_id, "") == 0 ||
+      strcmp(config.zone_id, "") == 0) {
+    return false;
+  }
+
+  return true;
 }
 
 void setLastError(const char* msg) {
@@ -127,13 +179,17 @@ float readBatteryVoltage() {
   return pinVoltage * ((R1_OHMS + R2_OHMS) / R2_OHMS);
 }
 
+// Piecewise-linear approximation of a typical Li-ion discharge curve.
+// Breakpoints: 4.20V=100%, 4.00V=80%, 3.80V=50%, 3.60V=20%, 3.40V=5%, 3.20V=0%
 int batteryPercentFromVoltage(float voltage) {
-  if (voltage < 0.0f) return -1;
+  if (voltage < 0.0f)   return -1;
   if (voltage >= 4.20f) return 100;
-  if (voltage <= 3.20f) return 0;
-
-  int percent = (int) ((voltage - 3.20f) * 100.0f);
-  return constrain(percent, 0, 100);
+  if (voltage >= 4.00f) return (int)(80.0f + (voltage - 4.00f) / 0.20f * 20.0f);
+  if (voltage >= 3.80f) return (int)(50.0f + (voltage - 3.80f) / 0.20f * 30.0f);
+  if (voltage >= 3.60f) return (int)(20.0f + (voltage - 3.60f) / 0.20f * 30.0f);
+  if (voltage >= 3.40f) return (int)( 5.0f + (voltage - 3.40f) / 0.20f * 15.0f);
+  if (voltage >= 3.20f) return (int)(        (voltage - 3.20f) / 0.20f *  5.0f);
+  return 0;
 }
 
 unsigned long uptimeSeconds() {
@@ -201,8 +257,8 @@ void publishCommandAck(const char* command, const char* commandId, const char* s
     payload,
     sizeof(payload),
     "{\"schema_version\":\"node-command-ack/v1\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"command\":\"%s\",\"command_id\":\"%s\",\"status\":\"%s\"}",
-    ZONE_ID,
-    NODE_ID,
+    currentConfig.zone_id,
+    currentConfig.node_id,
     command,
     commandId,
     status
@@ -211,43 +267,280 @@ void publishCommandAck(const char* command, const char* commandId, const char* s
   publishRetained(topicCommandAck, payload);
 }
 
+void publishNodeConfigAck(const char* status, const char* errorMessage) {
+  char payload[640];
+  char timestamp[32];
+
+  isoTimestampNow(timestamp, sizeof(timestamp));
+
+  if (currentConfig.assigned) {
+    snprintf(
+      payload,
+      sizeof(payload),
+      "{\"schema_version\":\"node-config-ack/v1\",\"node_id\":\"%s\",\"config_version\":\"%s\",\"status\":\"%s\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"applied_config\":{\"assigned\":true,\"zone_id\":\"%s\",\"crop_id\":\"%s\"},\"error\":%s}",
+      currentConfig.node_id,
+      pendingConfigVersion,
+      status,
+      timestamp,
+      currentConfig.zone_id,
+      currentConfig.zone_id,
+      currentConfig.crop_id,
+      errorMessage != NULL ? errorMessage : "null"
+    );
+  } else {
+    snprintf(
+      payload,
+      sizeof(payload),
+      "{\"schema_version\":\"node-config-ack/v1\",\"node_id\":\"%s\",\"config_version\":\"%s\",\"status\":\"%s\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"applied_config\":{\"assigned\":false},\"error\":%s}",
+      currentConfig.node_id,
+      pendingConfigVersion,
+      status,
+      timestamp,
+      currentConfig.zone_id,
+      errorMessage != NULL ? errorMessage : "null"
+    );
+  }
+  publishRetained(topicNodeConfigAck, payload);
+}
+
+bool extractJsonString(const char* payload, const char* key, char* out, size_t outSize) {
+  char pattern[48];
+  snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+  char* start = strstr(const_cast<char*>(payload), pattern);
+  if (start == NULL) {
+    return false;
+  }
+
+  start += strlen(pattern);
+  char* end = strchr(start, '"');
+  if (end == NULL) {
+    return false;
+  }
+
+  size_t copyLen = (size_t) (end - start);
+  if (copyLen >= outSize) {
+    copyLen = outSize - 1;
+  }
+  memcpy(out, start, copyLen);
+  out[copyLen] = '\0';
+  return true;
+}
+
+bool extractJsonBool(const char* payload, const char* key, bool* out) {
+  char pattern[40];
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  char* start = strstr(const_cast<char*>(payload), pattern);
+  if (start == NULL) {
+    return false;
+  }
+
+  start += strlen(pattern);
+  if (strncmp(start, "true", 4) == 0) {
+    *out = true;
+    return true;
+  }
+  if (strncmp(start, "false", 5) == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+bool extractJsonInt(const char* payload, const char* key, long* out) {
+  char pattern[40];
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  char* start = strstr(const_cast<char*>(payload), pattern);
+  if (start == NULL) {
+    return false;
+  }
+
+  start += strlen(pattern);
+  *out = strtol(start, NULL, 10);
+  return true;
+}
+
+bool extractJsonFloat(const char* payload, const char* key, float* out) {
+  char pattern[40];
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  char* start = strstr(const_cast<char*>(payload), pattern);
+  if (start == NULL) {
+    return false;
+  }
+
+  start += strlen(pattern);
+  *out = strtof(start, NULL);
+  return true;
+}
+
+void clearConfigDerivedFields(NodeStoredConfig* config) {
+  config->assigned = false;
+  snprintf(config->zone_id, sizeof(config->zone_id), "%s", "unassigned");
+  config->config_version[0] = '\0';
+  config->zone_active = false;
+  config->allowed_hours_enabled = false;
+  config->allowed_start_hour = 0;
+  config->allowed_end_hour = 0;
+  config->crop_id[0] = '\0';
+  config->crop_name[0] = '\0';
+  config->dry_threshold = 0.0f;
+  config->max_pulse_runtime_sec = 0;
+  config->daily_max_runtime_sec = 0;
+  config->climate_preference[0] = '\0';
+  config->time_to_harvest_days = 0;
+}
+
+bool applyPendingConfig() {
+  if (!pendingConfigUpdate) {
+    return false;
+  }
+
+  NodeStoredConfig updatedConfig = currentConfig;
+  char configVersion[sizeof(updatedConfig.config_version)];
+  bool assigned = false;
+  char zoneId[sizeof(updatedConfig.zone_id)];
+  char cropId[sizeof(updatedConfig.crop_id)];
+  char cropName[sizeof(updatedConfig.crop_name)];
+  char climatePreference[sizeof(updatedConfig.climate_preference)];
+  float dryThreshold = 0.0f;
+  long maxPulseRuntime = 0;
+  long dailyMaxRuntime = 0;
+  long harvestDays = 0;
+  bool zoneActive = false;
+  long startHour = 0;
+  long endHour = 0;
+
+  if (!extractJsonString(pendingConfigPayload, "config_version", configVersion, sizeof(configVersion))) {
+    setLastError("config version missing");
+    publishNodeConfigAck("error", "\"config version missing\"");
+    pendingConfigUpdate = false;
+    return false;
+  }
+
+  snprintf(pendingConfigVersion, sizeof(pendingConfigVersion), "%s", configVersion);
+
+  if (!extractJsonBool(pendingConfigPayload, "assigned", &assigned)) {
+    setLastError("assigned missing");
+    publishNodeConfigAck("error", "\"assigned missing\"");
+    pendingConfigUpdate = false;
+    return false;
+  }
+
+  snprintf(updatedConfig.config_version, sizeof(updatedConfig.config_version), "%s", configVersion);
+
+  if (!assigned) {
+    clearConfigDerivedFields(&updatedConfig);
+    snprintf(updatedConfig.config_version, sizeof(updatedConfig.config_version), "%s", configVersion);
+  } else {
+    if (!extractJsonString(pendingConfigPayload, "zone_id", zoneId, sizeof(zoneId)) ||
+        !extractJsonString(pendingConfigPayload, "crop_id", cropId, sizeof(cropId))) {
+      setLastError("zone or crop missing");
+      publishNodeConfigAck("error", "\"zone or crop missing\"");
+      pendingConfigUpdate = false;
+      return false;
+    }
+
+    updatedConfig.assigned = true;
+    snprintf(updatedConfig.zone_id, sizeof(updatedConfig.zone_id), "%s", zoneId);
+    extractJsonString(pendingConfigPayload, "crop_name", cropName, sizeof(cropName));
+    extractJsonString(pendingConfigPayload, "climate_preference", climatePreference, sizeof(climatePreference));
+    extractJsonBool(pendingConfigPayload, "active", &zoneActive);
+    extractJsonFloat(pendingConfigPayload, "dry_threshold", &dryThreshold);
+    extractJsonInt(pendingConfigPayload, "max_pulse_runtime_sec", &maxPulseRuntime);
+    extractJsonInt(pendingConfigPayload, "daily_max_runtime_sec", &dailyMaxRuntime);
+    extractJsonInt(pendingConfigPayload, "time_to_harvest_days", &harvestDays);
+
+    if (dryThreshold <= 0.0f || maxPulseRuntime <= 0 || dailyMaxRuntime <= 0) {
+      setLastError("invalid numeric config values");
+      publishNodeConfigAck("error", "\"invalid numeric config values\"");
+      pendingConfigUpdate = false;
+      return false;
+    }
+
+    updatedConfig.zone_active = zoneActive;
+    snprintf(updatedConfig.crop_id, sizeof(updatedConfig.crop_id), "%s", cropId);
+    snprintf(updatedConfig.crop_name, sizeof(updatedConfig.crop_name), "%s", cropName);
+    snprintf(updatedConfig.climate_preference, sizeof(updatedConfig.climate_preference), "%s", climatePreference);
+    updatedConfig.dry_threshold = dryThreshold;
+    updatedConfig.max_pulse_runtime_sec = maxPulseRuntime > 0 ? (uint16_t) maxPulseRuntime : 0;
+    updatedConfig.daily_max_runtime_sec = dailyMaxRuntime > 0 ? (uint16_t) dailyMaxRuntime : 0;
+    updatedConfig.time_to_harvest_days = harvestDays > 0 ? (uint16_t) harvestDays : 0;
+
+    if (extractJsonInt(pendingConfigPayload, "start_hour", &startHour) &&
+        extractJsonInt(pendingConfigPayload, "end_hour", &endHour)) {
+      updatedConfig.allowed_hours_enabled = true;
+      updatedConfig.allowed_start_hour = (uint8_t) startHour;
+      updatedConfig.allowed_end_hour = (uint8_t) endHour;
+    } else {
+      updatedConfig.allowed_hours_enabled = false;
+      updatedConfig.allowed_start_hour = 0;
+      updatedConfig.allowed_end_hour = 0;
+    }
+  }
+
+  if (!saveNodeConfig(updatedConfig)) {
+    setLastError("config save failed");
+    publishNodeConfigAck("error", "\"config save failed\"");
+    pendingConfigUpdate = false;
+    return false;
+  }
+
+  currentConfig = updatedConfig;
+  setupTopics();
+  mqttClient.subscribe(topicCommand);
+  mqttClient.subscribe(topicNodeConfig);
+  clearLastError();
+  publishNodeConfigAck("applied", NULL);
+  pendingConfigUpdate = false;
+  return true;
+}
+
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  char message[256];
+  char message[768];
   if (length >= sizeof(message)) {
-    setLastError("command payload too large");
+    setLastError("mqtt payload too large");
     return;
   }
 
   memcpy(message, payload, length);
   message[length] = '\0';
 
-  if (strcmp(topic, topicCommand) != 0) {
-    return;
-  }
-
-  if (strstr(message, "\"command\":\"request_reading\"") == NULL) {
-    publishCommandAck("unknown", "", "ignored");
-    return;
-  }
-
-  const char* commandIdKey = "\"command_id\":\"";
-  char* commandIdStart = strstr(message, commandIdKey);
-  if (commandIdStart != NULL) {
-    commandIdStart += strlen(commandIdKey);
-    char* commandIdEnd = strchr(commandIdStart, '"');
-    if (commandIdEnd != NULL) {
-      size_t lengthToCopy = (size_t) (commandIdEnd - commandIdStart);
-      if (lengthToCopy >= sizeof(pendingCommandId)) {
-        lengthToCopy = sizeof(pendingCommandId) - 1;
-      }
-      memcpy(pendingCommandId, commandIdStart, lengthToCopy);
-      pendingCommandId[lengthToCopy] = '\0';
+  if (strcmp(topic, topicCommand) == 0) {
+    if (strstr(message, "\"command\":\"request_reading\"") == NULL) {
+      publishCommandAck("unknown", "", "ignored");
+      return;
     }
-  } else {
-    snprintf(pendingCommandId, sizeof(pendingCommandId), "%s", "");
+
+    const char* commandIdKey = "\"command_id\":\"";
+    char* commandIdStart = strstr(message, commandIdKey);
+    if (commandIdStart != NULL) {
+      commandIdStart += strlen(commandIdKey);
+      char* commandIdEnd = strchr(commandIdStart, '"');
+      if (commandIdEnd != NULL) {
+        size_t lengthToCopy = (size_t) (commandIdEnd - commandIdStart);
+        if (lengthToCopy >= sizeof(pendingCommandId)) {
+          lengthToCopy = sizeof(pendingCommandId) - 1;
+        }
+        memcpy(pendingCommandId, commandIdStart, lengthToCopy);
+        pendingCommandId[lengthToCopy] = '\0';
+      }
+    } else {
+      snprintf(pendingCommandId, sizeof(pendingCommandId), "%s", "");
+    }
+
+    pendingRequestReading = true;
+    return;
   }
 
-  pendingRequestReading = true;
+  if (strcmp(topic, topicNodeConfig) == 0) {
+    char nodeId[sizeof(currentConfig.node_id)];
+    if (!extractJsonString(message, "node_id", nodeId, sizeof(nodeId)) ||
+        strcmp(nodeId, currentConfig.node_id) != 0) {
+      return;
+    }
+
+    snprintf(pendingConfigPayload, sizeof(pendingConfigPayload), "%s", message);
+    pendingConfigUpdate = true;
+  }
 }
 
 bool connectWiFi() {
@@ -257,7 +550,7 @@ bool connectWiFi() {
 
   Serial.print("Connecting to WiFi");
   WiFi.disconnect();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(currentConfig.wifi_ssid, currentConfig.wifi_password);
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED) {
@@ -279,7 +572,7 @@ bool connectWiFi() {
 
 bool connectMQTT() {
   mqttClient.setBufferSize(768);
-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setServer(currentConfig.mqtt_broker, currentConfig.mqtt_port);
   mqttClient.setCallback(mqttCallback);
 
   unsigned long start = millis();
@@ -287,11 +580,11 @@ bool connectMQTT() {
     Serial.print("Connecting to MQTT... ");
 
     bool connected = false;
-    if (strlen(MQTT_USERNAME) > 0) {
+    if (strlen(currentConfig.mqtt_username) > 0) {
       connected = mqttClient.connect(
-        MQTT_CLIENT_ID,
-        MQTT_USERNAME,
-        MQTT_PASSWORD,
+        mqttClientId(),
+        currentConfig.mqtt_username,
+        currentConfig.mqtt_password,
         topicStatus,
         0,
         true,
@@ -299,7 +592,7 @@ bool connectMQTT() {
       );
     } else {
       connected = mqttClient.connect(
-        MQTT_CLIENT_ID,
+        mqttClientId(),
         topicStatus,
         0,
         true,
@@ -310,6 +603,7 @@ bool connectMQTT() {
     if (connected) {
       Serial.println("connected");
       mqttClient.subscribe(topicCommand);
+      mqttClient.subscribe(topicNodeConfig);
       publishRetained(topicStatus, "online");
       clearLastError();
       return true;
@@ -377,8 +671,8 @@ bool publishTelemetry(const char* publishReason) {
       sizeof(statePayload),
       "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_temp_c\":%.2f,\"battery_voltage\":%.2f,\"battery_percent\":%d,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,\"ip\":\"%s\",\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
       timestamp,
-      ZONE_ID,
-      NODE_ID,
+      currentConfig.zone_id,
+      currentConfig.node_id,
       moistureRaw,
       moisturePercent,
       soilTempC,
@@ -400,8 +694,8 @@ bool publishTelemetry(const char* publishReason) {
       sizeof(statePayload),
       "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_temp_c\":%.2f,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,\"ip\":\"%s\",\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
       timestamp,
-      ZONE_ID,
-      NODE_ID,
+      currentConfig.zone_id,
+      currentConfig.node_id,
       moistureRaw,
       moisturePercent,
       soilTempC,
@@ -489,6 +783,11 @@ bool runTelemetryPublish(const char* publishReason) {
 }
 
 bool processPendingCommand() {
+  if (pendingConfigUpdate) {
+    Serial.println("Applying node config update");
+    return applyPendingConfig();
+  }
+
   if (!pendingRequestReading) {
     return false;
   }
@@ -558,8 +857,6 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
 
-  setupTopics();
-
   Serial.println();
   Serial.println("MKR WiFi 1010 Victory Garden sensor node starting...");
 
@@ -574,6 +871,49 @@ void setup() {
   }
 
   Serial.println("Seesaw sensor found.");
+
+  configureDefaultsForProvisionedMode();
+  bool loadedProvisionedConfig = loadNodeConfig(&currentConfig);
+  bool forceProvisioning = shouldForceProvisioning();
+
+  if (forceProvisioning) {
+    Serial.println("Provisioning reset requested over serial.");
+    clearNodeConfig();
+    configureDefaultsForProvisionedMode();
+    loadedProvisionedConfig = false;
+  }
+
+  if (!loadedProvisionedConfig) {
+    if (shouldBootstrapFromDefaults(currentConfig)) {
+      Serial.println("No saved node configuration found. Bootstrapping from local defaults.");
+      currentConfig.provisioned = true;
+      currentConfig.assigned = true;
+
+      if (saveNodeConfig(currentConfig)) {
+        Serial.println("Bootstrapped configuration saved.");
+        loadedProvisionedConfig = true;
+      } else {
+        setLastError("failed to save bootstrapped config");
+      }
+    }
+  }
+
+  if (!loadedProvisionedConfig) {
+    Serial.println("No saved node configuration found. Entering provisioning mode.");
+    if (runProvisioningPortal(&currentConfig)) {
+      if (saveNodeConfig(currentConfig)) {
+        Serial.println("Provisioned configuration saved. Rebooting.");
+        delay(500);
+        softwareReset();
+      }
+      setLastError("failed to save provisioned config");
+    } else {
+      setLastError("provisioning failed");
+    }
+    return;
+  }
+
+  setupTopics();
   runScheduledCycle();
 }
 

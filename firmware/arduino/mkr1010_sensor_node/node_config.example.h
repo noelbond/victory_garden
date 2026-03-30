@@ -18,6 +18,11 @@ const char ZONE_ID[] = "zone1";
 const char NODE_ID[] = "mkr1010-zone1";
 const char MQTT_CLIENT_ID[] = "mkr1010-zone1";
 
+// Provisioning
+const char PROVISIONING_AP_SSID[] = "VictoryGardenSetup";
+const char PROVISIONING_AP_PASSWORD[] = "gardensetup";
+const unsigned long PROVISIONING_TRIGGER_WINDOW_MS = 5000UL;
+
 // Sensor calibration
 const int DRY_READING = 322;
 const int WET_READING = 510;
