@@ -2,14 +2,16 @@ class ZonesController < ApplicationController
   before_action :set_zone, only: %i[show edit update destroy water_now stop_watering toggle_active]
 
   def index
-    @zones = Zone.includes(:crop_profile).order(:zone_id)
+    @zones = Zone.includes(:crop_profile, :nodes).order(:zone_id)
     @latest_readings = latest_readings_for(@zones)
     @latest_statuses = latest_statuses_for(@zones)
+    @unclaimed_node_count = Node.unclaimed.count
   end
 
   def show
-    @latest_reading = @zone.sensor_readings.order(recorded_at: :desc).first
+    @claimed_nodes = @zone.nodes.order(:node_id)
     @recent_readings = @zone.sensor_readings.order(recorded_at: :desc).limit(10)
+    @latest_reading = @recent_readings.first
     @last_watering_event = @zone.watering_events.order(issued_at: :desc).first
     @latest_actuator_status = @zone.actuator_statuses.order(recorded_at: :desc).first
     @recent_faults = @zone.faults.order(recorded_at: :desc).limit(5)

@@ -1,0 +1,49 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Nodes</h1>
+    <div class="muted">Provisioned node identities discovered from MQTT state payloads.</div>
+  </div>
+  <div>
+    <%= link_to "Zones", zones_path, class: "btn light" %>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <h3>Unclaimed Nodes</h3>
+  <% if @unclaimed_nodes.any? %>
+    <ul class="list">
+      <% @unclaimed_nodes.each do |node| %>
+        <li>
+          <strong><%= link_to node.node_id, node_path(node) %></strong>
+          —
+          reported_zone: <%= node.reported_zone_id.presence || "—" %>,
+          last_seen: <%= node.last_seen_at %>,
+          health: <%= node.health.presence || "—" %>,
+          config: <%= node.config_status.presence || "—" %>
+        </li>
+      <% end %>
+    </ul>
+  <% else %>
+    <p class="muted">No unclaimed nodes discovered yet.</p>
+  <% end %>
+</div>
+
+<div class="card">
+  <h3>Claimed Nodes</h3>
+  <% if @claimed_nodes.any? %>
+    <ul class="list">
+      <% @claimed_nodes.each do |node| %>
+        <li>
+          <strong><%= link_to node.node_id, node_path(node) %></strong>
+          —
+          zone: <%= node.zone&.name.presence || node.zone&.zone_id || "—" %>,
+          last_seen: <%= node.last_seen_at %>,
+          health: <%= node.health.presence || "—" %>,
+          config: <%= node.config_status.presence || "—" %>
+        </li>
+      <% end %>
+    </ul>
+  <% else %>
+    <p class="muted">No claimed nodes yet.</p>
+  <% end %>
+</div>

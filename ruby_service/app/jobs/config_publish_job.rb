@@ -3,12 +3,15 @@ class ConfigPublishJob < ApplicationJob
 
   def perform
     crops = CropProfile.where(active: true)
-    zones = Zone.where(active: true).includes(:crop_profile)
+    zones = Zone.where(active: true).includes(:crop_profile, :nodes)
     payload = {
       crops: crops.map { |c| crop_payload(c) },
       zones: zones.map { |z| zone_payload(z) }
     }
     MqttClient.publish_config(payload)
+    Node.where.not(zone_id: nil).find_each do |node|
+      PublishNodeConfigJob.perform_later(node.id)
+    end
   end
 
   private
@@ -30,7 +33,7 @@ class ConfigPublishJob < ApplicationJob
     {
       zone_id: zone.zone_id,
       crop_id: zone.crop_profile.crop_id,
-      node_id: zone.node_id,
+      node_ids: zone.nodes.sort_by(&:node_id).map(&:node_id),
       active: zone.active,
       allowed_hours: zone.allowed_hours
     }

@@ -1,6 +1,14 @@
 <div class="page-header">
-  <h1 class="page-title">Zones</h1>
-  <%= link_to "New Zone", new_zone_path, class: "btn" %>
+  <div>
+    <h1 class="page-title">Zones</h1>
+    <% if @unclaimed_node_count.to_i > 0 %>
+      <div class="muted"><%= @unclaimed_node_count %> unclaimed node<%= "s" unless @unclaimed_node_count == 1 %> discovered.</div>
+    <% end %>
+  </div>
+  <div>
+    <%= link_to "Nodes", nodes_path, class: "btn light" %>
+    <%= link_to "New Zone", new_zone_path, class: "btn" %>
+  </div>
 </div>
 
 <div class="zone-grid">
@@ -11,7 +19,14 @@
       <div class="badge"><%= zone.active ? "Active" : "Inactive" %></div>
       <p>Crop: <strong><%= zone.crop_profile.crop_name %></strong></p>
       <p>Dry Threshold: <%= zone.crop_profile.dry_threshold %>%</p>
-      <p>Node: <%= zone.node_id %></p>
+      <p>
+        Nodes:
+        <% if zone.nodes.any? %>
+          <%= zone.nodes.sort_by(&:node_id).map(&:node_id).join(", ") %>
+        <% else %>
+          —
+        <% end %>
+      </p>
       <% reading = @latest_readings[zone.id] %>
       <% status = @latest_statuses[zone.id] %>
       <div class="status-row">

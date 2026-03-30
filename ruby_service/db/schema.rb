@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_02_09_210200) do
+ActiveRecord::Schema[8.0].define(version: 2026_03_24_000100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -69,6 +69,30 @@ ActiveRecord::Schema[8.0].define(version: 2026_02_09_210200) do
     t.index ["zone_id"], name: "index_faults_on_zone_id"
   end
 
+  create_table "nodes", force: :cascade do |t|
+    t.string "node_id", null: false
+    t.bigint "zone_id"
+    t.string "reported_zone_id"
+    t.datetime "last_seen_at", null: false
+    t.string "schema_version"
+    t.boolean "provisioned", default: false, null: false
+    t.decimal "battery_voltage", precision: 4, scale: 2
+    t.integer "wifi_rssi"
+    t.string "health"
+    t.text "last_error"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.jsonb "desired_config", default: {}, null: false
+    t.jsonb "applied_config", default: {}, null: false
+    t.string "config_version"
+    t.string "config_status"
+    t.datetime "config_published_at"
+    t.datetime "config_acknowledged_at"
+    t.text "config_error"
+    t.index ["node_id"], name: "index_nodes_on_node_id", unique: true
+    t.index ["zone_id"], name: "index_nodes_on_zone_id"
+  end
+
   create_table "sensor_readings", force: :cascade do |t|
     t.bigint "zone_id", null: false
     t.string "node_id", null: false
@@ -89,6 +113,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_02_09_210200) do
     t.text "last_error"
     t.string "publish_reason"
     t.jsonb "raw_payload", default: {}, null: false
+    t.index ["node_id", "recorded_at"], name: "index_sensor_readings_on_node_id_and_recorded_at"
     t.index ["zone_id", "recorded_at"], name: "index_sensor_readings_on_zone_id_and_recorded_at"
     t.index ["zone_id"], name: "index_sensor_readings_on_zone_id"
   end
@@ -111,7 +136,6 @@ ActiveRecord::Schema[8.0].define(version: 2026_02_09_210200) do
   create_table "zones", force: :cascade do |t|
     t.string "zone_id", null: false
     t.bigint "crop_profile_id", null: false
-    t.string "node_id", null: false
     t.boolean "active", default: true, null: false
     t.jsonb "allowed_hours"
     t.datetime "created_at", null: false
@@ -123,6 +147,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_02_09_210200) do
 
   add_foreign_key "actuator_statuses", "zones"
   add_foreign_key "faults", "zones"
+  add_foreign_key "nodes", "zones"
   add_foreign_key "sensor_readings", "zones"
   add_foreign_key "watering_events", "zones"
   add_foreign_key "zones", "crop_profiles"

@@ -1,0 +1,58 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><%= @node.node_id %></h1>
+    <div class="muted">
+      <%= @node.claimed? ? "Claimed" : "Unclaimed" %>
+      <% if @node.zone.present? %>
+        • Zone: <%= @node.zone.name.presence || @node.zone.zone_id %>
+      <% end %>
+    </div>
+  </div>
+  <div>
+    <%= link_to "Back to Nodes", nodes_path, class: "btn light" %>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col card">
+    <h3>Status</h3>
+    <ul class="list">
+      <li>Reported Zone ID: <%= @node.reported_zone_id.presence || "—" %></li>
+      <li>Last Seen: <%= @node.last_seen_at %></li>
+      <li>Provisioned: <%= @node.provisioned ? "Yes" : "No" %></li>
+      <li>Health: <%= @node.health.presence || "—" %></li>
+      <li>WiFi RSSI: <%= @node.wifi_rssi || "—" %> dBm</li>
+      <li>Battery Voltage: <%= @node.battery_voltage || "—" %> V</li>
+      <li>Last Error: <%= @node.last_error.presence || "—" %></li>
+      <li>Config Status: <%= @node.config_status.presence || "—" %></li>
+      <li>Config Version: <%= @node.config_version.presence || "—" %></li>
+      <li>Config Published: <%= @node.config_published_at || "—" %></li>
+      <li>Config Acked: <%= @node.config_acknowledged_at || "—" %></li>
+      <li>Config Error: <%= @node.config_error.presence || "—" %></li>
+    </ul>
+  </div>
+
+  <div class="col card">
+    <h3>Claim Node</h3>
+    <% if @available_zones.any? %>
+      <%= form_with url: claim_node_path(@node), method: :patch do %>
+        <div class="field">
+          <label for="zone_id">Assign to Zone</label>
+          <%= select_tag :zone_id, options_for_select(@available_zones.map { |zone| [zone.name.presence || zone.zone_id, zone.id] }, @node.zone_id) %>
+        </div>
+        <div style="margin-top: 16px;">
+          <%= submit_tag "Claim", class: "btn" %>
+        </div>
+      <% end %>
+    <% else %>
+      <p class="muted">Create a zone first, then claim this node.</p>
+    <% end %>
+
+    <div style="margin-top: 16px;">
+      <% if @node.claimed? %>
+        <%= button_to "Unclaim", unclaim_node_path(@node), method: :patch, class: "btn light" %>
+      <% end %>
+      <%= button_to "Republish Config", publish_config_node_path(@node), method: :post, class: "btn light" %>
+    </div>
+  </div>
+</div>

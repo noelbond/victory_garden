@@ -1,7 +1,7 @@
 <div class="page-header">
   <div>
     <h1 class="page-title"><%= @zone.name.presence || @zone.zone_id %></h1>
-    <div class="muted"><%= @zone.zone_id %> • Node: <%= @zone.node_id %></div>
+    <div class="muted"><%= @zone.zone_id %></div>
   </div>
   <div>
     <%= link_to "Edit Zone", edit_zone_path(@zone), class: "btn" %>
@@ -20,6 +20,14 @@
       <li>Daily Max Runtime: <%= @zone.crop_profile.daily_max_runtime_sec %> s</li>
       <li>Climate: <%= @zone.crop_profile.climate_preference.presence || "—" %></li>
       <li>Time to Harvest: <%= @zone.crop_profile.time_to_harvest_days || "—" %> days</li>
+      <li>
+        Claimed Nodes:
+        <% if @claimed_nodes.any? %>
+          <%= @claimed_nodes.map(&:node_id).join(", ") %>
+        <% else %>
+          —
+        <% end %>
+      </li>
       <li>
         Allowed Hours:
         <% if @zone.allowed_hours.present? %>

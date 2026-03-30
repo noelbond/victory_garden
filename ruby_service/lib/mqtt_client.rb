@@ -4,7 +4,10 @@ module MqttClient
   module_function
 
   def publish_command(command)
-    publish(setting_value("command_topic", "MQTT_COMMAND_TOPIC", "greenhouse/irrigation/commands"), command)
+    zone_id = command[:zone_id] || command["zone_id"]
+    raise ArgumentError, "Missing zone_id for actuator command publish" if zone_id.blank?
+
+    publish(actuator_command_topic(zone_id), command)
   end
 
   def request_reading(zone_id:, command_id:)
@@ -19,8 +22,12 @@ module MqttClient
     )
   end
 
+  def publish_node_config(node_id:, payload:)
+    publish("greenhouse/nodes/#{node_id}/config", payload, retain: true)
+  end
+
   def publish_config(payload)
-    publish(setting_value("config_topic", "MQTT_CONFIG_TOPIC", "greenhouse/config/current"), payload)
+    publish(system_config_topic, payload)
   end
 
   def publish(topic, payload, retain: false)
@@ -34,6 +41,23 @@ module MqttClient
       host: setting_value("mqtt_host", "MQTT_HOST", "localhost"),
       port: Integer(setting_value("mqtt_port", "MQTT_PORT", "1883"))
     }
+  end
+
+  def actuator_command_topic(zone_id)
+    pattern = setting_value("command_topic", "MQTT_COMMAND_TOPIC", "greenhouse/zones/{zone_id}/actuator/command")
+    pattern = "greenhouse/zones/{zone_id}/actuator/command" if pattern == "greenhouse/irrigation/commands"
+    if pattern.include?("{zone_id}")
+      pattern.gsub("{zone_id}", zone_id)
+    elsif pattern.include?("+")
+      pattern.sub("+", zone_id)
+    else
+      pattern
+    end
+  end
+
+  def system_config_topic
+    topic = setting_value("config_topic", "MQTT_CONFIG_TOPIC", "greenhouse/system/config/current")
+    topic == "greenhouse/config/current" ? "greenhouse/system/config/current" : topic
   end
 
   def setting_value(attr, env_key, fallback)

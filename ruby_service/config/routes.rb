@@ -23,6 +23,13 @@ Rails.application.routes.draw do
   end
   resources :watering_events, only: [:index]
   resources :crop_profiles, only: [:index, :show]
+  resources :nodes, only: [:index, :show] do
+    member do
+      patch :claim
+      patch :unclaim
+      post :publish_config
+    end
+  end
   resource :settings, only: [:show, :update]
 
   post "ingest/sensor_readings", to: "sensor_readings#ingest"

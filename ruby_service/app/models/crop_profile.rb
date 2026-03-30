@@ -7,12 +7,4 @@ class CropProfile < ApplicationRecord
   validates :max_pulse_runtime_sec, presence: true, numericality: { greater_than_or_equal_to: 0 }
   validates :daily_max_runtime_sec, presence: true, numericality: { greater_than_or_equal_to: 0 }
   validates :time_to_harvest_days, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true
-
-  def runtime_seconds
-    max_pulse_runtime_sec
-  end
-
-  def max_daily_runtime_seconds
-    daily_max_runtime_sec
-  end
 end

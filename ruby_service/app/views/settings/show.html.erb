@@ -20,15 +20,15 @@
       </div>
       <div class="field">
         <%= f.label :actuators_topic, "Actuators Topic" %>
-        <%= f.text_field :actuators_topic, placeholder: "greenhouse/zones/+/actuator_status" %>
+        <%= f.text_field :actuators_topic, placeholder: "greenhouse/zones/+/actuator/status" %>
       </div>
       <div class="field">
         <%= f.label :command_topic, "Command Topic" %>
-        <%= f.text_field :command_topic, placeholder: "greenhouse/irrigation/commands" %>
+        <%= f.text_field :command_topic, placeholder: "greenhouse/zones/{zone_id}/actuator/command" %>
       </div>
       <div class="field">
         <%= f.label :config_topic, "Config Topic" %>
-        <%= f.text_field :config_topic, placeholder: "greenhouse/config/current" %>
+        <%= f.text_field :config_topic, placeholder: "greenhouse/system/config/current" %>
       </div>
       <div class="field">
         <%= f.label :bluetooth_enabled, "Bluetooth Enabled" %>
