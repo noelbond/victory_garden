@@ -11,6 +11,15 @@ Python is the live watering controller and the shared functional core for the pr
 - Schedule retained `request_reading` commands after watering settles
 - Provide a simulation tool for the MQTT contract
 
+## Shared Contract Fixtures
+
+The canonical node payload contract lives in:
+
+- [`../contracts/README.md`](/Users/noel/coding/python/victory_garden/contracts/README.md)
+- [`../contracts/examples/node-state-v1.json`](/Users/noel/coding/python/victory_garden/contracts/examples/node-state-v1.json)
+
+Controller tests validate against those shared fixtures so firmware and backend stay aligned.
+
 ## Quick Start
 
 From [`python_tools/`](/Users/noel/coding/python/victory_garden/python_tools):
@@ -20,7 +29,12 @@ From [`python_tools/`](/Users/noel/coding/python/victory_garden/python_tools):
 - Run the simulator:
   - `.venv/bin/python -m tools.simulate_run`
 - Run the live controller loop:
-  - `.venv/bin/python -m tools.run_loop`
+  - `.venv/bin/python -m main`
+- Run the actuator service:
+  - `.venv/bin/python -m actuator_main`
+
+`tools.run_loop` remains as a compatibility wrapper, but `main` is the primary production entrypoint.
+`actuator_main` is the production entrypoint for the zone-scoped actuator daemon.
 
 Both tools expect a running MQTT broker. Override the broker with `--mqtt-host` and `--mqtt-port` if needed.
 
@@ -57,12 +71,39 @@ The Python controller consumes and publishes:
 |---|---|
 | `greenhouse/zones/{zone_id}/state` | node state payload with required fields and nullable optional telemetry |
 | `greenhouse/zones/{zone_id}/command` | retained `request_reading` command |
-| `greenhouse/run_loop/event` | watering decision summary |
-| `greenhouse/run_loop/skip` | skipped-decision summary |
+| `greenhouse/zones/{zone_id}/controller/event` | per-zone watering decision summary |
+| `greenhouse/zones/{zone_id}/controller/skip` | per-zone skipped-decision summary |
 | `greenhouse/zones/{zone_id}/controller/moisture_percent` | controller input moisture |
 | `greenhouse/zones/{zone_id}/controller/action` | `water` or `none` |
 | `greenhouse/zones/{zone_id}/controller/runtime_seconds_today` | cumulative runtime |
 | `greenhouse/zones/{zone_id}/controller/skip_reason` | cooldown or duplicate-read reason |
+| `greenhouse/zones/{zone_id}/actuator/command` | actuator commands published by Rails |
+| `greenhouse/zones/{zone_id}/actuator/status` | actuator status published by the actuator service |
+
+## Actuator Service
+
+The actuator daemon subscribes to `greenhouse/zones/+/actuator/command` and publishes
+`greenhouse/zones/{zone_id}/actuator/status`.
+
+Supported drivers:
+
+- `mock`
+  - default safe mode for development and packaging validation
+- `shell`
+  - runs `ACTUATOR_HOOK_COMMAND action zone_id runtime_seconds idempotency_key`
+
+Relevant env vars:
+
+- `ACTUATOR_DRIVER`
+- `ACTUATOR_HOOK_COMMAND`
+- `MQTT_HOST`
+- `MQTT_PORT`
+
+## Runtime Boundaries
+
+- The Python controller is the live decision engine for one or more configured zones on a Pi.
+- MQTT retained state is its working input, not the system-of-record for zone or node ownership.
+- Rails/Postgres remains authoritative for zone definitions, node claims, and historical records.
 
 ## Delayed Reread Behavior
 
@@ -79,4 +120,6 @@ If the zone has already reached `daily_max_runtime_sec`, the reread is not sched
 
 - The decision function remains deterministic and easy to test.
 - The controller uses the canonical `greenhouse/*` topic contract.
+- Incoming MQTT state is validated through `SensorReading` before any control logic touches it.
+- Empty retained clears are ignored cleanly.
 - The current seeded thresholds are `30` for tomato and `40` for basil, reflecting current normalized sensor policy informed by crop watering preference rather than a universal absolute soil standard.

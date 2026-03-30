@@ -1,0 +1,3 @@
+NODE_STATE_SCHEMA_VERSION = "node-state/v1"
+NODE_COMMAND_SCHEMA_VERSION = "node-command/v1"
+

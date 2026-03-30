@@ -1,0 +1,19 @@
+{
+  "schema_version": "node-state/v1",
+  "timestamp": "2026-03-18T23:13:56Z",
+  "zone_id": "zone1",
+  "node_id": "mkr1010-zone1",
+  "moisture_raw": 354,
+  "moisture_percent": 17.0,
+  "soil_temp_c": 26.45,
+  "battery_voltage": 2.56,
+  "battery_percent": 0,
+  "wifi_rssi": -54,
+  "uptime_seconds": 12,
+  "wake_count": 1,
+  "ip": "192.168.4.41",
+  "health": "degraded",
+  "last_error": "none",
+  "publish_reason": "scheduled"
+}
+

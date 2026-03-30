@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-03-18T23:13:56Z",
+  "zone_id": "zone1",
+  "node_id": "legacy-zone1",
+  "moisture_raw": 1820,
+  "moisture_percent": 28.5,
+  "rssi": -61
+}
+

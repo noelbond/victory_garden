@@ -12,6 +12,7 @@ def utcnow() -> datetime:
 class SensorReading(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    schema_version: Optional[str] = Field(default=None, max_length=50, examples=["node-state/v1"])
     node_id: str = Field(min_length=1, examples=["sensor-gh1-zone3"])
     zone_id: str = Field(min_length=1, examples=["zone3"])
 
@@ -49,7 +50,7 @@ class WaterCommand(BaseModel):
     command: HubCommand = Field(examples=[HubCommand.START_WATER])
     zone_id: str = Field(min_length=1, examples=["zone3"])
 
-    runtime_seconds: Optional[int] = Field(ge=0, le=3600, examples=[45])
+    runtime_seconds: Optional[int] = Field(default=None, ge=0, le=3600, examples=[45])
     reason: Optional[str] = Field(default=None, max_length=200, examples=["below_dry_threshold"])
 
     issued_at: datetime = Field(default_factory=utcnow)

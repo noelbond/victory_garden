@@ -40,6 +40,15 @@ class TestSensorReading:
         assert reading.battery_voltage is None
         assert reading.wifi_rssi is None
 
+    def test_sensor_reading_accepts_schema_version(self):
+        reading = SensorReading(
+            schema_version="node-state/v1",
+            node_id="sensor-1",
+            zone_id="z1",
+            moisture_raw=2000,
+        )
+        assert reading.schema_version == "node-state/v1"
+
     def test_sensor_reading_timestamp_auto_generated(self):
         reading1 = SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000)
         reading2 = SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000)

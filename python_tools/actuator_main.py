@@ -1,4 +1,4 @@
-from watering.controller import main
+from watering.actuator import main
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import json
 import paho.mqtt.client as mqtt
 
 from watering.config import load_crops, load_zones, validate_zone_crop_refs
+from watering.contracts import NODE_STATE_SCHEMA_VERSION
 from watering.decision import decide_watering
 from watering.schemas import SensorReading
 from watering.state import ZoneState
@@ -34,15 +35,15 @@ def publish_event(
         "runtime_seconds_today": total_today,
     }
 
-    client.publish("greenhouse/simulate/event", json.dumps(payload))
-    client.publish(f"greenhouse/zones/{zone_id}/moisture_percent", str(moisture))
-    client.publish(f"greenhouse/zones/{zone_id}/action", action)
-    client.publish(f"greenhouse/zones/{zone_id}/runtime_seconds_today", str(total_today))
+    client.publish(f"greenhouse/zones/{zone_id}/simulate/event", json.dumps(payload))
+    client.publish(f"greenhouse/zones/{zone_id}/simulate/moisture_percent", str(moisture))
+    client.publish(f"greenhouse/zones/{zone_id}/simulate/action", action)
+    client.publish(f"greenhouse/zones/{zone_id}/simulate/runtime_seconds_today", str(total_today))
     client.publish(
         f"greenhouse/zones/{zone_id}/state",
         json.dumps(
             {
-                "schema_version": "node-state/v1",
+                "schema_version": NODE_STATE_SCHEMA_VERSION,
                 "timestamp": now.isoformat(),
                 "zone_id": zone_id,
                 "node_id": f"sim-{zone_id}",

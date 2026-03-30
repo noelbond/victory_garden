@@ -1,0 +1,19 @@
+{
+  "schema_version": "node-state/v1",
+  "timestamp": "2026-03-18T23:13:56Z",
+  "zone_id": "zone1",
+  "node_id": "optional-zone1",
+  "moisture_raw": 1800,
+  "moisture_percent": 32.0,
+  "soil_temp_c": null,
+  "battery_voltage": null,
+  "battery_percent": null,
+  "wifi_rssi": null,
+  "uptime_seconds": null,
+  "wake_count": null,
+  "ip": null,
+  "health": null,
+  "last_error": null,
+  "publish_reason": "scheduled"
+}
+
