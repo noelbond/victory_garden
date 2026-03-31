@@ -1,0 +1,80 @@
+flowchart TD
+    subgraph HW["Hardware"]
+        N1["Sensor Node A"]
+        N2["Sensor Node B"]
+    end
+
+    subgraph BROKER["MQTT Broker (Mosquitto)"]
+        T_STATE["greenhouse/zones/{id}/state\n(retained)"]
+        T_CMD["greenhouse/zones/{id}/command\n(retained)"]
+        T_ACT_STATUS["greenhouse/zones/{id}/actuator/status"]
+        T_ACT_CMD["greenhouse/zones/{id}/actuator/command"]
+        T_CTRL["greenhouse/zones/{id}/controller/event"]
+        T_SYS_CFG["greenhouse/system/config/current\n(retained)"]
+        T_CFG["greenhouse/nodes/{id}/config\n(retained)"]
+        T_ACK["greenhouse/nodes/{id}/config_ack"]
+    end
+
+    subgraph ACTUATOR["External Actuator Service"]
+        ACT["Valve / Pump Controller"]
+    end
+
+    subgraph RAILS["Rails Service"]
+        CONSUMER["MQTT Consumer"]
+        INGESTOR["SensorIngestor"]
+        CTRL_INGEST["ControllerEventIngestor"]
+        CFG_ACK["NodeConfigAckIngestor"]
+        JOBS["Job Queue\n(Solid Queue)"]
+        WEB["Web UI / API"]
+    end
+
+    subgraph DB["PostgreSQL"]
+        DB_NODES[("Nodes")]
+        DB_ZONES[("Zones + CropProfiles")]
+        DB_READINGS[("SensorReadings")]
+        DB_EVENTS[("WateringEvents")]
+    end
+
+    subgraph PYTHON["Python Controller"]
+        CTRL["Control Loop\n(controller.py)"]
+    end
+
+    %% Sensor → state topic
+    N1 -->|"state payload"| T_STATE
+    N2 -->|"state payload"| T_STATE
+
+    %% Rails consumes state
+    T_STATE --> CONSUMER
+    CONSUMER --> INGESTOR
+    INGESTOR -->|"upsert"| DB_NODES
+    INGESTOR -->|"create"| DB_READINGS
+
+    %% Python consumes state + policy
+    T_STATE --> CTRL
+    T_SYS_CFG --> CTRL
+    CTRL -->|"automatic start_watering"| T_ACT_CMD
+    CTRL -->|"controller event"| T_CTRL
+    T_CTRL --> CONSUMER
+    CONSUMER --> CTRL_INGEST
+    CTRL_INGEST -->|"create"| DB_EVENTS
+    T_CMD -->|"wake & read"| N1
+    T_CMD -->|"wake & read"| N2
+
+    %% Actuator + config publishing
+    JOBS -->|"manual CommandPublishJob"| T_ACT_CMD
+    T_ACT_CMD --> ACT
+    ACT -->|"completion/fault status"| T_ACT_STATUS
+    T_ACT_STATUS --> CONSUMER
+    JOBS -->|"ConfigPublishJob"| T_SYS_CFG
+    JOBS -->|"PublishNodeConfigJob"| T_CFG
+    T_CFG -->|"apply config"| N1
+    T_CFG -->|"apply config"| N2
+    N1 -->|"config ack"| T_ACK
+    N2 -->|"config ack"| T_ACK
+    T_ACK --> CONSUMER
+    CONSUMER --> CFG_ACK
+    CFG_ACK -->|"update config_status"| DB_NODES
+
+    %% Web UI
+    WEB -->|"read/write"| DB_ZONES
+    WEB -->|"manual trigger"| JOBS

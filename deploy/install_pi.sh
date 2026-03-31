@@ -199,11 +199,12 @@ ensure_python_controller_env() {
 }
 
 ensure_env_file() {
-  local db_password secret_key_base admin_api_token master_key
+  local db_password secret_key_base admin_api_token master_key mqtt_password
   db_password="$(generated_secret)"
   secret_key_base="$(generated_secret)"
   admin_api_token="$(generated_secret)"
   master_key="$(read_master_key)"
+  mqtt_password="$(generated_secret)"
 
   if [[ ! -f "$ENV_FILE" ]]; then
     cat > "$ENV_FILE" <<EOF
@@ -216,6 +217,8 @@ APP_HOST=localhost
 PORT=3000
 MQTT_HOST=127.0.0.1
 MQTT_PORT=1883
+MQTT_USERNAME=victory_garden
+MQTT_PASSWORD=$mqtt_password
 ACTUATOR_DRIVER=mock
 ACTUATOR_HOOK_COMMAND=
 SOLID_QUEUE_IN_PUMA=1
@@ -226,6 +229,9 @@ RAILS_MASTER_KEY=$master_key
 EOF
     chmod 600 "$ENV_FILE"
   fi
+
+  grep -q '^MQTT_USERNAME=' "$ENV_FILE" || echo 'MQTT_USERNAME=victory_garden' >> "$ENV_FILE"
+  grep -q '^MQTT_PASSWORD=' "$ENV_FILE" || echo "MQTT_PASSWORD=$mqtt_password" >> "$ENV_FILE"
 }
 
 load_env_file() {
@@ -233,6 +239,21 @@ load_env_file() {
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
+}
+
+ensure_mosquitto_auth() {
+  load_env_file
+
+  install -d -m 755 /etc/mosquitto/conf.d
+  install -d -m 700 /etc/mosquitto/passwd
+  mosquitto_passwd -b -c /etc/mosquitto/passwd/victory_garden "$MQTT_USERNAME" "$MQTT_PASSWORD"
+  chmod 600 /etc/mosquitto/passwd/victory_garden
+
+  cat > /etc/mosquitto/conf.d/victory-garden-auth.conf <<EOF
+listener 1883 0.0.0.0
+allow_anonymous false
+password_file /etc/mosquitto/passwd/victory_garden
+EOF
 }
 
 ensure_postgres() {
@@ -296,6 +317,8 @@ prepare_rails_db() {
     export PORT='${PORT}'
     export MQTT_HOST='${MQTT_HOST}'
     export MQTT_PORT='${MQTT_PORT}'
+    export MQTT_USERNAME='${MQTT_USERNAME}'
+    export MQTT_PASSWORD='${MQTT_PASSWORD}'
     export SOLID_QUEUE_IN_PUMA='${SOLID_QUEUE_IN_PUMA}'
     export SECRET_KEY_BASE='${SECRET_KEY_BASE}'
     export RUBY_SERVICE_DATABASE_PASSWORD='${RUBY_SERVICE_DATABASE_PASSWORD}'
@@ -320,6 +343,7 @@ Requires=mosquitto.service
 Type=simple
 User=$RUN_USER
 WorkingDirectory=$PYTHON_TOOLS_DIR
+EnvironmentFile=$ENV_FILE
 ExecStart=$PYTHON_VENV_DIR/bin/python -m main
 Restart=always
 RestartSec=5
@@ -441,6 +465,7 @@ if release_install; then
 fi
 ensure_python_controller_env
 ensure_env_file
+ensure_mosquitto_auth
 ensure_postgres
 ensure_rails_bundle
 prepare_rails_db

@@ -1,0 +1,139 @@
+classDiagram
+    direction TB
+
+    %% ── Models ──────────────────────────────────────────────
+    class CropProfile {
+        +String crop_id
+        +String crop_name
+        +Decimal dry_threshold
+        +Integer max_pulse_runtime_sec
+        +Integer daily_max_runtime_sec
+        +String climate_preference
+        +Integer time_to_harvest_days
+        +Boolean active
+    }
+
+    class Zone {
+        +String zone_id
+        +String name
+        +Boolean active
+        +Hash allowed_hours
+    }
+
+    class Node {
+        +String node_id
+        +Boolean provisioned
+        +String config_status
+        +Hash desired_config
+        +Hash applied_config
+        +claimed() Boolean
+        +unclaimed() Boolean
+    }
+
+    class SensorReading {
+        +Integer moisture_raw
+        +Float moisture_percent
+        +Float soil_temp_c
+        +Float battery_voltage
+        +Integer battery_percent
+        +DateTime recorded_at
+    }
+
+    class WateringEvent {
+        +String command
+        +Integer runtime_seconds
+        +String reason
+        +String status
+        +String idempotency_key
+        +DateTime issued_at
+    }
+
+    %% ── Services ────────────────────────────────────────────
+    class SensorIngestor {
+        -payload Hash
+        +call() SensorReading|Node
+        -upsert_node!() Node
+        -resolve_zone_for(node) Zone
+    }
+
+    class ControllerEventIngestor {
+        -payload Hash
+        +call() WateringEvent|nil
+    }
+
+    class ActuatorStatusIngestor {
+        -payload Hash
+        +call()
+        -update_watering_event_status()
+    }
+
+    class NodeConfigAckIngestor {
+        -payload Hash
+        +call()
+    }
+
+    %% ── Jobs ────────────────────────────────────────────────
+    class CommandPublishJob {
+        +perform(command Hash)
+    }
+
+    class ControllerEventIngestJob {
+        +perform(payload Hash)
+    }
+
+    class PublishNodeConfigJob {
+        +perform(node_id Integer)
+        -build_payload(node) Hash
+    }
+
+    class ConfigPublishJob {
+        +perform()
+        -crop_payload(crop) Hash
+        -zone_payload(zone) Hash
+    }
+
+    %% ── Infrastructure ──────────────────────────────────────
+    class MqttClient {
+        +publish_command(command)
+        +request_reading(zone_id, command_id)
+        +publish_node_config(node_id, payload)
+        +publish_config(payload)
+        -publish(topic, payload, retain)
+        -mqtt_options() Hash
+    }
+
+    class MqttConsumer {
+        +run()
+        -dispatch(topic, payload)
+    }
+
+    class PythonController {
+        +consume state + system config
+        +evaluate policy
+        +publish actuator command
+        +publish controller event
+    }
+
+    %% ── Relationships ───────────────────────────────────────
+    Zone           "1" --> "1"   CropProfile         : belongs_to
+    Zone           "1" --> "0..*" Node               : has_many
+    Zone           "1" --> "0..*" SensorReading       : has_many
+    Zone           "1" --> "0..*" WateringEvent       : has_many
+
+    SensorIngestor     ..>  Node                     : upserts
+    SensorIngestor     ..>  SensorReading            : creates
+
+    ControllerEventIngestor ..> WateringEvent        : creates
+    ControllerEventIngestJob ..> ControllerEventIngestor : calls
+    PythonController  ..>  MqttClient               : mirrors topic contract
+    PythonController  ..>  WateringEvent            : emits idempotency for
+
+    PublishNodeConfigJob ..> MqttClient              : calls
+    CommandPublishJob    ..> MqttClient              : calls
+    ConfigPublishJob     ..> MqttClient              : calls
+    ConfigPublishJob     ..> PublishNodeConfigJob    : enqueues
+
+    MqttConsumer ..> SensorIngestor          : routes to
+    MqttConsumer ..> ControllerEventIngestJob : routes to
+    MqttConsumer ..> ActuatorStatusIngestor  : routes to
+    MqttConsumer ..> NodeConfigAckIngestor   : routes to

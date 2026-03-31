@@ -1,0 +1,41 @@
+sequenceDiagram
+    participant Node as Sensor Node
+    participant MQTT as Mosquitto
+    participant Py as Python Controller
+    participant MC as MQTT Consumer
+    participant SI as SensorIngestor
+    participant DB as PostgreSQL
+    participant JQ as Job Queue
+    participant CEI as ControllerEventIngestor
+    participant Act as Actuator Service
+
+    Note over Node: Wakes from deep sleep
+    Node->>Node: Read moisture, battery, temp
+    Node->>MQTT: publish greenhouse/zones/{zone_id}/state<br/>(retained, JSON state payload)
+    MQTT-->>Py: retained state delivered
+    MC->>MQTT: subscribed — receives message
+    MC->>SI: SensorIngestor.new(payload).call
+
+    SI->>DB: Node.find_or_initialize_by(node_id)<br/>node.save!
+    SI->>DB: node.zone (authoritative claim)
+    alt Zone not found
+        SI-->>MC: warn + return node (no persistence)
+    end
+
+    SI->>DB: SensorReading.create!
+
+    Py->>MQTT: consume greenhouse/system/config/current<br/>(retained policy snapshot)
+    Py->>Py: evaluate allowed_hours + cooldown + thresholds
+    alt Automatic watering skipped
+        Py->>MQTT: publish controller/skip
+    else Automatic watering needed
+        Py->>MQTT: publish actuator/command
+        Py->>MQTT: publish controller/event<br/>(includes idempotency_key)
+        MC->>CEI: ControllerEventIngestor.new(payload).call
+        CEI->>DB: WateringEvent.create!(status: queued)
+    end
+
+    MQTT->>Act: actuator command
+    Act->>MQTT: actuator status
+
+    Note over Node: Returns to deep sleep<br/>until next wake interval

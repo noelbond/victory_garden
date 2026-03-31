@@ -13,13 +13,17 @@ Current canonical payload versions:
 The example payloads in `contracts/examples/` are the shared reference fixtures for tests, docs, and live debugging.
 If the firmware payload changes, update these fixtures first and then update the code that consumes them.
 
+For the full topic-level transport contract, retain rules, and end-to-end examples, see:
+
+- [`../docs/mqtt.md`](/Users/noel/coding/python/victory_garden/docs/mqtt.md)
+
 Topic classes:
 
 - `greenhouse/zones/{zone_id}/state`: retained node state
 - `greenhouse/zones/{zone_id}/command`: retained node commands such as `request_reading`
 - `greenhouse/zones/{zone_id}/command_ack`: node command acknowledgements
-- `greenhouse/zones/{zone_id}/actuator/command`: actuator commands published by Rails
+- `greenhouse/zones/{zone_id}/actuator/command`: actuator commands published by the Python controller for automatic runs and by Rails for manual operator actions
 - `greenhouse/zones/{zone_id}/actuator/status`: actuator completion/fault reports
 - `greenhouse/nodes/{node_id}/config`: retained node configuration
 - `greenhouse/nodes/{node_id}/config_ack`: node config acknowledgements
-- `greenhouse/system/config/current`: published global crop/zone snapshot
+- `greenhouse/system/config/current`: retained global crop/zone snapshot consumed by the Python controller

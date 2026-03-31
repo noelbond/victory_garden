@@ -1,0 +1,43 @@
+graph TB
+    subgraph Nodes["Sensor Nodes (Arduino MKR / Pico W)"]
+        direction TB
+        SENSOR["Moisture Sensor"]
+        MCU["Node Firmware\n(MQTT, config, sleep)"]
+        BATT["Node Power"]
+        SENSOR --> MCU
+        BATT --> MCU
+    end
+
+    subgraph Pi["Raspberry Pi (Local Hub)"]
+        direction TB
+        MQTT["Mosquitto\nMQTT Broker :1883"]
+
+        subgraph Rails["Ruby on Rails :3000"]
+            PUMA["Puma Web Server"]
+            CONSUMER["MQTT Consumer\n(bin/mqtt_consumer)"]
+            QUEUE["Solid Queue\n(background jobs)"]
+            PUMA --- CONSUMER
+            PUMA --- QUEUE
+        end
+
+        PYTHON["Python Controller\n(telemetry / reread)"]
+        ACTUATOR["Python Actuator\nDaemon"]
+        PG[("PostgreSQL\nDatabase")]
+
+        MQTT <--> Rails
+        MQTT <--> PYTHON
+        MQTT <--> ACTUATOR
+        Rails <--> PG
+    end
+
+    BROWSER["Web Browser\n(Local UI)"]
+
+    MCU -->|"WiFi: state payload\ngreenhouse/zones/{id}/state"| MQTT
+    MQTT -->|"node command / config\ngreenhouse/zones/{id}/command\ngreenhouse/nodes/{id}/config"| MCU
+    Rails -->|"actuator command\ngreenhouse/zones/{id}/actuator/command"| MQTT
+    MQTT -->|"actuator status\ngreenhouse/zones/{id}/actuator/status"| Rails
+    BROWSER -->|"HTTP"| PUMA
+
+    style Nodes fill:#e8f4f8,stroke:#2196F3
+    style Pi fill:#f1f8e9,stroke:#4CAF50
+    style Rails fill:#fff9e6,stroke:#FF9800

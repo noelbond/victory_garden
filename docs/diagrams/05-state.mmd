@@ -1,0 +1,51 @@
+stateDiagram-v2
+    direction TB
+
+    [*] --> Unprovisioned : Node first boots\n(no WiFi / MQTT creds)
+
+    state "Provisioning Mode" as PROV {
+        direction LR
+        [*] --> HostingAP : No stored config
+        HostingAP : Hosting captive portal\n(AP mode)
+        HostingAP --> ConfigSaved : User submits\nWiFi + zone credentials
+        ConfigSaved : Credentials written\nto EEPROM
+        ConfigSaved --> [*]
+    }
+
+    Unprovisioned --> PROV
+    PROV --> Operational : Reboot with stored config
+
+    state "Operational" as Operational {
+        direction TB
+
+        state "Node Config Sync" as CFG {
+            [*] --> Unassigned
+
+            Unassigned : config_status = nil\nNo zone claimed
+            Pending    : config_status = pending\nConfig published to MQTT
+            Applied    : config_status = applied\nNode ACK received
+            Error      : config_status = error\nApply failed on node
+
+            Unassigned --> Pending  : Zone claimed\n(PublishNodeConfigJob)
+            Pending    --> Applied  : Node ACK = applied
+            Pending    --> Error    : Node ACK = error\nor job retries exhausted
+            Error      --> Pending  : Retry publish
+            Applied    --> Pending  : Config changed\n(re-publish)
+            Pending    --> Unassigned : Zone unclaimed
+            Applied    --> Unassigned : Zone unclaimed
+            Error      --> Unassigned : Zone unclaimed
+        }
+
+        state "Watering Event Lifecycle" as WE {
+            [*]      --> Queued
+
+            Queued    : WateringEvent created\nJob not yet executed
+            Sent      : Command published\nto MQTT broker
+            Completed : Actuator reported\nback (done)
+            Failed    : Job retries\nexhausted or error
+
+            Queued    --> Sent      : CommandPublishJob executes
+            Sent      --> Completed : ActuatorStatus ingest\n(state = done)
+            Sent      --> Failed    : ActuatorStatus ingest\n(state = fault)\nor timeout
+        }
+    }

@@ -5,6 +5,14 @@ export PAGER=cat
 APP_DB="ruby_service_production"
 EVENT_KEY="zone1-actuator-validation-001"
 
+MQTT_ARGS=(-h 127.0.0.1)
+if [[ -n "${MQTT_USERNAME:-}" ]]; then
+  MQTT_ARGS+=(-u "$MQTT_USERNAME")
+fi
+if [[ -n "${MQTT_PASSWORD:-}" ]]; then
+  MQTT_ARGS+=(-P "$MQTT_PASSWORD")
+fi
+
 zone_pk="$(sudo -u postgres psql --pset pager=off -d "$APP_DB" -Atc "select id from zones where zone_id='zone1'")"
 if [[ -z "$zone_pk" ]]; then
   echo "zone1 missing"
@@ -20,7 +28,7 @@ values ($zone_pk, 'start_watering', 2, 'actuator_validation', now(), '$EVENT_KEY
 
 before_status="$(sudo -u postgres psql --pset pager=off -d "$APP_DB" -Atc "select count(*) from actuator_statuses where idempotency_key = '$EVENT_KEY'")"
 
-mosquitto_pub -h 127.0.0.1 -t greenhouse/zones/zone1/actuator/command -m "{\"command\":\"start_watering\",\"zone_id\":\"zone1\",\"runtime_seconds\":2,\"reason\":\"actuator_validation\",\"idempotency_key\":\"$EVENT_KEY\"}"
+mosquitto_pub "${MQTT_ARGS[@]}" -t greenhouse/zones/zone1/actuator/command -m "{\"command\":\"start_watering\",\"zone_id\":\"zone1\",\"runtime_seconds\":2,\"reason\":\"actuator_validation\",\"idempotency_key\":\"$EVENT_KEY\"}"
 
 sleep 4
 

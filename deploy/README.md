@@ -92,7 +92,8 @@ Generated config:
 Web endpoints after install:
 
 - app: `http://<pi-ip>:3000`
-- health: `http://<pi-ip>:3000/up`
+- liveness: `http://<pi-ip>:3000/up`
+- operator health: `http://<pi-ip>:3000/health`
 
 Verify after install:
 
@@ -105,7 +106,8 @@ sudo journalctl -u greenhouse.service -n 50 --no-pager
 sudo journalctl -u victory-garden-actuator.service -n 50 --no-pager
 sudo journalctl -u victory-garden-web.service -n 50 --no-pager
 sudo journalctl -u victory-garden-mqtt-consumer.service -n 50 --no-pager
-mosquitto_sub -h 127.0.0.1 -t 'greenhouse/zones/+/state' -v
+source /etc/victory_garden.env
+mosquitto_sub -h 127.0.0.1 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/state' -v
 ```
 
 Notes:
