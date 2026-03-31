@@ -70,6 +70,8 @@ def main() -> None:
     parser.add_argument("--zone-id", help="Zone to simulate (defaults to first zone).")
     parser.add_argument("--mqtt-host", default="127.0.0.1", help="MQTT broker host.")
     parser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT broker port.")
+    parser.add_argument("--mqtt-username", default=None, help="Optional MQTT username.")
+    parser.add_argument("--mqtt-password", default=None, help="Optional MQTT password.")
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -93,6 +95,8 @@ def main() -> None:
     states = load_state_store(state_path)
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    if args.mqtt_username:
+        client.username_pw_set(args.mqtt_username, args.mqtt_password or None)
     client.connect(args.mqtt_host, args.mqtt_port, 60)
     client.loop_start()
 

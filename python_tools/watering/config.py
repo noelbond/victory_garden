@@ -26,6 +26,27 @@ class ZonesConfig(BaseModel):
     zones: List[ZoneConfig]
 
 
+class AllowedHoursConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_hour: int = Field(ge=0, le=23)
+    end_hour: int = Field(ge=0, le=23)
+
+
+class SystemZoneConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    zone_id: str = Field(min_length=1, examples=["zone1"])
+    crop_id: str = Field(min_length=1, examples=["tomato"])
+    node_ids: List[str] = Field(default_factory=list)
+    active: bool = True
+    allowed_hours: AllowedHoursConfig | None = None
+
+
+class SystemConfigPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    crops: List[CropProfile]
+    zones: List[SystemZoneConfig]
+
+
 def _load_yaml(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -58,3 +79,16 @@ def validate_zone_crop_refs(
     if missing:
         missing_str = ", ".join(missing)
         raise ValueError(f"zones.yaml references unknown crop_id(s): {missing_str}")
+
+
+def load_system_config_payload(payload: dict) -> tuple[Dict[str, CropProfile], Dict[str, SystemZoneConfig]]:
+    config = SystemConfigPayload.model_validate(payload)
+    crops = {crop.crop_id: crop for crop in config.crops}
+    zones = {zone.zone_id: zone for zone in config.zones}
+
+    missing = sorted({zone.crop_id for zone in zones.values()} - set(crops.keys()))
+    if missing:
+        missing_str = ", ".join(missing)
+        raise ValueError(f"system config references unknown crop_id(s): {missing_str}")
+
+    return crops, zones

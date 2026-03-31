@@ -16,9 +16,13 @@ def load_state_store(path: Path) -> Dict[str, ZoneState]:
     return {zone_id: ZoneState.model_validate(payload) for zone_id, payload in data.items()}
 
 
-def save_state_store(path: Path, states: Dict[str, ZoneState]) -> None:
+def serialize_state_store(states: Dict[str, ZoneState]) -> str:
     payload = {zone_id: state.model_dump(mode="json") for zone_id, state in states.items()}
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def save_state_store(path: Path, states: Dict[str, ZoneState]) -> None:
+    path.write_text(serialize_state_store(states))
 
 
 def get_zone_state(states: Dict[str, ZoneState], zone_id: str, default: ZoneState) -> ZoneState:

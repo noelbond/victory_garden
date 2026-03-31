@@ -14,6 +14,7 @@ from typing import Protocol
 import paho.mqtt.client as mqtt
 
 from watering.schemas import ActuatorState, ActuatorStatus, HubCommand, WaterCommand
+from watering.structured_logging import log_event
 
 
 def utcnow() -> datetime:
@@ -27,25 +28,35 @@ def parse_actuator_command(topic: str, payload_bytes: bytes) -> WaterCommand | N
     try:
         payload = json.loads(payload_bytes.decode("utf-8"))
     except Exception as exc:
-        print(f"Failed to parse actuator command on {topic}: {exc}", flush=True)
+        log_event("actuator", "command_invalid", level="warning", topic=topic, error=str(exc))
         return None
 
     if not isinstance(payload, dict):
-        print(f"Failed to parse actuator command on {topic}: expected JSON object payload", flush=True)
+        log_event(
+            "actuator",
+            "command_invalid",
+            level="warning",
+            topic=topic,
+            reason="expected_json_object",
+        )
         return None
 
     try:
         command = WaterCommand.model_validate(payload)
     except Exception as exc:
-        print(f"Failed to validate actuator command on {topic}: {exc}", flush=True)
+        log_event("actuator", "command_invalid", level="warning", topic=topic, error=str(exc))
         return None
 
     topic_zone_id = zone_id_from_topic(topic)
     if topic_zone_id and topic_zone_id != command.zone_id:
-        print(
-            f"Failed to validate actuator command on {topic}: "
-            f"payload zone_id={command.zone_id} does not match topic zone_id={topic_zone_id}",
-            flush=True,
+        log_event(
+            "actuator",
+            "command_invalid",
+            level="warning",
+            topic=topic,
+            payload_zone_id=command.zone_id,
+            topic_zone_id=topic_zone_id,
+            reason="zone_mismatch",
         )
         return None
 
@@ -130,12 +141,21 @@ class ActuatorService:
         self.handle_command(command)
 
     def handle_command(self, command: WaterCommand) -> None:
+        log_event(
+            "actuator",
+            "command_received",
+            zone_id=command.zone_id,
+            command=command.command,
+            runtime_seconds=command.runtime_seconds,
+            idempotency_key=command.idempotency_key,
+        )
         if command.command == HubCommand.START_WATER:
             self._start(command)
         elif command.command == HubCommand.STOP_WATER:
             self._stop(command)
 
     def shutdown(self) -> None:
+        log_event("actuator", "shutdown")
         with self._lock:
             runs = list(self._active_runs.values())
             self._active_runs.clear()
@@ -149,11 +169,29 @@ class ActuatorService:
     def _start(self, command: WaterCommand) -> None:
         runtime_seconds = int(command.runtime_seconds or 0)
         if runtime_seconds <= 0:
+            log_event(
+                "actuator",
+                "command_rejected",
+                level="warning",
+                zone_id=command.zone_id,
+                command=command.command,
+                idempotency_key=command.idempotency_key,
+                reason="invalid_runtime",
+            )
             self._publish_fault(command.zone_id, command.idempotency_key, "INVALID_RUNTIME", "runtime_seconds must be > 0")
             return
 
         with self._lock:
             if command.zone_id in self._active_runs:
+                log_event(
+                    "actuator",
+                    "command_rejected",
+                    level="warning",
+                    zone_id=command.zone_id,
+                    command=command.command,
+                    idempotency_key=command.idempotency_key,
+                    reason="already_running",
+                )
                 self._publish_fault(
                     command.zone_id,
                     command.idempotency_key,
@@ -171,6 +209,15 @@ class ActuatorService:
             try:
                 self._driver.start(command.zone_id, runtime_seconds, command.idempotency_key)
             except Exception as exc:
+                log_event(
+                    "actuator",
+                    "driver_error",
+                    level="error",
+                    zone_id=command.zone_id,
+                    command=command.command,
+                    idempotency_key=command.idempotency_key,
+                    error=str(exc),
+                )
                 self._publish_fault(command.zone_id, command.idempotency_key, "START_FAILED", str(exc))
                 return
 
@@ -190,6 +237,13 @@ class ActuatorService:
             self._active_runs[command.zone_id] = active_run
             timer.start()
 
+        log_event(
+            "actuator",
+            "run_started",
+            zone_id=command.zone_id,
+            runtime_seconds=runtime_seconds,
+            idempotency_key=command.idempotency_key,
+        )
         self._publish_status(
             zone_id=command.zone_id,
             state=ActuatorState.RUNNING,
@@ -202,6 +256,13 @@ class ActuatorService:
             active_run = self._active_runs.pop(command.zone_id, None)
 
         if active_run is None:
+            log_event(
+                "actuator",
+                "run_stop_without_active_run",
+                level="warning",
+                zone_id=command.zone_id,
+                idempotency_key=command.idempotency_key,
+            )
             self._publish_status(
                 zone_id=command.zone_id,
                 state=ActuatorState.STOPPED,
@@ -216,9 +277,25 @@ class ActuatorService:
         try:
             self._driver.stop(command.zone_id, active_run.idempotency_key)
         except Exception as exc:
+            log_event(
+                "actuator",
+                "driver_error",
+                level="error",
+                zone_id=command.zone_id,
+                command=command.command,
+                idempotency_key=command.idempotency_key,
+                error=str(exc),
+            )
             self._publish_fault(command.zone_id, command.idempotency_key, "STOP_FAILED", str(exc))
             return
 
+        log_event(
+            "actuator",
+            "run_stopped",
+            zone_id=command.zone_id,
+            idempotency_key=active_run.idempotency_key,
+            actual_runtime_seconds=actual_runtime,
+        )
         self._publish_status(
             zone_id=command.zone_id,
             state=ActuatorState.STOPPED,
@@ -236,9 +313,25 @@ class ActuatorService:
         try:
             self._driver.stop(zone_id, idempotency_key)
         except Exception as exc:
+            log_event(
+                "actuator",
+                "driver_error",
+                level="error",
+                zone_id=zone_id,
+                command="complete_run",
+                idempotency_key=idempotency_key,
+                error=str(exc),
+            )
             self._publish_fault(zone_id, idempotency_key, "COMPLETE_STOP_FAILED", str(exc))
             return
 
+        log_event(
+            "actuator",
+            "run_completed",
+            zone_id=zone_id,
+            idempotency_key=idempotency_key,
+            actual_runtime_seconds=active_run.runtime_seconds,
+        )
         self._publish_status(
             zone_id=zone_id,
             state=ActuatorState.COMPLETED,
@@ -278,6 +371,13 @@ class ActuatorService:
         )
         topic = self._status_topic_template.replace("{zone_id}", zone_id)
         self._client.publish(topic, status.model_dump_json())
+        log_event(
+            "actuator",
+            "status_published",
+            zone_id=zone_id,
+            topic=topic,
+            status=status,
+        )
 
 
 def build_driver() -> ActuatorDriver:
@@ -293,6 +393,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Victory Garden actuator service.")
     parser.add_argument("--mqtt-host", default=os.environ.get("MQTT_HOST", "127.0.0.1"))
     parser.add_argument("--mqtt-port", type=int, default=int(os.environ.get("MQTT_PORT", "1883")))
+    parser.add_argument("--mqtt-username", default=os.environ.get("MQTT_USERNAME"))
+    parser.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
     parser.add_argument(
         "--command-topic",
         default=os.environ.get("MQTT_ACTUATOR_COMMAND_TOPIC", "greenhouse/zones/+/actuator/command"),
@@ -308,6 +410,8 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    if args.mqtt_username:
+        client.username_pw_set(args.mqtt_username, args.mqtt_password or None)
     service = ActuatorService(
         client=client,
         driver=build_driver(),
@@ -317,11 +421,33 @@ def main(argv: list[str] | None = None) -> None:
     def on_message(_client: mqtt.Client, _userdata, msg: mqtt.MQTTMessage) -> None:
         service.handle_message(msg.topic, msg.payload)
 
+    def on_connect(client: mqtt.Client, _userdata, _flags, reason_code, _properties=None) -> None:
+        client.subscribe(args.command_topic)
+        log_event(
+            "actuator",
+            "mqtt_connected",
+            mqtt_host=args.mqtt_host,
+            mqtt_port=args.mqtt_port,
+            reason_code=int(reason_code),
+            subscribed_topic=args.command_topic,
+        )
+
+    def on_disconnect(_client: mqtt.Client, _userdata, disconnect_flags, reason_code, _properties=None) -> None:
+        log_event(
+            "actuator",
+            "mqtt_disconnected",
+            level="warning",
+            mqtt_host=args.mqtt_host,
+            mqtt_port=args.mqtt_port,
+            reason_code=int(reason_code),
+            disconnect_flags=str(disconnect_flags),
+        )
+
     client.on_message = on_message
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
     client.connect(args.mqtt_host, args.mqtt_port, 60)
-    client.subscribe(args.command_topic)
     client.loop_start()
-    print(f"Actuator subscribed to {args.command_topic}", flush=True)
 
     try:
         while True:
