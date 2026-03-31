@@ -16,28 +16,36 @@ Current scope:
 - handles retained `node-config/v1` payloads
 - publishes `node-command-ack/v1`
 - publishes `node-config-ack/v1`
+- syncs UTC time over SNTP after Wi-Fi is up
 
 Current limitations:
 - no provisioning AP yet
 - no battery or soil temperature driver yet
-- timestamps are uptime-based placeholders until RTC/NTP is added
 - MQTT broker host must currently be an IPv4 address, not a hostname
 - moisture reading uses a simple ADC input on the configured GPIO
+- dry/wet reference calibration is not implemented yet; current `moisture_percent` is ADC-derived with optional inversion
 
 Build prerequisites:
 - `arm-none-eabi-gcc`
 - `cmake`
 - `ninja`
-- Pico SDK checked out at `firmware/pico-sdk`
+- Pico SDK available at `firmware/pico-sdk`
+
+If you cloned the repo without submodules, initialize the SDK first:
+
+```bash
+git submodule update --init --recursive
+```
 
 Suggested environment:
 
 ```bash
-export PICO_SDK_PATH=/Users/noel/coding/python/victory_garden/firmware/pico-sdk
-export PATH="/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/bin:$PATH"
+export PICO_SDK_PATH="$PWD/firmware/pico-sdk"
 cmake -S firmware/pico_w_sensor_node -B firmware/pico_w_sensor_node/build -G Ninja -DPICO_BOARD=pico_w
 cmake --build firmware/pico_w_sensor_node/build
 ```
+
+Make sure `arm-none-eabi-gcc` is already on your `PATH` before running the build.
 
 The build produces:
 - `firmware/pico_w_sensor_node/build/pico_w_sensor_node.uf2`
@@ -46,8 +54,8 @@ The build produces:
 Runtime logging:
 - `pico_w_sensor_node` is configured for USB CDC logging
 - use:
-  - `screen /dev/cu.usbmodem101 115200`
-  - or the current Pico USB modem path if it changes
+  - `screen /dev/cu.usbmodemXXXX 115200`
+  - replacing the device path with the Pico's current USB modem path on your machine
 - the separate `serial_test` target also keeps USB stdio enabled for minimal USB-only checks
 
 Network architecture:
@@ -60,9 +68,26 @@ Network architecture:
   - larger pbuf pool and MQTT output ring buffer
   - `NO_SYS=1` for the SDK background-mode integration
 
-Default runtime values currently live in `src/config.h` and should be changed
+Default runtime values live in `src/config.h`, but real local credentials should
+go in an untracked `src/config_local.h` copied from `src/config_local.h.example`
 before flashing:
 - Wi-Fi SSID/password
 - MQTT host/port
+- NTP server
 - node ID
 - zone ID
+- moisture ADC GPIO
+- whether `moisture_percent` should be inverted
+
+Example:
+
+```bash
+cp firmware/pico_w_sensor_node/src/config_local.h.example \
+  firmware/pico_w_sensor_node/src/config_local.h
+```
+
+Then edit `src/config_local.h` with your real Wi-Fi and broker settings.
+
+For the current calibration story, see:
+
+- [`../../docs/calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)

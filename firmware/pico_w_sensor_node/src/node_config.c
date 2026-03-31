@@ -37,6 +37,59 @@ static void set_error(char *error, size_t error_size, const char *message) {
     }
 }
 
+static bool decode_json_string(const char *start, char *out, size_t out_size, const char **end_out) {
+    size_t out_len = 0;
+    const char *cursor = start;
+
+    if (!start || !out || out_size == 0) {
+        return false;
+    }
+
+    while (*cursor != '\0') {
+        char ch = *cursor++;
+        if (ch == '"') {
+            out[out_len] = '\0';
+            if (end_out) {
+                *end_out = cursor;
+            }
+            return true;
+        }
+
+        if (ch == '\\') {
+            ch = *cursor++;
+            switch (ch) {
+                case '"':
+                case '\\':
+                case '/':
+                    break;
+                case 'b':
+                    ch = '\b';
+                    break;
+                case 'f':
+                    ch = '\f';
+                    break;
+                case 'n':
+                    ch = '\n';
+                    break;
+                case 'r':
+                    ch = '\r';
+                    break;
+                case 't':
+                    ch = '\t';
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        if (out_len + 1 < out_size) {
+            out[out_len++] = ch;
+        }
+    }
+
+    return false;
+}
+
 static bool extract_json_string(const char *payload, const char *key, char *out, size_t out_size) {
     char pattern[64];
     snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
@@ -45,17 +98,7 @@ static bool extract_json_string(const char *payload, const char *key, char *out,
         return false;
     }
     start += strlen(pattern);
-    const char *end = strchr(start, '"');
-    if (!end) {
-        return false;
-    }
-    size_t copy_len = (size_t)(end - start);
-    if (copy_len >= out_size) {
-        copy_len = out_size - 1;
-    }
-    memcpy(out, start, copy_len);
-    out[copy_len] = '\0';
-    return true;
+    return decode_json_string(start, out, out_size, NULL);
 }
 
 static bool extract_json_bool(const char *payload, const char *key, bool *out) {
@@ -109,6 +152,8 @@ void node_config_reset_defaults(node_config_t *config) {
     safe_copy(config->wifi_password, sizeof(config->wifi_password), VG_DEFAULT_WIFI_PASSWORD);
     safe_copy(config->mqtt_host, sizeof(config->mqtt_host), VG_DEFAULT_MQTT_HOST);
     config->mqtt_port = VG_DEFAULT_MQTT_PORT;
+    safe_copy(config->mqtt_username, sizeof(config->mqtt_username), VG_DEFAULT_MQTT_USERNAME);
+    safe_copy(config->mqtt_password, sizeof(config->mqtt_password), VG_DEFAULT_MQTT_PASSWORD);
     safe_copy(config->node_id, sizeof(config->node_id), VG_DEFAULT_NODE_ID);
     config->assigned = true;
     safe_copy(config->zone_id, sizeof(config->zone_id), VG_DEFAULT_ZONE_ID);

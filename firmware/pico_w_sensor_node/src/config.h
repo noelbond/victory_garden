@@ -6,26 +6,74 @@
 
 #include "hardware/flash.h"
 
+#ifndef __has_include
+#define __has_include(x) 0
+#endif
+
+#if __has_include("config_local.h")
+#include "config_local.h"
+#endif
+
 #define VG_CONFIG_MAGIC 0x56474E31u
-#define VG_CONFIG_VERSION 4u
+#define VG_CONFIG_VERSION 5u
 
 #define VG_MAX_SSID_LEN 64
 #define VG_MAX_PASSWORD_LEN 64
 #define VG_MAX_HOST_LEN 64
+#define VG_MAX_MQTT_USERNAME_LEN 64
+#define VG_MAX_MQTT_PASSWORD_LEN 64
 #define VG_MAX_NODE_ID_LEN 32
 #define VG_MAX_ZONE_ID_LEN 32
 #define VG_MAX_CROP_ID_LEN 32
 #define VG_MAX_CONFIG_VERSION_LEN 40
 
-#define VG_DEFAULT_WIFI_SSID "mywifi"
-#define VG_DEFAULT_WIFI_PASSWORD "njbond36"
+#ifndef VG_DEFAULT_WIFI_SSID
+#define VG_DEFAULT_WIFI_SSID "CHANGE_ME_SSID"
+#endif
+
+#ifndef VG_DEFAULT_WIFI_PASSWORD
+#define VG_DEFAULT_WIFI_PASSWORD "CHANGE_ME_PASSWORD"
+#endif
+
+#ifndef VG_DEFAULT_MQTT_HOST
 #define VG_DEFAULT_MQTT_HOST "192.168.4.41"
+#endif
+
+#ifndef VG_DEFAULT_MQTT_PORT
 #define VG_DEFAULT_MQTT_PORT 1883
+#endif
+
+#ifndef VG_DEFAULT_MQTT_USERNAME
+#define VG_DEFAULT_MQTT_USERNAME ""
+#endif
+
+#ifndef VG_DEFAULT_MQTT_PASSWORD
+#define VG_DEFAULT_MQTT_PASSWORD ""
+#endif
+
+#ifndef VG_DEFAULT_NTP_SERVER
+#define VG_DEFAULT_NTP_SERVER "pool.ntp.org"
+#endif
+
+#ifndef VG_DEFAULT_NODE_ID
 #define VG_DEFAULT_NODE_ID "pico-w-zone1"
+#endif
+
+#ifndef VG_DEFAULT_ZONE_ID
 #define VG_DEFAULT_ZONE_ID "zone1"
+#endif
+
+#ifndef VG_DEFAULT_PUBLISH_INTERVAL_MS
 #define VG_DEFAULT_PUBLISH_INTERVAL_MS 60000u
+#endif
+
+#ifndef VG_DEFAULT_MOISTURE_ADC_GPIO
 #define VG_DEFAULT_MOISTURE_ADC_GPIO 26u
+#endif
+
+#ifndef VG_DEFAULT_MOISTURE_INVERT_PERCENT
 #define VG_DEFAULT_MOISTURE_INVERT_PERCENT true
+#endif
 
 #define VG_FLASH_CONFIG_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
 
@@ -37,6 +85,8 @@ typedef struct {
     char wifi_password[VG_MAX_PASSWORD_LEN];
     char mqtt_host[VG_MAX_HOST_LEN];
     uint16_t mqtt_port;
+    char mqtt_username[VG_MAX_MQTT_USERNAME_LEN];
+    char mqtt_password[VG_MAX_MQTT_PASSWORD_LEN];
     char node_id[VG_MAX_NODE_ID_LEN];
     bool assigned;
     char zone_id[VG_MAX_ZONE_ID_LEN];

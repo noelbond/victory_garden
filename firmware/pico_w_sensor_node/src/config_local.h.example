@@ -1,0 +1,14 @@
+#pragma once
+
+#define VG_DEFAULT_WIFI_SSID "your-ssid"
+#define VG_DEFAULT_WIFI_PASSWORD "your-password"
+#define VG_DEFAULT_MQTT_HOST "192.168.4.41"
+#define VG_DEFAULT_MQTT_PORT 1883
+#define VG_DEFAULT_MQTT_USERNAME "victory_garden"
+#define VG_DEFAULT_MQTT_PASSWORD "broker-password"
+#define VG_DEFAULT_NTP_SERVER "pool.ntp.org"
+#define VG_DEFAULT_NODE_ID "pico-w-zone1"
+#define VG_DEFAULT_ZONE_ID "zone1"
+#define VG_DEFAULT_PUBLISH_INTERVAL_MS 60000u
+#define VG_DEFAULT_MOISTURE_ADC_GPIO 26u
+#define VG_DEFAULT_MOISTURE_INVERT_PERCENT true

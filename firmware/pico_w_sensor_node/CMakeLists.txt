@@ -19,6 +19,7 @@ add_executable(pico_w_sensor_node
     src/mqtt_node.c
     src/node_config.c
     src/sensors.c
+    src/time_sync.c
     src/topics.c
     src/wifi.c
 )
@@ -31,6 +32,7 @@ target_link_libraries(pico_w_sensor_node
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
     pico_lwip_mqtt
+    pico_lwip_sntp
     hardware_adc
     hardware_flash
     hardware_sync

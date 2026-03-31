@@ -1,10 +1,12 @@
 #ifndef __LWIPOPTS_H__
 #define __LWIPOPTS_H__
 
+#include <stdint.h>
+
 #define NO_SYS                          1
 #define MEM_ALIGNMENT                   4
 #define MEM_SIZE                        (16 * 1024)
-#define MEMP_NUM_SYS_TIMEOUT            16
+#define MEMP_NUM_SYS_TIMEOUT            18
 #define MEMP_NUM_NETBUF                 8
 #define MEMP_NUM_TCPIP_MSG_API          16
 #define MEMP_NUM_TCP_SEG                32
@@ -25,6 +27,7 @@
 #define LWIP_DHCP                       1
 #define LWIP_DNS                        1
 #define DNS_TABLE_SIZE                  4
+#define LWIP_SNTP                       1
 
 #define LWIP_NETIF_HOSTNAME             1
 #define LWIP_NETIF_STATUS_CALLBACK      1
@@ -40,5 +43,11 @@
 #define LWIP_CHKSUM_ALGORITHM           3
 #define LWIP_TIMEVAL_PRIVATE            0
 #define MQTT_OUTPUT_RINGBUF_SIZE        1024
+#define SNTP_SERVER_DNS                 1
+#define SNTP_MAX_SERVERS                1
+#define SNTP_UPDATE_DELAY               3600000
+
+void vg_time_sync_set_epoch_us(uint32_t sec, uint32_t usec);
+#define SNTP_SET_SYSTEM_TIME_US(sec, usec) vg_time_sync_set_epoch_us((sec), (usec))
 
 #endif

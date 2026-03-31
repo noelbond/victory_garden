@@ -5,6 +5,7 @@
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "sensors.h"
+#include "time_sync.h"
 #include "wifi.h"
 
 static const uint32_t VG_PUBLISH_RETRY_MS = 5000u;
@@ -59,6 +60,7 @@ int main(void) {
 
     sensors_init(&config);
     wifi_connect_with_retry(&config, wifi_error, sizeof(wifi_error));
+    time_sync_init();
     mqtt_node_init(&node, &config);
     printf("[main] entering loop\n");
 
@@ -72,6 +74,7 @@ int main(void) {
 
     while (true) {
         wifi_poll();
+        time_sync_poll();
 
         int link_status = wifi_link_status();
         if (link_status == CYW43_LINK_UP) {
@@ -153,7 +156,7 @@ int main(void) {
                 link_status,
                 (int)mqtt_node_is_connected(&node),
                 node.last_error);
-            printf("[heartbeat] ip=%s rssi=%ld\n", ip_buf, (long)wifi_rssi());
+            printf("[heartbeat] ip=%s rssi=%ld time_synced=%d\n", ip_buf, (long)wifi_rssi(), (int)time_sync_ready());
             stdio_flush();
             next_heartbeat_at = make_timeout_time_ms(2000);
         }

@@ -8,6 +8,7 @@
 #include "lwip/ip4_addr.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
+#include "time_sync.h"
 #include "topics.h"
 #include "wifi.h"
 
@@ -38,11 +39,6 @@ static const struct mqtt_connect_client_info_t g_client_info_template = {
     .will_qos = 0,
     .will_retain = 0,
 };
-
-static void iso_timestamp_now(char *out, size_t out_size) {
-    uint32_t seconds = to_ms_since_boot(get_absolute_time()) / 1000u;
-    snprintf(out, out_size, "1970-01-01T00:%02u:%02uZ", (seconds / 60u) % 60u, seconds % 60u);
-}
 
 static void set_error(mqtt_node_t *node, const char *message) {
     snprintf(node->last_error, sizeof(node->last_error), "%s", message ? message : "none");
@@ -78,6 +74,59 @@ static err_t mqtt_client_connect_locked(mqtt_client_t *client, const ip_addr_t *
     return err;
 }
 
+static bool decode_json_string(const char *start, char *out, size_t out_size, const char **end_out) {
+    size_t out_len = 0;
+    const char *cursor = start;
+
+    if (!start || !out || out_size == 0) {
+        return false;
+    }
+
+    while (*cursor != '\0') {
+        char ch = *cursor++;
+        if (ch == '"') {
+            out[out_len] = '\0';
+            if (end_out) {
+                *end_out = cursor;
+            }
+            return true;
+        }
+
+        if (ch == '\\') {
+            ch = *cursor++;
+            switch (ch) {
+                case '"':
+                case '\\':
+                case '/':
+                    break;
+                case 'b':
+                    ch = '\b';
+                    break;
+                case 'f':
+                    ch = '\f';
+                    break;
+                case 'n':
+                    ch = '\n';
+                    break;
+                case 'r':
+                    ch = '\r';
+                    break;
+                case 't':
+                    ch = '\t';
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        if (out_len + 1 < out_size) {
+            out[out_len++] = ch;
+        }
+    }
+
+    return false;
+}
+
 static bool extract_json_string(const char *payload, const char *key, char *out, size_t out_size) {
     char pattern[64];
     snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
@@ -86,21 +135,29 @@ static bool extract_json_string(const char *payload, const char *key, char *out,
         return false;
     }
     start += strlen(pattern);
-    const char *end = strchr(start, '"');
-    if (!end) {
-        return false;
-    }
-    size_t len = (size_t)(end - start);
-    if (len >= out_size) {
-        len = out_size - 1;
-    }
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return true;
+    return decode_json_string(start, out, out_size, NULL);
 }
 
 static bool topic_equals(const char *a, const char *b) {
     return strcmp(a, b) == 0;
+}
+
+static void config_ack_timestamp(const mqtt_node_t *node, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+
+    if (time_sync_ready()) {
+        time_sync_format_iso8601(out, out_size);
+        return;
+    }
+
+    if (node->config->config_version[0] != '\0') {
+        snprintf(out, out_size, "%s", node->config->config_version);
+        return;
+    }
+
+    time_sync_format_iso8601(out, out_size);
 }
 
 static void clear_retained_command(mqtt_node_t *node) {
@@ -132,7 +189,7 @@ static void publish_config_ack(mqtt_node_t *node, const char *status, const char
     char payload[MQTT_TX_PAYLOAD_MAX];
     char timestamp[32];
     topic_node_config_ack(node->config, topic, sizeof(topic));
-    iso_timestamp_now(timestamp, sizeof(timestamp));
+    config_ack_timestamp(node, timestamp, sizeof(timestamp));
 
     if (node->config->assigned) {
         snprintf(
@@ -195,6 +252,15 @@ static void handle_command_message(mqtt_node_t *node, const char *payload) {
 static void handle_config_message(mqtt_node_t *node, const char *payload) {
     bool zone_changed = false;
     char error[128];
+    char config_version[VG_MAX_CONFIG_VERSION_LEN] = {0};
+
+    if (extract_json_string(payload, "config_version", config_version, sizeof(config_version)) &&
+        config_version[0] != '\0' &&
+        strcmp(config_version, node->config->config_version) == 0) {
+        publish_config_ack(node, "applied", NULL);
+        set_error(node, "none");
+        return;
+    }
 
     if (node_config_apply_json(node->config, payload, &zone_changed, error, sizeof(error))) {
         if (!node_config_save(node->config, error, sizeof(error))) {
@@ -324,6 +390,8 @@ static void mqtt_ensure_connected(mqtt_node_t *node) {
 
     struct mqtt_connect_client_info_t info = g_client_info_template;
     info.client_id = node->config->node_id;
+    info.client_user = node->config->mqtt_username[0] != '\0' ? node->config->mqtt_username : NULL;
+    info.client_pass = node->config->mqtt_password[0] != '\0' ? node->config->mqtt_password : NULL;
     printf("[mqtt] connecting to %s:%d\n", node->config->mqtt_host, node->config->mqtt_port);
     err_t err = mqtt_client_connect_locked(
         g_runtime.client,
@@ -388,7 +456,7 @@ bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapsho
     int32_t rssi = wifi_rssi();
     bool has_ip = wifi_ip_string(ip, sizeof(ip));
     topic_state(node->config, topic, sizeof(topic));
-    iso_timestamp_now(timestamp, sizeof(timestamp));
+    time_sync_format_iso8601(timestamp, sizeof(timestamp));
 
     if (has_ip) {
         snprintf(
