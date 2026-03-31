@@ -18,6 +18,8 @@ class SettingsController < ApplicationController
     params.require(:connection_setting).permit(
       :mqtt_host,
       :mqtt_port,
+      :mqtt_username,
+      :mqtt_password,
       :readings_topic,
       :actuators_topic,
       :command_topic,

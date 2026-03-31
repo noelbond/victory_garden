@@ -4,5 +4,29 @@ class CommandPublishJob < ApplicationJob
 
   def perform(command)
     MqttClient.publish_command(command)
+    schedule_timeout_watchdog(command)
+  end
+
+  private
+
+  def schedule_timeout_watchdog(command)
+    idempotency_key = command[:idempotency_key] || command["idempotency_key"]
+    return if idempotency_key.blank?
+
+    timeout_seconds = timeout_window(command)
+    ActuatorCommandTimeoutJob
+      .set(wait: timeout_seconds.seconds)
+      .perform_later(idempotency_key: idempotency_key, timeout_seconds: timeout_seconds)
+  end
+
+  def timeout_window(command)
+    runtime_seconds = command[:runtime_seconds] || command["runtime_seconds"]
+    runtime_seconds = runtime_seconds.to_i
+
+    if runtime_seconds.positive?
+      [runtime_seconds + 30, 60].max
+    else
+      30
+    end
   end
 end

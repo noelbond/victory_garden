@@ -1,14 +1,3 @@
-/*
- * This is a manifest file that'll be compiled into application.css.
- *
- * With Propshaft, assets are served efficiently without preprocessing steps. You can still include
- * application-wide styles in this file, but keep in mind that CSS precedence will follow the standard
- * cascading order, meaning styles declared later in the document or manifest will override earlier ones,
- * depending on specificity.
- *
- * Consider organizing styles into separate files for maintainability.
- */
-
 :root {
   --bg: #f6f3ed;
   --card: #ffffff;
@@ -47,6 +36,7 @@ body {
 .app-nav {
   display: flex;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
 .nav-link {
@@ -54,6 +44,7 @@ body {
   color: var(--ink);
   padding: 6px 10px;
   border-radius: 6px;
+  white-space: nowrap;
 }
 
 .nav-link:hover {
@@ -62,6 +53,18 @@ body {
 
 .app-main {
   padding: 24px 32px 48px;
+}
+
+.onboarding-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #ead6a3;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fff8ec 0%, #fffdf8 100%);
 }
 
 .page-header {
@@ -122,6 +125,53 @@ body {
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
 }
 
+.zone-dashboard-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 280px;
+}
+
+.zone-dashboard-header,
+.zone-dashboard-footer,
+.dashboard-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.zone-dashboard-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.zone-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.zone-metric-label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.zone-dashboard-footer {
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.dashboard-actions {
+  flex-wrap: wrap;
+}
+
 .crop-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -168,6 +218,10 @@ body {
   background: #b94a2f;
 }
 
+.status-dot.stale {
+  background: #d49b2b;
+}
+
 .action-menu {
   position: absolute;
   top: 10px;
@@ -209,11 +263,51 @@ body {
   background: #f2f2f2;
 }
 
-@media (max-width: 720px) {
-  .app-header {
+@media (max-width: 960px) {
+  .app-header,
+  .page-header,
+  .onboarding-banner,
+  .zone-dashboard-header,
+  .zone-dashboard-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .app-nav,
+  .dashboard-actions {
+    width: 100%;
+  }
+
+  .dashboard-actions {
+    justify-content: flex-start;
+  }
+
+  .zone-dashboard-pills {
+    justify-content: flex-start;
+  }
+
+  .health-actions {
+    min-width: 110px;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-header {
     gap: 8px;
+  }
+
+  .app-nav {
+    gap: 8px;
+  }
+
+  .nav-link {
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.75);
+    border: 1px solid var(--border);
+  }
+
+  .onboarding-banner {
+    gap: 10px;
   }
 
   .app-main {
@@ -226,6 +320,81 @@ body {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .zone-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .health-metrics,
+  .attention-list,
+  .activity-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .row {
+    gap: 12px;
+  }
+
+  .card {
+    padding: 14px;
+  }
+
+  .dashboard-actions {
+    gap: 8px;
+  }
+
+  .dashboard-actions .btn,
+  .dashboard-actions form {
+    width: 100%;
+  }
+
+  .dashboard-actions .btn,
+  .dashboard-actions form .btn,
+  .dashboard-actions form button {
+    display: block;
+    width: 100%;
+    text-align: center;
+  }
+
+  .metric-value {
+    font-size: 24px;
+  }
+
+  .health-table th,
+  .health-table td,
+  .table th,
+  .table td {
+    padding: 10px 8px;
+  }
+}
+
+@media (max-width: 560px) {
+  .page-title {
+    font-size: 22px;
+  }
+
+  .app-main {
+    padding: 12px;
+  }
+
+  .app-header {
+    padding: 16px 12px;
+  }
+
+  .nav-link {
+    width: 100%;
+  }
+
+  .status-row {
+    align-items: flex-start;
+  }
+
+  .health-pill,
+  .env-pill,
+  .badge,
+  .table-action-btn {
+    font-size: 11px;
   }
 }
 
@@ -257,6 +426,189 @@ body {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.health-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.metric-card {
+  background: linear-gradient(180deg, #fffdf8 0%, #fff 100%);
+}
+
+.metric-ok {
+  border-color: #cfe5d7;
+}
+
+.metric-warn {
+  border-color: #ead6a3;
+  background: linear-gradient(180deg, #fff9ee 0%, #fff 100%);
+}
+
+.metric-alert {
+  border-color: #ebc4ba;
+  background: linear-gradient(180deg, #fdf2ef 0%, #fff 100%);
+}
+
+.metric-label {
+  color: var(--muted);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.metric-value {
+  font-size: 28px;
+  line-height: 1.1;
+  margin: 8px 0 4px;
+}
+
+.health-table-wrap {
+  overflow-x: auto;
+}
+
+.health-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 960px;
+}
+
+.health-table th,
+.health-table td {
+  text-align: left;
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.health-table th {
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.health-warning {
+  color: #b94a2f;
+  margin-top: 4px;
+}
+
+.health-pill,
+.env-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.env-pill {
+  margin-right: 8px;
+  background: #fff7e8;
+}
+
+.health-pill.ok {
+  background: #eef7f1;
+  color: var(--accent);
+  border-color: #cfe5d7;
+}
+
+.health-pill.stale {
+  background: #fff7e8;
+  color: #8b5a00;
+  border-color: #ead6a3;
+}
+
+.health-pill.offline,
+.health-pill.warn {
+  background: #fbefec;
+  color: #b94a2f;
+  border-color: #ebc4ba;
+}
+
+.health-list-item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.health-list-item:last-child {
+  border-bottom: none;
+}
+
+.attention-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.attention-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.attention-warn {
+  background: linear-gradient(180deg, #fff9ee 0%, #fff 100%);
+  border-color: #ead6a3;
+}
+
+.attention-alert {
+  background: linear-gradient(180deg, #fdf2ef 0%, #fff 100%);
+  border-color: #ebc4ba;
+}
+
+.attention-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.activity-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.activity-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fffdf8;
+}
+
+.health-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.table-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.table-action-btn {
+  background: #fff7e8;
+  border: 1px solid #ead6a3;
+  color: #8b5a00;
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
 }
 
 .list li {
@@ -311,6 +663,7 @@ body {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .section-header {
@@ -320,4 +673,18 @@ body {
 .section-header h2 {
   margin: 0 0 4px 0;
   font-size: 18px;
+}
+
+.chart-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.chart-summary-card,
+.chart-panel {
+  background: linear-gradient(180deg, #fffdf8 0%, #fff 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
 }

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_03_24_000100) do
+ActiveRecord::Schema[8.0].define(version: 2026_03_31_190000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -40,6 +40,8 @@ ActiveRecord::Schema[8.0].define(version: 2026_03_24_000100) do
     t.text "notes"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "mqtt_username"
+    t.string "mqtt_password"
   end
 
   create_table "crop_profiles", force: :cascade do |t|

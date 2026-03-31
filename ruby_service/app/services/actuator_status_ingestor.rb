@@ -7,6 +7,9 @@ class ActuatorStatusIngestor
     zone = Zone.find_by(zone_id: @payload.fetch("zone_id"))
     raise ArgumentError, "Unknown zone_id: #{@payload['zone_id']}" unless zone
 
+    duplicate_status = find_duplicate_status(zone)
+    return duplicate_status if duplicate_status
+
     status = ActuatorStatus.create!(
       zone: zone,
       state: @payload.fetch("state"),
@@ -50,6 +53,16 @@ class ActuatorStatusIngestor
              end
 
     event.update!(status: mapped)
+  end
+
+  def find_duplicate_status(zone)
+    return nil if @payload["idempotency_key"].blank?
+
+    ActuatorStatus.find_by(
+      zone: zone,
+      idempotency_key: @payload["idempotency_key"],
+      state: @payload.fetch("state")
+    )
   end
 
   def request_fresh_reading(zone, status)

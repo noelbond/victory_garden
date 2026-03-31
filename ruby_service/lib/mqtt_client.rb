@@ -27,7 +27,7 @@ module MqttClient
   end
 
   def publish_config(payload)
-    publish(system_config_topic, payload)
+    publish(system_config_topic, payload, retain: true)
   end
 
   def publish(topic, payload, retain: false)
@@ -37,10 +37,15 @@ module MqttClient
   end
 
   def mqtt_options
-    {
+    options = {
       host: setting_value("mqtt_host", "MQTT_HOST", "localhost"),
       port: Integer(setting_value("mqtt_port", "MQTT_PORT", "1883"))
     }
+    username = setting_value("mqtt_username", "MQTT_USERNAME", nil)
+    password = setting_value("mqtt_password", "MQTT_PASSWORD", nil)
+    options[:username] = username if username.present?
+    options[:password] = password if password.present?
+    options
   end
 
   def actuator_command_topic(zone_id)

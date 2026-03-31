@@ -5,7 +5,16 @@ class ZonesController < ApplicationController
     @zones = Zone.includes(:crop_profile, :nodes).order(:zone_id)
     @latest_readings = latest_readings_for(@zones)
     @latest_statuses = latest_statuses_for(@zones)
+    @latest_watering_events = latest_watering_events_for(@zones)
+    @open_fault_counts = open_fault_counts_for(@zones)
     @unclaimed_node_count = Node.unclaimed.count
+    @summary = {
+      zones: @zones.count,
+      active_zones: @zones.count(&:active?),
+      nodes_online: @latest_readings.values.count { |reading| reading.recorded_at > 5.minutes.ago },
+      zones_watering: @latest_statuses.values.count { |status| status.state == "RUNNING" },
+      open_fault_zones: @open_fault_counts.values.count(&:positive?)
+    }
   end
 
   def show
@@ -15,9 +24,19 @@ class ZonesController < ApplicationController
     @last_watering_event = @zone.watering_events.order(issued_at: :desc).first
     @latest_actuator_status = @zone.actuator_statuses.order(recorded_at: :desc).first
     @recent_faults = @zone.faults.order(recorded_at: :desc).limit(5)
+    @open_fault_count = @zone.faults.where(resolved_at: nil).count
+    @reading_freshness = reading_freshness(@latest_reading)
+    @actuator_state_class = actuator_state_class(@latest_actuator_status)
+    @zone_attention = zone_attention_items
 
     @range = params[:range].presence || "month"
     @water_usage = water_usage_series(@zone, @range)
+    @moisture_history = moisture_history_series(@zone, @range)
+    @history_summary = history_summary(@zone, @range)
+    @window_summaries = {
+      "Last 24h" => zone_window_summary(@zone, 24.hours),
+      "Last 7d" => zone_window_summary(@zone, 7.days)
+    }
   end
 
   def new
@@ -152,6 +171,63 @@ class ZonesController < ApplicationController
     end
   end
 
+  def moisture_history_series(zone, range)
+    scope = moisture_scope_for(zone, range)
+    group_period =
+      case range
+      when "week", "month"
+        :day
+      when "year", "ytd"
+        :month
+      else
+        :day
+      end
+
+    scope.group_by_period(group_period, :recorded_at).average(:moisture_percent)
+  end
+
+  def history_summary(zone, range)
+    scope = moisture_scope_for(zone, range)
+    values = scope.pluck(:moisture_percent).compact.map(&:to_f)
+
+    {
+      count: values.size,
+      average: values.any? ? (values.sum / values.size).round(1) : nil,
+      low: values.any? ? values.min.round(1) : nil,
+      high: values.any? ? values.max.round(1) : nil
+    }
+  end
+
+  def moisture_scope_for(zone, range)
+    scope = zone.sensor_readings.where.not(moisture_percent: nil)
+    case range
+    when "week"
+      scope.where(recorded_at: 1.week.ago..Time.current)
+    when "month"
+      scope.where(recorded_at: 1.month.ago..Time.current)
+    when "year"
+      scope.where(recorded_at: 1.year.ago..Time.current)
+    when "ytd"
+      scope.where(recorded_at: Time.current.beginning_of_year..Time.current)
+    else
+      scope.where(recorded_at: 1.month.ago..Time.current)
+    end
+  end
+
+  def zone_window_summary(zone, window)
+    readings = zone.sensor_readings.where(recorded_at: window.ago..Time.current).where.not(moisture_percent: nil)
+    watering = zone.watering_events.where(command: "start_watering", issued_at: window.ago..Time.current)
+    values = readings.pluck(:moisture_percent).compact.map(&:to_f)
+
+    {
+      readings: values.size,
+      avg_moisture: values.any? ? (values.sum / values.size).round(1) : nil,
+      min_moisture: values.any? ? values.min.round(1) : nil,
+      watering_events: watering.count,
+      watering_seconds: watering.sum(:runtime_seconds) || 0
+    }
+  end
+
   def latest_readings_for(zones)
     ids = zones.map(&:id)
     return {} if ids.empty?
@@ -172,5 +248,72 @@ class ZonesController < ApplicationController
       .where(zone_id: ids)
       .order("zone_id, recorded_at DESC")
     rows.index_by(&:zone_id)
+  end
+
+  def latest_watering_events_for(zones)
+    ids = zones.map(&:id)
+    return {} if ids.empty?
+
+    rows = WateringEvent
+      .select("DISTINCT ON (zone_id) *")
+      .where(zone_id: ids, command: "start_watering")
+      .order("zone_id, issued_at DESC")
+    rows.index_by(&:zone_id)
+  end
+
+  def open_fault_counts_for(zones)
+    ids = zones.map(&:id)
+    return {} if ids.empty?
+
+    Fault.where(zone_id: ids, resolved_at: nil).group(:zone_id).count
+  end
+
+  def reading_freshness(reading)
+    return "offline" if reading.blank?
+    return "ok" if reading.recorded_at > 5.minutes.ago
+    return "stale" if reading.recorded_at > 30.minutes.ago
+
+    "offline"
+  end
+
+  def actuator_state_class(status)
+    return "offline" if status.blank?
+
+    case status.state
+    when "RUNNING", "ACKNOWLEDGED"
+      "warn"
+    when "FAULT"
+      "offline"
+    else
+      "ok"
+    end
+  end
+
+  def zone_attention_items
+    items = []
+
+    if @latest_reading.blank?
+      items << { label: "No readings", detail: "This zone has not published any persisted readings yet.", severity: "warn" }
+    elsif @reading_freshness != "ok"
+      items << {
+        label: "Stale reading",
+        detail: "Latest reading is #{view_context.time_ago_in_words(@latest_reading.recorded_at)} old.",
+        severity: "warn"
+      }
+    end
+
+    if @open_fault_count.positive?
+      items << {
+        label: "Open faults",
+        detail: "#{@open_fault_count} unresolved fault#{'s' unless @open_fault_count == 1} need review.",
+        severity: "alert"
+      }
+    end
+
+    if @latest_actuator_status&.state == "RUNNING"
+      items << { label: "Watering active", detail: "The actuator is currently reporting RUNNING.", severity: "warn" }
+    end
+
+    items
   end
 end

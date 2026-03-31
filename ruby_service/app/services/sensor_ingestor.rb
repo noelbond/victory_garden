@@ -15,6 +15,12 @@ class SensorIngestor
       return node
     end
 
+    existing_reading = SensorReading.find_by(
+      node_id: @payload.fetch("node_id"),
+      recorded_at: @payload.fetch("recorded_at")
+    )
+    return existing_reading if existing_reading
+
     reading = SensorReading.create!(
       zone: zone,
       node_id: @payload.fetch("node_id"),
@@ -35,23 +41,7 @@ class SensorIngestor
       raw_payload: @payload
     )
 
-    zone.with_lock do
-      command = DecisionService.new(zone: zone, reading: reading).call
-      next nil unless command
-
-      event = WateringEvent.create!(
-        zone: zone,
-        command: command[:command],
-        runtime_seconds: command[:runtime_seconds],
-        reason: command[:reason],
-        issued_at: command[:issued_at],
-        idempotency_key: command[:idempotency_key],
-        status: "queued"
-      )
-
-      CommandPublishJob.perform_later(command)
-      event
-    end
+    reading
   end
 
   private
@@ -60,7 +50,7 @@ class SensorIngestor
     node = Node.find_or_initialize_by(node_id: @payload.fetch("node_id"))
     node.assign_attributes(
       reported_zone_id: @payload["zone_id"],
-      last_seen_at: @payload.fetch("recorded_at"),
+      last_seen_at: [node.last_seen_at, @payload.fetch("recorded_at")].compact.max,
       schema_version: @payload["schema_version"],
       provisioned: true,
       battery_voltage: @payload["battery_voltage"],

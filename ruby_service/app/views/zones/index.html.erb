@@ -1,51 +1,145 @@
 <div class="page-header">
   <div>
-    <h1 class="page-title">Zones</h1>
+    <h1 class="page-title">Garden Dashboard</h1>
+    <div class="muted">Zone overview for readings, watering state, and open issues.</div>
     <% if @unclaimed_node_count.to_i > 0 %>
       <div class="muted"><%= @unclaimed_node_count %> unclaimed node<%= "s" unless @unclaimed_node_count == 1 %> discovered.</div>
     <% end %>
   </div>
-  <div>
+  <div class="dashboard-actions">
+    <%= link_to "Health", health_path, class: "btn light" %>
     <%= link_to "Nodes", nodes_path, class: "btn light" %>
     <%= link_to "New Zone", new_zone_path, class: "btn" %>
   </div>
 </div>
 
+<div class="health-metrics">
+  <div class="card metric-card metric-ok">
+    <div class="metric-label">Active Zones</div>
+    <div class="metric-value"><%= @summary[:active_zones] %> / <%= @summary[:zones] %></div>
+    <div class="muted">currently enabled zones</div>
+  </div>
+  <div class="card metric-card <%= @summary[:nodes_online] == @summary[:zones] && @summary[:zones] > 0 ? "metric-ok" : "metric-warn" %>">
+    <div class="metric-label">Zones Online</div>
+    <div class="metric-value"><%= @summary[:nodes_online] %> / <%= @summary[:zones] %></div>
+    <div class="muted">fresh readings within 5 minutes</div>
+  </div>
+  <div class="card metric-card <%= @summary[:zones_watering] > 0 ? "metric-warn" : "metric-ok" %>">
+    <div class="metric-label">Watering Now</div>
+    <div class="metric-value"><%= @summary[:zones_watering] %></div>
+    <div class="muted">zones with actuator state `RUNNING`</div>
+  </div>
+  <div class="card metric-card <%= @summary[:open_fault_zones] > 0 ? "metric-alert" : "metric-ok" %>">
+    <div class="metric-label">Open Fault Zones</div>
+    <div class="metric-value"><%= @summary[:open_fault_zones] %></div>
+    <div class="muted">zones with unresolved faults</div>
+  </div>
+</div>
+
 <div class="zone-grid">
   <% @zones.each do |zone| %>
-    <%= link_to zone_path(zone), class: "card zone-card" do %>
-      <h3><%= zone.name.presence || zone.zone_id %></h3>
-      <div class="muted"><%= zone.zone_id %></div>
-      <div class="badge"><%= zone.active ? "Active" : "Inactive" %></div>
-      <p>Crop: <strong><%= zone.crop_profile.crop_name %></strong></p>
-      <p>Dry Threshold: <%= zone.crop_profile.dry_threshold %>%</p>
-      <p>
-        Nodes:
-        <% if zone.nodes.any? %>
-          <%= zone.nodes.sort_by(&:node_id).map(&:node_id).join(", ") %>
-        <% else %>
-          —
-        <% end %>
-      </p>
-      <% reading = @latest_readings[zone.id] %>
-      <% status = @latest_statuses[zone.id] %>
-      <div class="status-row">
-        <span class="status-dot <%= reading && reading.recorded_at > 2.hours.ago ? "ok" : "offline" %>"></span>
-        <span class="muted">
-          <%= reading ? "Last seen #{time_ago_in_words(reading.recorded_at)} ago" : "No readings" %>
-        </span>
-      </div>
-      <div class="muted">Actuator: <%= status&.state || "—" %></div>
+    <% reading = @latest_readings[zone.id] %>
+    <% status = @latest_statuses[zone.id] %>
+    <% last_watering = @latest_watering_events[zone.id] %>
+    <% open_faults = @open_fault_counts.fetch(zone.id, 0) %>
+    <% freshness_class = if reading.blank?
+                           "offline"
+                         elsif reading.recorded_at > 5.minutes.ago
+                           "ok"
+                         elsif reading.recorded_at > 30.minutes.ago
+                           "stale"
+                         else
+                           "offline"
+                         end %>
 
-      <div class="action-menu" onclick="event.preventDefault();">
-        <details>
-          <summary>⋯</summary>
-          <div class="menu">
-            <%= button_to "Water Now", water_now_zone_path(zone), method: :post, class: "menu-btn" %>
-            <%= button_to "Stop", stop_watering_zone_path(zone), method: :post, class: "menu-btn" %>
-            <%= button_to(zone.active ? "Disable" : "Enable", toggle_active_zone_path(zone), method: :post, class: "menu-btn") %>
-          </div>
-        </details>
+    <%= link_to zone_path(zone), class: "card zone-card zone-dashboard-card" do %>
+      <div class="zone-dashboard-header">
+        <div>
+          <h3><%= zone.name.presence || zone.zone_id %></h3>
+          <div class="muted"><%= zone.zone_id %></div>
+        </div>
+        <div class="zone-dashboard-pills">
+          <span class="health-pill <%= zone.active ? "ok" : "offline" %>"><%= zone.active ? "active" : "inactive" %></span>
+          <% if open_faults.positive? %>
+            <span class="health-pill warn"><%= open_faults %> fault<%= "s" unless open_faults == 1 %></span>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="zone-dashboard-grid">
+        <div>
+          <div class="zone-metric-label">Crop</div>
+          <div><strong><%= zone.crop_profile.crop_name %></strong></div>
+          <div class="muted">dry threshold <%= zone.crop_profile.dry_threshold %>%</div>
+        </div>
+
+        <div>
+          <div class="zone-metric-label">Nodes</div>
+          <% if zone.nodes.any? %>
+            <div><%= zone.nodes.sort_by(&:node_id).map(&:node_id).join(", ") %></div>
+          <% else %>
+            <div class="muted">No claimed nodes</div>
+          <% end %>
+        </div>
+
+        <div>
+          <div class="zone-metric-label">Latest Reading</div>
+          <% if reading.present? %>
+            <div><strong><%= reading.moisture_percent || "—" %>%</strong></div>
+            <div class="muted">raw <%= reading.moisture_raw %></div>
+          <% else %>
+            <div class="muted">No readings</div>
+          <% end %>
+        </div>
+
+        <div>
+          <div class="zone-metric-label">Last Seen</div>
+          <% if reading.present? %>
+            <span class="health-pill <%= freshness_class %>"><%= time_ago_in_words(reading.recorded_at) %> ago</span>
+          <% else %>
+            <span class="health-pill offline">never</span>
+          <% end %>
+        </div>
+
+        <div>
+          <div class="zone-metric-label">Actuator</div>
+          <% if status.present? %>
+            <span class="health-pill <%= status.state == "RUNNING" ? "warn" : (status.state == "FAULT" ? "offline" : "ok") %>"><%= status.state %></span>
+          <% else %>
+            <span class="muted">—</span>
+          <% end %>
+        </div>
+
+        <div>
+          <div class="zone-metric-label">Last Watering</div>
+          <% if last_watering.present? %>
+            <div><strong><%= time_ago_in_words(last_watering.issued_at) %> ago</strong></div>
+            <div class="muted"><%= last_watering.status || "queued" %></div>
+          <% else %>
+            <div class="muted">No watering history</div>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="zone-dashboard-footer">
+        <div class="muted">
+          <% if reading&.last_error.present? && reading.last_error != "none" %>
+            Last error: <%= reading.last_error %>
+          <% else %>
+            Last error: none
+          <% end %>
+        </div>
+
+        <div class="action-menu" onclick="event.preventDefault();">
+          <details>
+            <summary>⋯</summary>
+            <div class="menu">
+              <%= button_to "Water Now", water_now_zone_path(zone), method: :post, class: "menu-btn" %>
+              <%= button_to "Stop", stop_watering_zone_path(zone), method: :post, class: "menu-btn" %>
+              <%= button_to(zone.active ? "Disable" : "Enable", toggle_active_zone_path(zone), method: :post, class: "menu-btn") %>
+            </div>
+          </details>
+        </div>
       </div>
     <% end %>
   <% end %>

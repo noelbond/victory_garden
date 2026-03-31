@@ -6,8 +6,11 @@ class MqttConsumer
     @settings = ConnectionSetting.first
     @host = setting_value("mqtt_host", "MQTT_HOST", "localhost")
     @port = Integer(setting_value("mqtt_port", "MQTT_PORT", "1883"))
+    @username = setting_value("mqtt_username", "MQTT_USERNAME", nil)
+    @password = setting_value("mqtt_password", "MQTT_PASSWORD", nil)
     @readings_topic = setting_value("readings_topic", "MQTT_READINGS_TOPIC", "greenhouse/zones/+/state")
     @actuators_topic = normalized_actuators_topic
+    @controller_events_topic = "greenhouse/zones/+/controller/event"
     @node_config_ack_topic = "greenhouse/nodes/+/config_ack"
   end
 
@@ -21,15 +24,15 @@ class MqttConsumer
   private
 
   def connect_and_subscribe
-    MQTT::Client.connect(host: @host, port: @port) do |client|
-      client.subscribe(@readings_topic, @actuators_topic, @node_config_ack_topic)
-      log "Subscribed to #{@readings_topic}, #{@actuators_topic}, and #{@node_config_ack_topic}"
+    MQTT::Client.connect(mqtt_options) do |client|
+      client.subscribe(@readings_topic, @actuators_topic, @controller_events_topic, @node_config_ack_topic)
+      log "Subscribed to #{@readings_topic}, #{@actuators_topic}, #{@controller_events_topic}, and #{@node_config_ack_topic}"
       client.get do |topic, message|
         handle_message(topic, message)
       end
     end
   rescue StandardError => e
-    log "MQTT error: #{e.class} #{e.message}"
+    log "MQTT error: #{e.class} #{e.message}", level: :error
   end
 
   def handle_message(topic, message)
@@ -42,11 +45,14 @@ class MqttConsumer
     elsif topic_matches?(@actuators_topic, topic)
       data = payload["actuator_status"] || payload
       ActuatorStatusIngestJob.perform_later(data)
+    elsif topic_matches?(@controller_events_topic, topic)
+      data = payload["controller_event"] || payload
+      ControllerEventIngestJob.perform_later(data)
     elsif topic_matches?(@node_config_ack_topic, topic)
       data = payload["node_config_ack"] || payload
       NodeConfigAckIngestJob.perform_later(data)
     else
-      log "Unknown topic: #{topic}"
+      log "Unknown topic: #{topic}", level: :warn
     end
   end
 
@@ -55,12 +61,12 @@ class MqttConsumer
 
     JSON.parse(message)
   rescue JSON::ParserError => e
-    log "Invalid JSON: #{e.message}"
+    log "Invalid JSON: #{e.message}", level: :warn
     nil
   end
 
-  def log(msg)
-    puts "[mqtt_consumer] #{msg}"
+  def log(msg, level: :info)
+    Rails.logger.public_send(level, "[mqtt_consumer] #{msg}")
   end
 
   def topic_matches?(pattern, topic)
@@ -82,5 +88,12 @@ class MqttConsumer
     value = @settings&.public_send(attr)
     value = value.to_s if value.is_a?(Integer)
     value.presence || ENV.fetch(env_key, fallback)
+  end
+
+  def mqtt_options
+    options = { host: @host, port: @port }
+    options[:username] = @username if @username.present?
+    options[:password] = @password if @password.present?
+    options
   end
 end

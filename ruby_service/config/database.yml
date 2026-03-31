@@ -1,3 +1,10 @@
+<%
+local_db_username = ENV["RUBY_SERVICE_DATABASE_USERNAME"].presence
+local_db_password = ENV["RUBY_SERVICE_DATABASE_PASSWORD"].presence
+local_db_host = ENV["RUBY_SERVICE_DATABASE_HOST"].presence
+local_db_port = ENV["RUBY_SERVICE_DATABASE_PORT"].presence
+%>
+
 default: &default
   adapter: postgresql
   encoding: unicode
@@ -12,10 +19,18 @@ test:
   primary: &primary_test
     <<: *default
     database: ruby_service_test
-    username: ruby_service
-    password: <%= ENV["RUBY_SERVICE_DATABASE_PASSWORD"] %>
-    host: <%= ENV.fetch("RUBY_SERVICE_DATABASE_HOST", "127.0.0.1") %>
-    port: <%= ENV.fetch("RUBY_SERVICE_DATABASE_PORT", 5432) %>
+<% if local_db_username %>
+    username: <%= local_db_username %>
+<% end %>
+<% if local_db_password %>
+    password: <%= local_db_password %>
+<% end %>
+<% if local_db_host %>
+    host: <%= local_db_host %>
+<% end %>
+<% if local_db_port %>
+    port: <%= local_db_port %>
+<% end %>
   queue:
     <<: *primary_test
     database: ruby_service_test_queue

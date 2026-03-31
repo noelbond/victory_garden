@@ -1,0 +1,38 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Get Started</h1>
+    <div class="muted">Finish the minimum setup so the garden can ingest readings and drive watering decisions.</div>
+  </div>
+  <div>
+    <span class="env-pill"><%= Rails.env.production? ? "Production" : Rails.env.titleize %></span>
+    <%= link_to "Health", health_path, class: "btn light" %>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <h3>Progress</h3>
+  <div class="metric-value"><%= onboarding_completed_count %> / <%= onboarding_steps.length %></div>
+  <div class="muted">required setup steps complete</div>
+</div>
+
+<div class="health-metrics">
+  <% onboarding_steps.each do |step| %>
+    <div class="card metric-card <%= step[:done] ? "metric-ok" : "metric-warn" %>">
+      <div class="metric-label"><%= step[:title] %></div>
+      <div style="margin: 10px 0;">
+        <span class="health-pill <%= step[:done] ? "ok" : "stale" %>"><%= step[:done] ? "Done" : "Needs Setup" %></span>
+      </div>
+      <p class="muted"><%= step[:description] %></p>
+      <%= link_to(step[:done] ? "Review" : "Complete Step", step[:path], class: "btn light") %>
+    </div>
+  <% end %>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h3>What Happens Next</h3>
+  <ul class="list">
+    <li>Once a node is claimed, its readings can be persisted and shown in the health page.</li>
+    <li>Config sync only becomes meaningful after a node is assigned to a zone.</li>
+    <li>The health page is the best place to verify that the live system is operating correctly.</li>
+  </ul>
+</div>

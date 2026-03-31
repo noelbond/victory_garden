@@ -1,6 +1,6 @@
 # Victory Garden Rails Control Plane
 
-Rails is the UI, configuration authority, and historical reporting layer.
+Rails is the UI, configuration authority, persistence layer, and manual-operations surface.
 
 ## Responsibilities
 
@@ -9,7 +9,9 @@ Rails is the UI, configuration authority, and historical reporting layer.
 - allow claiming many nodes to a zone through the UI
 - consume node state, including optional telemetry fields when present
 - record watering events, actuator status, and faults
-- publish irrigation commands and device configuration
+- publish manual actuator commands plus node configuration
+- publish retained system crop/zone config for the Python controller
+- ingest Python controller events so automatic watering is persisted in the database
 - schedule delayed reread requests 5 minutes after completed watering
 
 ## Shared Contract
@@ -25,8 +27,19 @@ The Rails MQTT ingest path normalizes the canonical `node-state/v1` payload and 
 
 From [`ruby_service/`](/Users/noel/coding/python/victory_garden/ruby_service):
 
-- `bundle install`
-- `bin/rails db:create db:migrate`
+- `./bin/dev-bundle install`
+- `./bin/dev-rails db:prepare`
+
+Use the local wrappers for day-to-day work:
+
+- `./bin/dev-rails s`
+- `./bin/dev-rails test`
+- `./bin/dev-smoke`
+- `./bin/dev-rails runner 'puts RUBY_VERSION'`
+
+Recommended local verification after setup:
+
+- `./bin/dev-smoke`
 
 ## Main Models
 
@@ -43,6 +56,8 @@ From [`ruby_service/`](/Users/noel/coding/python/victory_garden/ruby_service):
 
 - `MQTT_HOST`: `localhost`
 - `MQTT_PORT`: `1883`
+- `MQTT_USERNAME`: optional in local development, required on the deployed Pi
+- `MQTT_PASSWORD`: optional in local development, required on the deployed Pi
 - `MQTT_READINGS_TOPIC`: `greenhouse/zones/+/state`
 - `MQTT_ACTUATORS_TOPIC`: `greenhouse/zones/+/actuator/status`
 - node config topic: `greenhouse/nodes/{node_id}/config`
@@ -55,7 +70,7 @@ From [`ruby_service/`](/Users/noel/coding/python/victory_garden/ruby_service):
 - PostgreSQL is authoritative for crop profiles, zones, node claims, watering history, faults, and node config sync status.
 - MQTT retained node state is the live transport layer for sleeping devices and the Python controller's working input.
 - `nodes.zone_id` is authoritative for routing. `reported_zone_id` from node payloads is stored for visibility only.
-- The actuator service is external to this Rails app. Rails publishes zone-scoped actuator commands and consumes zone-scoped actuator status messages.
+- The actuator service is external to this Rails app. Rails publishes manual zone-scoped actuator commands and consumes zone-scoped actuator status messages.
 
 ## Consumed Payloads
 
@@ -156,11 +171,21 @@ bin/mqtt_consumer
 
 It subscribes to node state and actuator-status topics and enqueues the matching ingest jobs.
 
+When broker auth is enabled, Rails uses `mqtt_username` and `mqtt_password` from `ConnectionSetting`, falling back to `MQTT_USERNAME` and `MQTT_PASSWORD` from the environment.
+
 Empty retained clears are ignored cleanly.
 
 If a node publishes state before a matching zone exists, Rails still registers the node by `node_id` and exposes it on the Nodes UI for claiming.
 
 Once a node is claimed, Rails routes future readings by the claimed `node_id` mapping first. The node's reported `zone_id` is still stored for visibility, but it no longer overrides the claim.
+
+Unclaimed nodes are registered and updated, but they do not persist readings.
+Automatic watering decisions are made by the Python controller, not by Rails.
+
+Operator pages:
+
+- onboarding: `/onboarding`
+- health dashboard: `/health`
 
 ## Retention
 

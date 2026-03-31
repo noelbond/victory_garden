@@ -15,6 +15,14 @@
         <%= f.number_field :mqtt_port, placeholder: "1883" %>
       </div>
       <div class="field">
+        <%= f.label :mqtt_username, "MQTT Username" %>
+        <%= f.text_field :mqtt_username, placeholder: "victory_garden" %>
+      </div>
+      <div class="field">
+        <%= f.label :mqtt_password, "MQTT Password" %>
+        <%= f.password_field :mqtt_password, placeholder: "Broker password" %>
+      </div>
+      <div class="field">
         <%= f.label :readings_topic, "Readings Topic" %>
         <%= f.text_field :readings_topic, placeholder: "greenhouse/zones/+/state" %>
       </div>
