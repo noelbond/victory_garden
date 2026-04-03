@@ -96,15 +96,22 @@ Supported drivers:
   - default safe mode for development and packaging validation
 - `shell`
   - runs `ACTUATOR_HOOK_COMMAND action zone_id runtime_seconds idempotency_key`
+  - the repo now includes a Pi relay hook at `python -m tools.relay_actuator_hook`
 
 Relevant env vars:
 
 - `ACTUATOR_DRIVER`
 - `ACTUATOR_HOOK_COMMAND`
+- `ACTUATOR_GPIO_PIN`
+- `ACTUATOR_GPIO_ACTIVE_LOW`
 - `MQTT_HOST`
 - `MQTT_PORT`
 - `MQTT_USERNAME`
 - `MQTT_PASSWORD`
+
+For isolated hardware bring-up on the Pi, use:
+
+- `.venv/bin/python -m tools.test_relay_gpio --pin 17 --active-low --cycles 5 --on-seconds 2 --off-seconds 2`
 
 ## Runtime Boundaries
 
