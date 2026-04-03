@@ -15,13 +15,13 @@
 #endif
 
 #define VG_CONFIG_MAGIC 0x56474E31u
-#define VG_CONFIG_VERSION 5u
+#define VG_CONFIG_VERSION 10u
 
 #define VG_MAX_SSID_LEN 64
 #define VG_MAX_PASSWORD_LEN 64
 #define VG_MAX_HOST_LEN 64
 #define VG_MAX_MQTT_USERNAME_LEN 64
-#define VG_MAX_MQTT_PASSWORD_LEN 64
+#define VG_MAX_MQTT_PASSWORD_LEN 160
 #define VG_MAX_NODE_ID_LEN 32
 #define VG_MAX_ZONE_ID_LEN 32
 #define VG_MAX_CROP_ID_LEN 32
@@ -67,12 +67,28 @@
 #define VG_DEFAULT_PUBLISH_INTERVAL_MS 60000u
 #endif
 
-#ifndef VG_DEFAULT_MOISTURE_ADC_GPIO
-#define VG_DEFAULT_MOISTURE_ADC_GPIO 26u
+#ifndef VG_DEFAULT_SEESAW_I2C_SDA_GPIO
+#define VG_DEFAULT_SEESAW_I2C_SDA_GPIO 4u
 #endif
 
-#ifndef VG_DEFAULT_MOISTURE_INVERT_PERCENT
-#define VG_DEFAULT_MOISTURE_INVERT_PERCENT true
+#ifndef VG_DEFAULT_MOISTURE_RAW_DRY
+#define VG_DEFAULT_MOISTURE_RAW_DRY 0u
+#endif
+
+#ifndef VG_DEFAULT_MOISTURE_RAW_WET
+#define VG_DEFAULT_MOISTURE_RAW_WET 0u
+#endif
+
+#ifndef VG_DEFAULT_SEESAW_I2C_SCL_GPIO
+#define VG_DEFAULT_SEESAW_I2C_SCL_GPIO 5u
+#endif
+
+#ifndef VG_DEFAULT_SEESAW_I2C_ADDRESS
+#define VG_DEFAULT_SEESAW_I2C_ADDRESS 0x36u
+#endif
+
+#ifndef VG_DEFAULT_SEESAW_TOUCH_CHANNEL
+#define VG_DEFAULT_SEESAW_TOUCH_CHANNEL 0u
 #endif
 
 #define VG_FLASH_CONFIG_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
@@ -96,8 +112,12 @@ typedef struct {
     uint16_t daily_max_runtime_sec;
     char config_version[VG_MAX_CONFIG_VERSION_LEN];
     uint32_t publish_interval_ms;
-    uint8_t moisture_adc_gpio;
-    bool moisture_invert_percent;
+    uint16_t moisture_raw_dry;
+    uint16_t moisture_raw_wet;
+    uint8_t seesaw_i2c_sda_gpio;
+    uint8_t seesaw_i2c_scl_gpio;
+    uint8_t seesaw_i2c_address;
+    uint8_t seesaw_touch_channel;
 } node_config_t;
 
 void node_config_load(node_config_t *config);

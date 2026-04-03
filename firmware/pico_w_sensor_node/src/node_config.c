@@ -163,8 +163,12 @@ void node_config_reset_defaults(node_config_t *config) {
     config->daily_max_runtime_sec = 300;
     config->config_version[0] = '\0';
     config->publish_interval_ms = VG_DEFAULT_PUBLISH_INTERVAL_MS;
-    config->moisture_adc_gpio = VG_DEFAULT_MOISTURE_ADC_GPIO;
-    config->moisture_invert_percent = VG_DEFAULT_MOISTURE_INVERT_PERCENT;
+    config->moisture_raw_dry = VG_DEFAULT_MOISTURE_RAW_DRY;
+    config->moisture_raw_wet = VG_DEFAULT_MOISTURE_RAW_WET;
+    config->seesaw_i2c_sda_gpio = VG_DEFAULT_SEESAW_I2C_SDA_GPIO;
+    config->seesaw_i2c_scl_gpio = VG_DEFAULT_SEESAW_I2C_SCL_GPIO;
+    config->seesaw_i2c_address = VG_DEFAULT_SEESAW_I2C_ADDRESS;
+    config->seesaw_touch_channel = VG_DEFAULT_SEESAW_TOUCH_CHANNEL;
     config->checksum = config_checksum(config);
 }
 

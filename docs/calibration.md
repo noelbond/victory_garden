@@ -44,7 +44,7 @@ That firmware maps the raw reading directly to `0..100` using those two calibrat
 
 ### Pico W
 
-The Pico W firmware does **not** yet implement dry/wet reference calibration.
+The Pico W firmware now reads the Adafruit seesaw soil sensor over I2C and supports dry/wet calibration bounds.
 
 Current behavior in:
 
@@ -52,16 +52,14 @@ Current behavior in:
 
 Current Pico behavior:
 
-- reads the ADC on the configured GPIO
-- scales raw `0..4095` directly to `0..100`
-- optionally inverts the percentage with `moisture_invert_percent`
+- reads moisture from seesaw `touchRead()` over I2C
+- uses true dry/wet calibration when both `raw_dry` and `raw_wet` are configured
+- otherwise falls back to a rough interim seesaw range
 
-So for Pico today:
+Important:
 
-- `moisture_percent` is a normalized ADC percentage
-- not yet a probe-specific dry/wet calibrated percentage
-
-Use the steps below to collect the right dry/wet references now, but expect to apply them directly only on Arduino until Pico calibration support is added.
+- earlier Pico ADC-based readings are not valid calibration data for the seesaw hardware
+- dry/wet calibration on Pico should be restarted from scratch using seesaw readings only
 
 ## How To Capture Dry And Wet References
 
@@ -116,8 +114,7 @@ That is the direction assumed by the Python reference formula and by the Arduino
 
 If your sensor is reversed:
 
-- Arduino: swap your chosen dry/wet values or adjust the mapping accordingly
-- Pico today: use `moisture_invert_percent` only for display/control direction, understanding it is still not true dry/wet calibration
+- swap your chosen dry/wet values or adjust the mapping accordingly
 
 ## Validation Workflow
 
@@ -168,9 +165,9 @@ mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhous
 
 For Pico today, focus on:
 
-- correct ADC GPIO
-- stable wiring
-- correct percent direction via `moisture_invert_percent`
+- correct seesaw I2C wiring
+- stable insertion depth and probe placement
+- collecting new `raw_dry` / `raw_wet` values from seesaw readings
 
 Relevant defaults live in:
 
@@ -178,10 +175,12 @@ Relevant defaults live in:
 
 Relevant fields:
 
-- `VG_DEFAULT_MOISTURE_ADC_GPIO`
-- `VG_DEFAULT_MOISTURE_INVERT_PERCENT`
-
-Treat current Pico `moisture_percent` as an interim operational value until dry/wet reference calibration is added to the Pico firmware.
+- `VG_DEFAULT_SEESAW_I2C_SDA_GPIO`
+- `VG_DEFAULT_SEESAW_I2C_SCL_GPIO`
+- `VG_DEFAULT_SEESAW_I2C_ADDRESS`
+- `VG_DEFAULT_SEESAW_TOUCH_CHANNEL`
+- `VG_DEFAULT_MOISTURE_RAW_DRY`
+- `VG_DEFAULT_MOISTURE_RAW_WET`
 
 ## Practical Rules
 

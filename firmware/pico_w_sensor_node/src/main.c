@@ -57,6 +57,13 @@ int main(void) {
         config.node_id, config.zone_id, config.mqtt_host, config.mqtt_port);
     printf("[main] wifi: ssid=%s password_len=%u\n",
         config.wifi_ssid, (unsigned)strlen(config.wifi_password));
+    printf("[main] seesaw: sda=GP%u scl=GP%u addr=0x%02X channel=%u dry=%u wet=%u\n",
+        (unsigned)config.seesaw_i2c_sda_gpio,
+        (unsigned)config.seesaw_i2c_scl_gpio,
+        (unsigned)config.seesaw_i2c_address,
+        (unsigned)config.seesaw_touch_channel,
+        (unsigned)config.moisture_raw_dry,
+        (unsigned)config.moisture_raw_wet);
 
     sensors_init(&config);
     wifi_connect_with_retry(&config, wifi_error, sizeof(wifi_error));

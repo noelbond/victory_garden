@@ -94,13 +94,14 @@ Typical values to set before flashing:
 - NTP server
 - node ID
 - zone ID
-- ADC GPIO
-- whether the simple ADC percentage should be inverted
+- seesaw SDA/SCL pins
+- seesaw I2C address and touch channel
+- dry/wet calibration bounds once measured
 
 Important:
 
-- the Pico currently uses a simple ADC-based `0..100` percentage
-- it does not yet apply dry/wet reference calibration like the Arduino node
+- the Pico now expects a seesaw I2C moisture sensor, not a raw analog probe
+- earlier ADC-based Pico readings should not be reused as calibration data
 - see [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
 
 The Pico also supports persisted config in flash at runtime through retained `node-config/v1` messages from Rails.

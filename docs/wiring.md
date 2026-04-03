@@ -4,7 +4,7 @@ This document describes the wiring assumptions that are true in the current repo
 
 It is intentionally conservative:
 
-- the Pico sensor path has concrete default pins
+- the Pico sensor path has concrete default bus pins
 - the actuator path does **not** have a concrete relay GPIO hardcoded in the repo yet
 - the actuator hardware wiring depends on the external driver or hook you choose
 
@@ -20,36 +20,42 @@ Current moisture-read implementation lives in:
 
 Default assumptions:
 
-- moisture ADC GPIO: `GPIO26`
-- ADC range: `0..4095`
-- `moisture_percent` is derived from the ADC reading
-- `moisture_invert_percent` defaults to `true`
+- seesaw I2C SDA: `GPIO4`
+- seesaw I2C SCL: `GPIO5`
+- seesaw I2C address: `0x36`
+- seesaw touch channel: `0`
+- `moisture_raw` comes from seesaw `touchRead()`
+- `moisture_percent` is derived from dry/wet calibration when configured, or a rough fallback range otherwise
 
 ### Basic wiring
 
-For a simple analog moisture sensor with an analog output:
+For the Adafruit seesaw/STEMMA soil sensor path:
 
-- Pico `3V3(OUT)` -> sensor `VCC`
+- Pico `3V3(OUT)` -> sensor `VIN`
 - Pico `GND` -> sensor `GND`
-- Pico `GPIO26` -> sensor analog output
+- Pico `GPIO4` -> sensor `SDA`
+- Pico `GPIO5` -> sensor `SCL`
 
 Important:
 
-- use only `3.3V`-safe sensors on the Pico ADC input
-- do not drive the Pico ADC pin with `5V`
 - keep grounds common
+- the sensor is I2C, not analog
+- the previous ADC-based Pico readings are not valid calibration data for this hardware
 
 ### Current software expectation
 
 The Pico firmware currently expects:
 
-- one analog moisture signal
-- on the configured ADC GPIO
-- no separate battery or temperature wiring yet
+- one seesaw moisture sensor on I2C
+- on the configured SDA/SCL pins
+- no separate battery wiring yet
 
-If you move the sensor output to a different ADC-capable pin, update:
+If you move the sensor bus to different Pico pins, update:
 
-- `VG_DEFAULT_MOISTURE_ADC_GPIO`
+- `VG_DEFAULT_SEESAW_I2C_SDA_GPIO`
+- `VG_DEFAULT_SEESAW_I2C_SCL_GPIO`
+- `VG_DEFAULT_SEESAW_I2C_ADDRESS`
+- `VG_DEFAULT_SEESAW_TOUCH_CHANNEL`
 
 in:
 
@@ -57,14 +63,9 @@ in:
 
 ### Calibration note
 
-The Pico currently does not implement dry/wet calibration in firmware.
+The Pico moisture path now uses the seesaw I2C sensor with calibrated dry/wet bounds in firmware. Current default calibration values are `raw_dry = 540` and `raw_wet = 820`.
 
-So this wiring gets you:
-
-- raw ADC readings
-- a simple normalized `moisture_percent`
-
-For the calibration model and current limitation, see:
+For the calibration model and current status, see:
 
 - [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
 
@@ -83,7 +84,7 @@ So if you want the most complete calibration path today, Arduino is the more mat
 
 ## Actuator Wiring Status
 
-The repo currently defines the actuator behavior at the software boundary, not at a fixed GPIO pin boundary.
+The repo now includes a reference Pi GPIO relay path for actuator bring-up, but the actuator behavior is still defined first at the software boundary.
 
 Current actuator service:
 
@@ -97,6 +98,8 @@ Relevant settings:
 
 - `ACTUATOR_DRIVER`
 - `ACTUATOR_HOOK_COMMAND`
+- `ACTUATOR_GPIO_PIN`
+- `ACTUATOR_GPIO_ACTIVE_LOW`
 
 ### What this means
 
@@ -113,7 +116,21 @@ With the shell hook driver:
 - the actuator service runs your external hook command
 - your hook command is responsible for the actual relay or pump hardware
 
-So the relay wiring is **not** defined by a fixed pin in this repo.
+The recommended default relay GPIO path is now:
+
+- Raspberry Pi BCM `17` (physical pin `11`) -> relay `IN`
+- Raspberry Pi `GND` -> relay `GND`
+- Raspberry Pi power -> relay `VCC` only if the relay module is Pi-compatible
+
+The isolated test and live hook share the same GPIO helper:
+
+- [`../python_tools/tools/test_relay_gpio.py`](/Users/noel/coding/python/victory_garden/python_tools/tools/test_relay_gpio.py)
+- [`../python_tools/tools/relay_actuator_hook.py`](/Users/noel/coding/python/victory_garden/python_tools/tools/relay_actuator_hook.py)
+- [`../python_tools/watering/relay_gpio.py`](/Users/noel/coding/python/victory_garden/python_tools/watering/relay_gpio.py)
+
+See the full bring-up guide in:
+
+- [`actuator_hardware.md`](/Users/noel/coding/python/victory_garden/docs/actuator_hardware.md)
 
 ### Current actuator path
 

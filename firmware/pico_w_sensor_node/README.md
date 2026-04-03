@@ -22,8 +22,8 @@ Current limitations:
 - no provisioning AP yet
 - no battery or soil temperature driver yet
 - MQTT broker host must currently be an IPv4 address, not a hostname
-- moisture reading uses a simple ADC input on the configured GPIO
-- dry/wet reference calibration is not implemented yet; current `moisture_percent` is ADC-derived with optional inversion
+- the Pico moisture path now expects an Adafruit seesaw I2C soil sensor
+- if `raw_dry` / `raw_wet` are not configured yet, `moisture_percent` uses a rough fallback range until calibration is completed
 
 Build prerequisites:
 - `arm-none-eabi-gcc`
@@ -76,8 +76,9 @@ before flashing:
 - NTP server
 - node ID
 - zone ID
-- moisture ADC GPIO
-- whether `moisture_percent` should be inverted
+- seesaw SDA/SCL pins
+- seesaw I2C address / touch channel
+- dry/wet calibration bounds
 
 Example:
 

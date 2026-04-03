@@ -44,6 +44,13 @@ print(secrets.token_hex(64))
 PY
 }
 
+generated_mqtt_password() {
+  python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+}
+
 detect_platform_target() {
   case "$(uname -m)" in
     armv7l|armv6l)
@@ -204,7 +211,7 @@ ensure_env_file() {
   secret_key_base="$(generated_secret)"
   admin_api_token="$(generated_secret)"
   master_key="$(read_master_key)"
-  mqtt_password="$(generated_secret)"
+  mqtt_password="$(generated_mqtt_password)"
 
   if [[ ! -f "$ENV_FILE" ]]; then
     cat > "$ENV_FILE" <<EOF
@@ -245,9 +252,13 @@ ensure_mosquitto_auth() {
   load_env_file
 
   install -d -m 755 /etc/mosquitto/conf.d
-  install -d -m 700 /etc/mosquitto/passwd
+  install -d -m 750 -o mosquitto -g mosquitto /etc/mosquitto/passwd
   mosquitto_passwd -b -c /etc/mosquitto/passwd/victory_garden "$MQTT_USERNAME" "$MQTT_PASSWORD"
-  chmod 600 /etc/mosquitto/passwd/victory_garden
+  chown mosquitto:mosquitto /etc/mosquitto/passwd/victory_garden
+  chmod 640 /etc/mosquitto/passwd/victory_garden
+
+  rm -f /etc/mosquitto/conf.d/victory-garden-listener.conf
+  rm -f /etc/mosquitto/conf.d/victory-garden-listener.conf.disabled
 
   cat > /etc/mosquitto/conf.d/victory-garden-auth.conf <<EOF
 listener 1883 0.0.0.0

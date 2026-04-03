@@ -240,9 +240,9 @@ Typical values to set before flashing:
 
 Current moisture-input note:
 
-- the Pico currently converts raw ADC `0..4095` to `0..100`
-- it supports choosing the ADC GPIO and inverting the percent
-- it does not yet implement dry/wet reference calibration in firmware
+- the Pico moisture path uses an Adafruit seesaw I2C soil sensor
+- default bus settings are `GPIO4`/`GPIO5` on I2C address `0x36`
+- it supports firmware dry/wet calibration using `VG_DEFAULT_MOISTURE_RAW_DRY` and `VG_DEFAULT_MOISTURE_RAW_WET`
 - see [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
 
 ### Pico verification

@@ -33,8 +33,8 @@ target_link_libraries(pico_w_sensor_node
     pico_cyw43_arch_lwip_threadsafe_background
     pico_lwip_mqtt
     pico_lwip_sntp
-    hardware_adc
     hardware_flash
+    hardware_i2c
     hardware_sync
 )
 
