@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "config.h"
+#include "pico/stdlib.h"
 #include "sensors.h"
 
 typedef struct {

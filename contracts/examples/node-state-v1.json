@@ -11,9 +11,8 @@
   "wifi_rssi": -54,
   "uptime_seconds": 12,
   "wake_count": 1,
-  "ip": "192.168.4.41",
+  "ip": "192.168.4.25",
   "health": "degraded",
   "last_error": "none",
   "publish_reason": "scheduled"
 }
-

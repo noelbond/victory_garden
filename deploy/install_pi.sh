@@ -18,7 +18,7 @@ ENV_FILE="/etc/victory_garden.env"
 RELEASE_MANIFEST="$REPO_ROOT/deploy/release_manifest.json"
 
 CONTROLLER_SERVICE="greenhouse.service"
-ACTUATOR_SERVICE="victory-garden-actuator.service"
+MQTT_DISCOVERY_SERVICE="victory-garden-mqtt-discovery.service"
 WEB_SERVICE="victory-garden-web.service"
 MQTT_CONSUMER_SERVICE="victory-garden-mqtt-consumer.service"
 
@@ -224,10 +224,9 @@ APP_HOST=localhost
 PORT=3000
 MQTT_HOST=127.0.0.1
 MQTT_PORT=1883
+MQTT_DISCOVERY_PORT=44737
 MQTT_USERNAME=victory_garden
 MQTT_PASSWORD=$mqtt_password
-ACTUATOR_DRIVER=mock
-ACTUATOR_HOOK_COMMAND=
 SOLID_QUEUE_IN_PUMA=1
 SECRET_KEY_BASE=$secret_key_base
 RUBY_SERVICE_DATABASE_PASSWORD=$db_password
@@ -239,6 +238,7 @@ EOF
 
   grep -q '^MQTT_USERNAME=' "$ENV_FILE" || echo 'MQTT_USERNAME=victory_garden' >> "$ENV_FILE"
   grep -q '^MQTT_PASSWORD=' "$ENV_FILE" || echo "MQTT_PASSWORD=$mqtt_password" >> "$ENV_FILE"
+  grep -q '^MQTT_DISCOVERY_PORT=' "$ENV_FILE" || echo 'MQTT_DISCOVERY_PORT=44737' >> "$ENV_FILE"
 }
 
 load_env_file() {
@@ -347,8 +347,7 @@ install_controller_service() {
 [Unit]
 Description=Victory Garden Greenhouse Controller
 After=network-online.target mosquitto.service
-Wants=network-online.target
-Requires=mosquitto.service
+Wants=network-online.target mosquitto.service
 
 [Service]
 Type=simple
@@ -368,26 +367,25 @@ WantedBy=multi-user.target
 EOF
 }
 
-install_actuator_service() {
-  cat > "/etc/systemd/system/$ACTUATOR_SERVICE" <<EOF
+install_mqtt_discovery_service() {
+  cat > "/etc/systemd/system/$MQTT_DISCOVERY_SERVICE" <<EOF
 [Unit]
-Description=Victory Garden Actuator Service
+Description=Victory Garden MQTT Discovery Responder
 After=network-online.target mosquitto.service
-Wants=network-online.target
-Requires=mosquitto.service
+Wants=network-online.target mosquitto.service
 
 [Service]
 Type=simple
 User=$RUN_USER
 WorkingDirectory=$PYTHON_TOOLS_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=$PYTHON_VENV_DIR/bin/python -m actuator_main
+ExecStart=/bin/sh -lc 'exec "$0" -m tools.mqtt_discovery_responder --discovery-port "${MQTT_DISCOVERY_PORT:-44737}" --mqtt-port "${MQTT_PORT:-1883}"' $PYTHON_VENV_DIR/bin/python
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=victory-garden-actuator
+SyslogIdentifier=victory-garden-mqtt-discovery
 
 [Install]
 WantedBy=multi-user.target
@@ -424,8 +422,8 @@ install_mqtt_consumer_service() {
 [Unit]
 Description=Victory Garden Rails MQTT Consumer
 After=network-online.target mosquitto.service postgresql.service
-Wants=network-online.target
-Requires=mosquitto.service postgresql.service
+Wants=network-online.target mosquitto.service
+Requires=postgresql.service
 
 [Service]
 Type=simple
@@ -445,19 +443,21 @@ EOF
 }
 
 restart_services() {
-  systemctl enable mosquitto postgresql "$CONTROLLER_SERVICE" "$ACTUATOR_SERVICE" "$WEB_SERVICE" "$MQTT_CONSUMER_SERVICE"
+  systemctl disable --now victory-garden-actuator.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/victory-garden-actuator.service
+  systemctl enable mosquitto postgresql "$CONTROLLER_SERVICE" "$MQTT_DISCOVERY_SERVICE" "$WEB_SERVICE" "$MQTT_CONSUMER_SERVICE"
   systemctl daemon-reload
   systemctl restart mosquitto
   systemctl restart postgresql
   systemctl restart "$CONTROLLER_SERVICE"
-  systemctl restart "$ACTUATOR_SERVICE"
+  systemctl restart "$MQTT_DISCOVERY_SERVICE"
   systemctl restart "$WEB_SERVICE"
   systemctl restart "$MQTT_CONSUMER_SERVICE"
 }
 
 print_status() {
   systemctl --no-pager --full status "$CONTROLLER_SERVICE" || true
-  systemctl --no-pager --full status "$ACTUATOR_SERVICE" || true
+  systemctl --no-pager --full status "$MQTT_DISCOVERY_SERVICE" || true
   systemctl --no-pager --full status "$WEB_SERVICE" || true
   systemctl --no-pager --full status "$MQTT_CONSUMER_SERVICE" || true
   echo
@@ -481,7 +481,7 @@ ensure_postgres
 ensure_rails_bundle
 prepare_rails_db
 install_controller_service
-install_actuator_service
+install_mqtt_discovery_service
 install_web_service
 install_mqtt_consumer_service
 restart_services

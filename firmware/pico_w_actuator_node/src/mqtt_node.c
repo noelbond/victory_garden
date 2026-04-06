@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "hardware/gpio.h"
 #include "lwip/ip.h"
 #include "lwip/apps/mqtt.h"
 #include "lwip/ip4_addr.h"
@@ -325,6 +326,24 @@ static bool topic_equals(const char *a, const char *b) {
     return strcmp(a, b) == 0;
 }
 
+static const char *actuator_status_name(actuator_status_t status) {
+    switch (status) {
+        case ACTUATOR_STATUS_ACKNOWLEDGED:
+            return "ACKNOWLEDGED";
+        case ACTUATOR_STATUS_RUNNING:
+            return "RUNNING";
+        case ACTUATOR_STATUS_COMPLETED:
+            return "COMPLETED";
+        case ACTUATOR_STATUS_STOPPED:
+            return "STOPPED";
+        case ACTUATOR_STATUS_FAULT:
+            return "FAULT";
+        case ACTUATOR_STATUS_NONE:
+        default:
+            return "UNKNOWN";
+    }
+}
+
 static void config_ack_timestamp(const mqtt_node_t *node, char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return;
@@ -343,32 +362,117 @@ static void config_ack_timestamp(const mqtt_node_t *node, char *out, size_t out_
     time_sync_format_iso8601(out, out_size);
 }
 
-static void clear_retained_topic(const char *topic) {
-    mqtt_publish_locked(g_runtime.client, topic, "", 0, 0, 1, NULL, NULL);
+static void actuator_set_output(mqtt_node_t *node, bool enabled) {
+    bool level = enabled ? node->config->actuator_relay_active_high : !node->config->actuator_relay_active_high;
+    gpio_put(node->config->actuator_relay_gpio, level ? 1u : 0u);
+    node->actuator_relay_enabled = enabled;
+    printf("[actuator] relay gp=%u enabled=%d level=%d\n",
+           (unsigned)node->config->actuator_relay_gpio,
+           (int)enabled,
+           (int)level);
 }
 
-static void clear_retained_command(mqtt_node_t *node) {
-    char topic[MQTT_RX_TOPIC_MAX];
-    topic_command(node->config, topic, sizeof(topic));
-    clear_retained_topic(topic);
+static void actuator_queue_status(mqtt_node_t *node, actuator_status_t status,
+                                  const char *fault_code, const char *fault_detail) {
+    node->pending_actuator_status = status;
+    node->actuator_status_pending = true;
+    snprintf(node->actuator_fault_code, sizeof(node->actuator_fault_code), "%s", fault_code ? fault_code : "");
+    snprintf(node->actuator_fault_detail, sizeof(node->actuator_fault_detail), "%s", fault_detail ? fault_detail : "");
 }
 
-static void publish_command_ack(mqtt_node_t *node, const char *command, const char *command_id, const char *status) {
+static uint32_t actuator_elapsed_seconds(const mqtt_node_t *node) {
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    if (now_ms <= node->actuator_started_at_ms) {
+        return 0u;
+    }
+    return (now_ms - node->actuator_started_at_ms) / 1000u;
+}
+
+static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, actuator_status_t status,
+                                             const char *fault_code, const char *fault_detail) {
+    if (!g_runtime.connected || !g_runtime.client || !mqtt_client_is_connected(g_runtime.client)) {
+        actuator_queue_status(node, status, fault_code, fault_detail);
+        return false;
+    }
+
     char topic[MQTT_RX_TOPIC_MAX];
+    char timestamp[32];
     char payload[MQTT_TX_PAYLOAD_MAX];
-    topic_command_ack(node->config, topic, sizeof(topic));
+    char actual_runtime_json[24];
+    char fault_code_json[64];
+    char fault_detail_json[160];
+    topic_actuator_status(node->config, topic, sizeof(topic));
+    time_sync_format_iso8601(timestamp, sizeof(timestamp));
+
+    if (status == ACTUATOR_STATUS_ACKNOWLEDGED) {
+        snprintf(actual_runtime_json, sizeof(actual_runtime_json), "null");
+    } else {
+        snprintf(actual_runtime_json, sizeof(actual_runtime_json), "%lu",
+                 (unsigned long)actuator_elapsed_seconds(node));
+    }
+
+    if (fault_code && fault_code[0] != '\0') {
+        snprintf(fault_code_json, sizeof(fault_code_json), "\"%s\"", fault_code);
+    } else {
+        snprintf(fault_code_json, sizeof(fault_code_json), "null");
+    }
+
+    if (fault_detail && fault_detail[0] != '\0') {
+        snprintf(fault_detail_json, sizeof(fault_detail_json), "\"%s\"", fault_detail);
+    } else {
+        snprintf(fault_detail_json, sizeof(fault_detail_json), "null");
+    }
 
     snprintf(
         payload,
         sizeof(payload),
-        "{\"schema_version\":\"node-command-ack/v1\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"command\":\"%s\",\"command_id\":\"%s\",\"status\":\"%s\"}",
+        "{\"zone_id\":\"%s\",\"state\":\"%s\",\"timestamp\":\"%s\",\"idempotency_key\":\"%s\",\"actual_runtime_seconds\":%s,\"flow_ml\":null,\"fault_code\":%s,\"fault_detail\":%s}",
         node->config->zone_id,
-        node->config->node_id,
-        command,
-        command_id,
-        status
+        actuator_status_name(status),
+        timestamp,
+        node->actuator_idempotency_key,
+        actual_runtime_json,
+        fault_code_json,
+        fault_detail_json
     );
-    mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), 0, 1, NULL, NULL);
+
+    err_t err = mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), 0, 1, mqtt_request_cb, node);
+    if (err == ERR_OK) {
+        node->actuator_status_pending = false;
+        node->pending_actuator_status = ACTUATOR_STATUS_NONE;
+        node->actuator_fault_code[0] = '\0';
+        node->actuator_fault_detail[0] = '\0';
+        set_error(node, "none");
+        return true;
+    }
+
+    actuator_queue_status(node, status, fault_code, fault_detail);
+    if (err == ERR_MEM) {
+        set_error(node, "mqtt actuator status buffer full");
+    } else {
+        set_errorf(node, "mqtt actuator status failed", err);
+    }
+    return false;
+}
+
+static void actuator_stop_with_status(mqtt_node_t *node, actuator_status_t status,
+                                      const char *fault_code, const char *fault_detail) {
+    printf("[actuator] stop status=%s fault=%s\n",
+           actuator_status_name(status),
+           fault_code ? fault_code : "none");
+    actuator_set_output(node, false);
+    node->actuator_running = false;
+    mqtt_publish_actuator_status_now(node, status, fault_code, fault_detail);
+}
+
+static void clear_retained_topic(const char *topic) {
+    mqtt_publish_locked(g_runtime.client, topic, "", 0, 0, 1, NULL, NULL);
+}
+
+static void clear_retained_actuator_command(mqtt_node_t *node) {
+    char topic[MQTT_RX_TOPIC_MAX];
+    topic_actuator_command(node->config, topic, sizeof(topic));
+    clear_retained_topic(topic);
 }
 
 static void publish_config_ack(mqtt_node_t *node, const char *status, const char *error_message) {
@@ -416,24 +520,57 @@ static void mqtt_request_cb(void *arg, err_t err) {
     }
 }
 
-static void handle_command_message(mqtt_node_t *node, const char *payload) {
+static void handle_actuator_command_message(mqtt_node_t *node, const char *payload) {
     char command[32] = {0};
-    char command_id[64] = {0};
+    char idempotency_key[96] = {0};
+    int runtime_seconds = 0;
 
     if (!extract_json_string(payload, "command", command, sizeof(command)) ||
-        !extract_json_string(payload, "command_id", command_id, sizeof(command_id))) {
-        set_error(node, "invalid command payload");
+        !extract_json_string(payload, "idempotency_key", idempotency_key, sizeof(idempotency_key))) {
+        set_error(node, "invalid actuator payload");
         return;
     }
 
-    if (strcmp(command, "request_reading") == 0) {
-        publish_command_ack(node, command, command_id, "acknowledged");
-        clear_retained_command(node);
-        node->publish_requested = true;
+    clear_retained_actuator_command(node);
+
+    if (strcmp(command, "stop_watering") == 0) {
+        printf("[actuator] command=stop id=%s\n", idempotency_key);
+        snprintf(node->actuator_idempotency_key, sizeof(node->actuator_idempotency_key), "%s", idempotency_key);
+        actuator_stop_with_status(node, ACTUATOR_STATUS_STOPPED, NULL, NULL);
         set_error(node, "none");
-    } else {
-        publish_command_ack(node, command, command_id, "ignored");
+        return;
     }
+
+    if (strcmp(command, "start_watering") != 0) {
+        set_error(node, "unsupported actuator command");
+        return;
+    }
+
+    if (!extract_json_int(payload, "runtime_seconds", &runtime_seconds) || runtime_seconds <= 0) {
+        set_error(node, "invalid actuator runtime");
+        return;
+    }
+
+    printf("[actuator] command=%s id=%s runtime=%d running=%d\n",
+           command,
+           idempotency_key,
+           runtime_seconds,
+           (int)node->actuator_running);
+
+    if ((uint16_t)runtime_seconds > node->config->max_pulse_runtime_sec && node->config->max_pulse_runtime_sec > 0) {
+        runtime_seconds = (int)node->config->max_pulse_runtime_sec;
+    }
+
+    snprintf(node->actuator_idempotency_key, sizeof(node->actuator_idempotency_key), "%s", idempotency_key);
+    node->actuator_started_at_ms = to_ms_since_boot(get_absolute_time());
+    node->actuator_runtime_seconds = (uint32_t)runtime_seconds;
+    node->actuator_hard_deadline = make_timeout_time_ms((uint32_t)runtime_seconds * 1000u);
+    mqtt_publish_actuator_status_now(node, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL);
+    actuator_set_output(node, true);
+    node->actuator_running = true;
+    mqtt_publish_actuator_status_now(node, ACTUATOR_STATUS_RUNNING, NULL, NULL);
+
+    set_error(node, "none");
 }
 
 static void handle_config_message(mqtt_node_t *node, const char *payload) {
@@ -456,7 +593,6 @@ static void handle_config_message(mqtt_node_t *node, const char *payload) {
             return;
         }
         publish_config_ack(node, "applied", NULL);
-        node->publish_requested = true;
         node->config_changed_requires_reconnect = zone_changed;
         set_error(node, "none");
     } else {
@@ -466,13 +602,13 @@ static void handle_config_message(mqtt_node_t *node, const char *payload) {
 }
 
 static void handle_incoming_message(mqtt_node_t *node) {
-    char command_topic[MQTT_RX_TOPIC_MAX];
+    char actuator_command_topic[MQTT_RX_TOPIC_MAX];
     char config_topic[MQTT_RX_TOPIC_MAX];
-    topic_command(node->config, command_topic, sizeof(command_topic));
+    topic_actuator_command(node->config, actuator_command_topic, sizeof(actuator_command_topic));
     topic_node_config(node->config, config_topic, sizeof(config_topic));
 
-    if (topic_equals(g_runtime.incoming_topic, command_topic)) {
-        handle_command_message(node, g_runtime.incoming_payload);
+    if (topic_equals(g_runtime.incoming_topic, actuator_command_topic)) {
+        handle_actuator_command_message(node, g_runtime.incoming_payload);
     } else if (topic_equals(g_runtime.incoming_topic, config_topic)) {
         handle_config_message(node, g_runtime.incoming_payload);
     }
@@ -511,11 +647,11 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
 }
 
 static void subscribe_topics(mqtt_node_t *node) {
-    char command_topic[MQTT_RX_TOPIC_MAX];
+    char actuator_command_topic[MQTT_RX_TOPIC_MAX];
     char config_topic[MQTT_RX_TOPIC_MAX];
-    topic_command(node->config, command_topic, sizeof(command_topic));
+    topic_actuator_command(node->config, actuator_command_topic, sizeof(actuator_command_topic));
     topic_node_config(node->config, config_topic, sizeof(config_topic));
-    mqtt_subscribe_locked(g_runtime.client, command_topic, 0, mqtt_request_cb, node);
+    mqtt_subscribe_locked(g_runtime.client, actuator_command_topic, 0, mqtt_request_cb, node);
     mqtt_subscribe_locked(g_runtime.client, config_topic, 0, mqtt_request_cb, node);
 }
 
@@ -529,7 +665,6 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection
         g_runtime.next_reconnect_at = get_absolute_time();
         mqtt_set_inpub_callback(g_runtime.client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb, node);
         subscribe_topics(node);
-        node->publish_requested = true;
         set_error(node, "none");
     } else {
         printf("[mqtt_cb] not accepted - status=%d\n", (int)status);
@@ -552,6 +687,12 @@ void mqtt_node_init(mqtt_node_t *node, node_config_t *config) {
     g_runtime.next_reconnect_at = get_absolute_time();
     g_runtime.discovery_next_attempt_at = get_absolute_time();
 
+    gpio_init(config->actuator_relay_gpio);
+    gpio_set_dir(config->actuator_relay_gpio, GPIO_OUT);
+    actuator_set_output(node, false);
+    printf("[actuator] initialized gp=%u active_high=%d\n",
+           (unsigned)config->actuator_relay_gpio,
+           (int)config->actuator_relay_active_high);
 }
 
 static void mqtt_ensure_connected(mqtt_node_t *node) {
@@ -613,6 +754,23 @@ static void mqtt_ensure_connected(mqtt_node_t *node) {
 
 void mqtt_node_poll(mqtt_node_t *node) {
     mqtt_ensure_connected(g_runtime.node);
+
+    if (node->actuator_status_pending) {
+        mqtt_publish_actuator_status_now(
+            node,
+            node->pending_actuator_status,
+            node->actuator_fault_code,
+            node->actuator_fault_detail
+        );
+    }
+
+    if (!node->actuator_running) {
+        return;
+    }
+
+    if (absolute_time_diff_us(get_absolute_time(), node->actuator_hard_deadline) <= 0) {
+        actuator_stop_with_status(node, ACTUATOR_STATUS_COMPLETED, NULL, NULL);
+    }
 }
 
 bool mqtt_node_is_connected(const mqtt_node_t *node) {
@@ -638,79 +796,6 @@ bool mqtt_node_publish_canary(mqtt_node_t *node) {
         set_errorf(node, "mqtt canary failed", err);
     }
     return false;
-}
-
-bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapshot, const char *reason) {
-    if (!mqtt_node_is_connected(node)) {
-        set_error(node, "mqtt not connected");
-        return false;
-    }
-
-    char topic[MQTT_RX_TOPIC_MAX];
-    char timestamp[32];
-    char ip[32];
-    char payload[MQTT_TX_PAYLOAD_MAX];
-    int32_t rssi = wifi_rssi();
-    bool has_ip = wifi_ip_string(ip, sizeof(ip));
-    topic_state(node->config, topic, sizeof(topic));
-    time_sync_format_iso8601(timestamp, sizeof(timestamp));
-
-    if (has_ip) {
-        snprintf(
-            payload,
-            sizeof(payload),
-            "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_temp_c\":null,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,\"ip\":\"%s\",\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
-            timestamp,
-            node->config->zone_id,
-            node->config->node_id,
-            snapshot->moisture_raw,
-            snapshot->moisture_percent,
-            (long)rssi,
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            ip,
-            snapshot->healthy ? "ok" : "degraded",
-            node->last_error,
-            reason
-        );
-    } else {
-        snprintf(
-            payload,
-            sizeof(payload),
-            "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_temp_c\":null,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,\"ip\":null,\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
-            timestamp,
-            node->config->zone_id,
-            node->config->node_id,
-            snapshot->moisture_raw,
-            snapshot->moisture_percent,
-            (long)rssi,
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            snapshot->healthy ? "ok" : "degraded",
-            node->last_error,
-            reason
-        );
-    }
-
-    err_t err = mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), 0, 1, mqtt_request_cb, node);
-    if (err == ERR_OK) {
-        set_error(node, "none");
-        return true;
-    }
-
-    if (err == ERR_MEM) {
-        set_error(node, "mqtt publish buffer full");
-    } else {
-        set_errorf(node, "mqtt publish failed", err);
-    }
-
-    return false;
-}
-
-bool mqtt_node_take_publish_request(mqtt_node_t *node) {
-    bool requested = node->publish_requested;
-    node->publish_requested = false;
-    return requested;
 }
 
 bool mqtt_node_take_reconnect_request(mqtt_node_t *node) {

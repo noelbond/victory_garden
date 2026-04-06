@@ -14,8 +14,8 @@
 #include "config_local.h"
 #endif
 
-#define VG_CONFIG_MAGIC 0x56474E31u
-#define VG_CONFIG_VERSION 12u
+#define VG_CONFIG_MAGIC 0x56474131u
+#define VG_CONFIG_VERSION 1u
 
 #define VG_MAX_SSID_LEN 64
 #define VG_MAX_PASSWORD_LEN 64
@@ -56,7 +56,7 @@
 #endif
 
 #ifndef VG_DEFAULT_NODE_ID
-#define VG_DEFAULT_NODE_ID "pico-w-zone1"
+#define VG_DEFAULT_NODE_ID "pico-w-actuator-zone1"
 #endif
 
 #ifndef VG_DEFAULT_ZONE_ID
