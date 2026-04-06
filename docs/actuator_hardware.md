@@ -1,24 +1,23 @@
 # Actuator Hardware Bring-Up
 
-This document covers the pre-flight bring-up for a Pi-controlled relay, pump, or valve.
+This document covers bring-up for a Pico-controlled relay, pump, or valve.
 
 The current software boundary is already in place:
 
 - Python controller publishes `greenhouse/zones/{zone_id}/actuator/command`
-- Python actuator daemon consumes that command
-- actuator daemon runs a hook command
-- hook command toggles the real relay
-- actuator daemon publishes `greenhouse/zones/{zone_id}/actuator/status`
+- actuator Pico consumes that command
+- actuator Pico toggles the real relay
+- actuator Pico publishes `greenhouse/zones/{zone_id}/actuator/status`
 
 The goal here is to remove uncertainty before the final hardware hookup.
 
 ## Recommended Relay Interface
 
-Use the Raspberry Pi as the relay driver host, not the Pico.
+Use the dedicated actuator Pico as the relay driver host.
 
 Recommended default pin selection:
 
-- relay input pin: Pi BCM `17` (physical pin `11`)
+- relay input pin: actuator Pico `GP15`
 - relay power: module `VCC`
 - relay ground: module `GND`
 
@@ -43,69 +42,42 @@ Do not power the pump directly from the Pi.
 
 Required shared references:
 
-- Pi `GND` must connect to relay `GND`
-- Pi `GND` must share ground with pump power `-`
+- actuator Pico `GND` must connect to relay `GND`
+- actuator Pico `GND` must share ground with pump power `-`
 
 Recommended switched path:
 
 - pump power `+` -> relay `COM`
 - relay `NO` -> pump `+`
 - pump `-` -> pump power `-`
-- Pi `GND` -> pump power `-`
-- Pi BCM `17` -> relay `IN`
+- actuator Pico `GND` -> pump power `-`
+- actuator Pico `GP15` -> relay `IN`
 
 This keeps the pump off by default and only energizes it when the relay closes `NO`.
 
 ## Isolated GPIO Test
 
-The repo now includes a dead-simple Pi relay test:
-
-- [`../python_tools/tools/test_relay_gpio.py`](/Users/noel/coding/python/victory_garden/python_tools/tools/test_relay_gpio.py)
-
-It uses the same GPIO helper as the real relay hook:
-
-- [`../python_tools/tools/relay_actuator_hook.py`](/Users/noel/coding/python/victory_garden/python_tools/tools/relay_actuator_hook.py)
-- [`../python_tools/watering/relay_gpio.py`](/Users/noel/coding/python/victory_garden/python_tools/watering/relay_gpio.py)
-
-Run on the Pi:
-
-```bash
-cd ~/victory_garden/python_tools
-.venv/bin/python -m tools.test_relay_gpio --pin 17 --active-low --cycles 5 --on-seconds 2 --off-seconds 2
-```
+Use the dedicated Pico relay test firmware or the actuator firmware itself with a short bounded runtime command.
 
 Success signal:
 
-- relay clicks on and off at a 2-second cadence
+- relay clicks on and off at a predictable cadence
 
 Failure signals:
 
 - no click at all
 - relay stuck on
 - relay logic reversed
-- Pi becomes unstable or reboots
+- Pico becomes unstable or reboots
 
-If the relay logic is reversed, rerun with:
+## Runtime Safety
 
-```bash
-.venv/bin/python -m tools.test_relay_gpio --pin 17 --no-active-low
-```
+The actuator Pico owns the runtime cutoff locally:
 
-## Real Actuator Hook
-
-For the live actuator service, keep using the existing shell-hook driver and point it at the relay hook:
-
-```bash
-ACTUATOR_DRIVER=shell
-ACTUATOR_HOOK_COMMAND=/home/noelbond/victory_garden/python_tools/.venv/bin/python -m tools.relay_actuator_hook
-ACTUATOR_GPIO_PIN=17
-ACTUATOR_GPIO_ACTIVE_LOW=true
-```
-
-That means:
-
-- mock mode and real hardware still use the same actuator daemon code path
-- only the driver implementation changes underneath it
+- relay defaults OFF on boot
+- `start_watering` turns the relay on for the requested runtime
+- `stop_watering` turns it off early
+- runtime expiry forces OFF even if the Pi does nothing else
 
 ## Bring-Up Procedure
 
@@ -118,7 +90,7 @@ Step 1: Pi only
 Success:
 
 - Pi boots normally
-- `victory-garden-actuator.service` is healthy
+- MQTT broker and Rails services are healthy
 
 Step 2: Relay input test
 
@@ -163,18 +135,34 @@ Failure:
 
 Step 5: Full system path
 
-- switch the actuator service from `mock` to `shell`
-- use the relay hook config
+- flash the dedicated actuator Pico firmware
 - trigger a manual watering command from Rails or publish an actuator command directly
 
 Success:
 
-- same code path publishes command, toggles relay, and records actuator status
+- the same MQTT command path toggles the relay and records actuator status
+
+Step 6: Runtime cutoff verification
+
+- start watering through the live actuator Pico path
+- confirm the relay and pump are ON
+- wait for the requested runtime to expire
+- verify the relay drops OFF automatically without needing an extra command
+
+Success:
+
+- the pump stops when the requested runtime ends
+- the system can still stop early with `stop_watering` when needed
+
+Failure:
+
+- relay remains ON past the requested runtime
+- stop commands do not shut the relay off early
 
 ## Acceptance
 
 This task is complete when:
 
 - the relay toggles from the isolated GPIO test
-- the same relay code is used by the live shell-hook actuator path
+- the live actuator Pico responds to the same MQTT actuator command path
 - the real pump turns on and off without changing controller logic

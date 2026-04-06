@@ -6,8 +6,10 @@ It assumes:
 
 - one Raspberry Pi on your LAN
 - one actuator zone
-- one claimed node
-- Mosquitto, Rails, and the actuator daemon running on the Pi
+- one claimed sensor node
+- one claimed actuator node
+- Mosquitto and Rails running on the Pi
+- one dedicated actuator Pico listening on the actuator topics
 
 If you need the full install flow first, start with [`setup.md`](/Users/noel/coding/python/victory_garden/docs/setup.md).
 
@@ -25,9 +27,9 @@ Verify:
 
 ```bash
 sudo systemctl status mosquitto --no-pager
+sudo systemctl status victory-garden-mqtt-discovery.service --no-pager
 sudo systemctl status victory-garden-web.service --no-pager
 sudo systemctl status victory-garden-mqtt-consumer.service --no-pager
-sudo systemctl status victory-garden-actuator.service --no-pager
 ```
 
 Then open:
@@ -49,22 +51,24 @@ In the Rails UI:
 
 The health page should show the app is running even before a node is claimed.
 
-## 3. Bring up one node
+## 3. Bring up the sensor and actuator nodes
 
-Use either:
+You need:
 
-- Arduino MKR WiFi 1010 firmware
-- Pico W firmware
+- one sensor node:
+  - Arduino MKR WiFi 1010 firmware, or
+  - Pico W sensor firmware
+- one Pico W actuator node
 
-Set the node to publish to the Pi broker IP.
+Set each node to publish to the Pi broker IP. If the Pi IP changes later, the Pico firmwares will rediscover it automatically through the Pi's UDP discovery service.
 
-For Pico W:
+For the Pico builds:
 
 ```bash
 git submodule update --init --recursive
 export PICO_SDK_PATH="$PWD/firmware/pico-sdk"
 cmake -S firmware/pico_w_sensor_node -B firmware/pico_w_sensor_node/build -G Ninja -DPICO_BOARD=pico_w
-cmake --build firmware/pico_w_sensor_node/build
+cmake --build firmware/pico_w_sensor_node/build --target pico_w_sensor_node pico_w_actuator_node
 ```
 
 Before running that, make sure:
@@ -72,23 +76,28 @@ Before running that, make sure:
 - `arm-none-eabi-gcc` is installed and on your `PATH`
 - `cmake` and `ninja` are installed
 
-Flash the generated UF2.
+Flash:
+
+- `firmware/pico_w_sensor_node/build/pico_w_sensor_node.uf2` to the sensor Pico
+- `firmware/pico_w_sensor_node/build/pico_w_actuator_node.uf2` to the actuator Pico
 
 ## 4. Confirm node discovery
 
 On the Pi:
 
 ```bash
-source /etc/victory_garden.env
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
 mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/state' -v
 ```
 
-You should see retained `node-state/v1` messages.
+You should see retained `node-state/v1` messages from the sensor node.
 
 In Rails:
 
 1. open `Nodes`
-2. confirm the node appears
+2. confirm the sensor node appears
 3. claim it to the zone you created
 
 Important:
@@ -120,14 +129,16 @@ Expected flow:
 
 1. Rails creates a queued `WateringEvent`
 2. Rails publishes `start_watering`
-3. the actuator daemon publishes status
+3. the actuator Pico publishes status
 4. Rails updates the event
 5. after `COMPLETED`, Rails schedules a delayed `request_reading`
 
 Watch the broker:
 
 ```bash
-source /etc/victory_garden.env
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
 mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/#' -v
 ```
 
@@ -137,6 +148,17 @@ You should see:
 - actuator status
 - later, a retained `request_reading`
 - a fresh node-state publish
+
+Pi-side validation helpers:
+
+```bash
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
+./deploy/pi_validate_actuator.sh
+./deploy/pi_validate_request_reading.sh
+./deploy/pi_cleanup_validation_data.sh
+```
 
 ## 7. Confirm the operator pages
 
@@ -173,6 +195,6 @@ The software stack is ready for one-zone operation, but the final hardware valid
 
 Calibration note:
 
-- the Arduino node supports explicit dry/wet calibration now
-- the Pico node currently publishes a simple ADC-derived percentage with optional inversion
+- the Arduino node supports explicit dry/wet calibration in its local config
+- the Pico sensor node uses the seesaw I2C moisture sensor with dry/wet calibration bounds in firmware
 - see [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)

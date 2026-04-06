@@ -70,7 +70,7 @@ Recommended local verification after setup:
 - PostgreSQL is authoritative for crop profiles, zones, node claims, watering history, faults, and node config sync status.
 - MQTT retained node state is the live transport layer for sleeping devices and the Python controller's working input.
 - `nodes.zone_id` is authoritative for routing. `reported_zone_id` from node payloads is stored for visibility only.
-- The actuator service is external to this Rails app. Rails publishes manual zone-scoped actuator commands and consumes zone-scoped actuator status messages.
+- Actuation is external to this Rails app. Rails publishes zone-scoped actuator commands and consumes zone-scoped actuator status messages from the dedicated actuator Pico.
 
 ## Consumed Payloads
 

@@ -157,7 +157,9 @@ const int WET_READING = 510;
 Then rebuild/upload and verify the published `moisture_percent` on MQTT:
 
 ```bash
-source /etc/victory_garden.env
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
 mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/state' -v
 ```
 

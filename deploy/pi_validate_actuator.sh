@@ -3,7 +3,20 @@ set -euo pipefail
 
 export PAGER=cat
 APP_DB="ruby_service_production"
-EVENT_KEY="zone1-actuator-validation-001"
+EVENT_KEY="${EVENT_KEY:-zone1-actuator-validation-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+print_consumer_logs() {
+  local logs
+  logs="$(journalctl -u victory-garden-mqtt-consumer.service --since "$STARTED_AT" --no-pager -o cat 2>/dev/null | tail -n 20 || true)"
+  printf 'CONSUMER_LOGS_BEGIN\n'
+  if [[ -n "${logs//[$'\n\r\t ']}" ]]; then
+    printf '%s\n' "$logs"
+  else
+    printf 'none\n'
+  fi
+  printf 'CONSUMER_LOGS_END\n'
+}
 
 MQTT_ARGS=(-h 127.0.0.1)
 if [[ -n "${MQTT_USERNAME:-}" ]]; then
@@ -36,6 +49,8 @@ after_status="$(sudo -u postgres psql --pset pager=off -d "$APP_DB" -Atc "select
 
 printf 'ACTUATOR_STATUS_BEFORE %s\n' "$before_status"
 printf 'ACTUATOR_STATUS_AFTER %s\n' "$after_status"
+printf 'EVENT_KEY %s\n' "$EVENT_KEY"
+printf 'STARTED_AT %s\n' "$STARTED_AT"
 
 sudo -u postgres psql --pset pager=off -d "$APP_DB" -Atc "
 select 'event_status=' || coalesce(status, 'NULL') from watering_events where idempotency_key = '$EVENT_KEY';
@@ -46,5 +61,4 @@ order by recorded_at desc
 limit 1;
 "
 
-journalctl -u victory-garden-actuator.service -n 20 --no-pager
-journalctl -u victory-garden-mqtt-consumer.service -n 20 --no-pager
+print_consumer_logs

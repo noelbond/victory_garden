@@ -5,8 +5,8 @@ This document describes the wiring assumptions that are true in the current repo
 It is intentionally conservative:
 
 - the Pico sensor path has concrete default bus pins
-- the actuator path does **not** have a concrete relay GPIO hardcoded in the repo yet
-- the actuator hardware wiring depends on the external driver or hook you choose
+- the actuator path has a concrete default relay GPIO in firmware
+- the final pump and relay power topology still depends on the hardware you attach
 
 ## Pico W Moisture Sensor Wiring
 
@@ -84,79 +84,27 @@ So if you want the most complete calibration path today, Arduino is the more mat
 
 ## Actuator Wiring Status
 
-The repo now includes a reference Pi GPIO relay path for actuator bring-up, but the actuator behavior is still defined first at the software boundary.
+The actuator path is now a dedicated Pico W firmware target, separate from the sensor Pico.
 
-Current actuator service:
+Current actuator firmware:
 
-- [`../python_tools/watering/actuator.py`](/Users/noel/coding/python/victory_garden/python_tools/watering/actuator.py)
+- [`../firmware/pico_w_actuator_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/README.md)
 
-Current runtime config:
-
-- [`../deploy/victory_garden.env.example`](/Users/noel/coding/python/victory_garden/deploy/victory_garden.env.example)
-
-Relevant settings:
-
-- `ACTUATOR_DRIVER`
-- `ACTUATOR_HOOK_COMMAND`
-- `ACTUATOR_GPIO_PIN`
-- `ACTUATOR_GPIO_ACTIVE_LOW`
-
-### What this means
-
-The repo supports two actuator-driver shapes today:
-
-- `mock`
-- shell hook driver
-
-With the shell hook driver:
-
-- the Python controller publishes automatic actuator commands to MQTT
-- Rails can still publish manual actuator commands from the UI
-- the Python actuator service consumes them
-- the actuator service runs your external hook command
-- your hook command is responsible for the actual relay or pump hardware
-
-The recommended default relay GPIO path is now:
-
-- Raspberry Pi BCM `17` (physical pin `11`) -> relay `IN`
-- Raspberry Pi `GND` -> relay `GND`
-- Raspberry Pi power -> relay `VCC` only if the relay module is Pi-compatible
-
-The isolated test and live hook share the same GPIO helper:
-
-- [`../python_tools/tools/test_relay_gpio.py`](/Users/noel/coding/python/victory_garden/python_tools/tools/test_relay_gpio.py)
-- [`../python_tools/tools/relay_actuator_hook.py`](/Users/noel/coding/python/victory_garden/python_tools/tools/relay_actuator_hook.py)
-- [`../python_tools/watering/relay_gpio.py`](/Users/noel/coding/python/victory_garden/python_tools/watering/relay_gpio.py)
-
-See the full bring-up guide in:
-
-- [`actuator_hardware.md`](/Users/noel/coding/python/victory_garden/docs/actuator_hardware.md)
-
-### Current actuator path
-
-Software flow:
+Current actuator flow:
 
 1. the Python controller or Rails manual action publishes `greenhouse/zones/{zone_id}/actuator/command`
-2. Python actuator service receives the command
-3. shell hook driver runs:
-   - `ACTUATOR_HOOK_COMMAND start <zone_id> <runtime_seconds> <idempotency_key>`
-   - or `ACTUATOR_HOOK_COMMAND stop <zone_id> <runtime_seconds-or-empty> <idempotency_key>`
-4. the hook implementation talks to your actual relay hardware
-5. the actuator service publishes `greenhouse/zones/{zone_id}/actuator/status`
+2. the actuator Pico consumes that command
+3. the actuator Pico drives its relay GPIO locally
+4. the actuator Pico publishes `greenhouse/zones/{zone_id}/actuator/status`
 
-### Practical implication
+Current hardware assumption:
 
-Before writing a real relay wiring diagram, you need to decide the hardware driver shape, for example:
+- relay input -> actuator Pico `GP15`
+- relay ground -> actuator Pico `GND`
+- relay power -> an appropriate local supply for the relay module
+- pump power remains separate from the Pico and should share ground where required by the relay interface
 
-- Pi GPIO relay board
-- USB relay
-- external irrigation controller with CLI/API
-- custom transistor/relay board
-
-Until that choice is made, the actuator side should be documented as:
-
-- a software hook contract
-- not a fixed pin map
+This keeps the outdoor relay and pump wiring local to the actuator Pico and avoids routing live relay control through the Pi.
 
 ## Recommended Safe Bring-Up Order
 

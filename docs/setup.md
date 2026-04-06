@@ -11,8 +11,9 @@ It is written for the current architecture:
 - Python is the automatic controller and automatic actuator-command publisher
 - Rails is the UI, persistence layer, config authority, and manual-operations surface
 - Mosquitto runs on the Pi
-- the Python controller and actuator daemon run on the Pi
+- the Python controller runs on the Pi
 - sensor nodes can be Arduino MKR WiFi 1010 or Pico W
+- actuation can be handled by a dedicated Pico W actuator node
 
 ## 1. Raspberry Pi Setup
 
@@ -25,7 +26,6 @@ Use one Pi on the same LAN as the sensor nodes. The Pi runs:
 - Rails MQTT consumer
 - PostgreSQL
 - Python controller
-- Python actuator daemon
 
 ### Install from source on the Pi
 
@@ -68,7 +68,6 @@ Important values:
 - `MQTT_PORT`
 - `MQTT_USERNAME`
 - `MQTT_PASSWORD`
-- `ACTUATOR_DRIVER`
 - `SECRET_KEY_BASE`
 - `RUBY_SERVICE_DATABASE_PASSWORD`
 - `RAILS_MASTER_KEY`
@@ -79,7 +78,7 @@ Check services:
 
 ```bash
 sudo systemctl status greenhouse.service --no-pager
-sudo systemctl status victory-garden-actuator.service --no-pager
+sudo systemctl status victory-garden-mqtt-discovery.service --no-pager
 sudo systemctl status victory-garden-web.service --no-pager
 sudo systemctl status victory-garden-mqtt-consumer.service --no-pager
 sudo systemctl status mosquitto --no-pager
@@ -95,7 +94,9 @@ Check web endpoints:
 Check MQTT state:
 
 ```bash
-source /etc/victory_garden.env
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
 mosquitto_sub -h 127.0.0.1 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/#' -v
 ```
 
@@ -105,7 +106,8 @@ Give the Pi a DHCP reservation in your router.
 
 Why:
 
-- the Pico and other nodes need a stable MQTT broker IP
+- the Pi should ideally keep a stable broker IP
+- Pico nodes can rediscover the Pi automatically through the Pi's UDP discovery service if the broker address changes
 - the Pi changed IP earlier during debugging when Wi-Fi dropped and DHCP reissued an address
 
 Recommended startup order:
@@ -202,7 +204,7 @@ Example environment:
 ```bash
 export PICO_SDK_PATH="$PWD/firmware/pico-sdk"
 cmake -S firmware/pico_w_sensor_node -B firmware/pico_w_sensor_node/build -G Ninja -DPICO_BOARD=pico_w
-cmake --build firmware/pico_w_sensor_node/build
+cmake --build firmware/pico_w_sensor_node/build --target pico_w_sensor_node pico_w_actuator_node
 ```
 
 Before building, make sure `arm-none-eabi-gcc` is installed and already available on your `PATH`.
@@ -210,17 +212,23 @@ Before building, make sure `arm-none-eabi-gcc` is installed and already availabl
 Output:
 
 - `firmware/pico_w_sensor_node/build/pico_w_sensor_node.uf2`
+- `firmware/pico_w_sensor_node/build/pico_w_actuator_node.uf2`
 
 ### Flash the Pico
 
 1. Hold `BOOTSEL`
-2. Plug in the Pico
+2. Plug in the Pico you want to flash
 3. Wait for `RPI-RP2`
 4. Copy the UF2
 
 The Pico should reboot automatically after the copy completes.
 
-### Pico runtime assumptions
+Use:
+
+- `pico_w_sensor_node.uf2` for the sensor Pico
+- `pico_w_actuator_node.uf2` for the actuator Pico
+
+### Pico sensor runtime assumptions
 
 Tracked defaults live in:
 
@@ -250,7 +258,9 @@ Current moisture-input note:
 On the Pi:
 
 ```bash
-source /etc/victory_garden.env
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
 mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/zone1/state' -v
 ```
 
@@ -259,6 +269,45 @@ Expected:
 - retained `node-state/v1`
 - real UTC timestamps
 - `publish_reason` values like `interval` or `request_reading`
+
+### Pico actuator runtime assumptions
+
+Tracked defaults live in:
+
+- [`../firmware/pico_w_actuator_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/config.h)
+
+Local secret and environment overrides belong in an untracked file copied from:
+
+- [`../firmware/pico_w_actuator_node/src/config_local.h.example`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/config_local.h.example)
+
+Typical values to set before flashing:
+
+- Wi‑Fi SSID/password
+- MQTT broker IP/port/credentials
+- NTP server
+- node ID
+- zone ID
+- relay GPIO
+- relay polarity
+
+The actuator Pico also falls back to Pi UDP discovery if its saved broker IP becomes stale.
+
+### Pico actuator verification
+
+On the Pi:
+
+```bash
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
+mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/zone1/actuator/status' -v
+```
+
+Expected during a test run:
+
+- `ACKNOWLEDGED`
+- `RUNNING`
+- `COMPLETED` or `STOPPED`
 
 ## 4. Documentation Map
 
@@ -273,11 +322,12 @@ Expected:
 - Rails UI and persistence layer: [`../ruby_service/README.md`](/Users/noel/coding/python/victory_garden/ruby_service/README.md)
 - Python tools: [`../python_tools/README.md`](/Users/noel/coding/python/victory_garden/python_tools/README.md)
 - Pico firmware: [`../firmware/pico_w_sensor_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/README.md)
+- Pico actuator firmware: [`../firmware/pico_w_actuator_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/README.md)
 
 ## 5. Current Remaining Gap
 
-The remaining end-to-end gap is physical validation, not software setup:
+The remaining live gap is the sensor reread path on replacement hardware:
 
-- moisture sensor wired to Pico and calibrated
-- actuator hardware physically triggered and stopped on the real device
-- full dry-soil -> water -> stop -> reread loop confirmed on hardware
+- install the replacement moisture sensor on the Pico sensor node
+- recalibrate dry and wet bounds for that sensor
+- rerun the full dry-soil -> water -> stop -> reread loop on hardware

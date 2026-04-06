@@ -1,6 +1,6 @@
 # Victory Garden Python Tools
 
-Python contains the automatic watering controller, actuator daemon, shared policy logic, and simulation tools.
+Python contains the automatic watering controller, shared policy logic, and simulation tools.
 
 ## Responsibilities
 
@@ -10,7 +10,6 @@ Python contains the automatic watering controller, actuator daemon, shared polic
 - Track per-zone daily runtime state
 - Evaluate automatic watering decisions
 - Publish actuator commands and controller telemetry
-- Execute zone-scoped actuator commands through the actuator daemon
 - Provide a simulation tool for the MQTT contract
 
 ## Shared Contract Fixtures
@@ -32,11 +31,8 @@ From [`python_tools/`](/Users/noel/coding/python/victory_garden/python_tools):
   - `.venv/bin/python -m tools.simulate_run`
 - Run the live controller loop:
   - `.venv/bin/python -m main`
-- Run the actuator service:
-  - `.venv/bin/python -m actuator_main`
 
 `tools.run_loop` remains as a compatibility wrapper, but `main` is the primary production entrypoint.
-`actuator_main` is the production entrypoint for the zone-scoped actuator daemon.
 
 Both tools expect a running MQTT broker. Override the broker with `--mqtt-host` and `--mqtt-port` if needed.
 Both also accept `--mqtt-username` and `--mqtt-password`, and default those from `MQTT_USERNAME` / `MQTT_PASSWORD` when present.
@@ -83,42 +79,27 @@ The Python controller consumes and publishes:
 | `greenhouse/zones/{zone_id}/controller/action` | `water` or `none` |
 | `greenhouse/zones/{zone_id}/controller/runtime_seconds_today` | cumulative runtime |
 | `greenhouse/zones/{zone_id}/controller/skip_reason` | cooldown or duplicate-read reason |
-| `greenhouse/zones/{zone_id}/actuator/status` | actuator status published by the actuator service |
+| `greenhouse/zones/{zone_id}/actuator/status` | actuator status published by the actuator Pico |
 
-## Actuator Service
+## Actuator Commands
 
-The actuator daemon subscribes to `greenhouse/zones/+/actuator/command` and publishes
-`greenhouse/zones/{zone_id}/actuator/status`.
+The Python controller publishes `greenhouse/zones/{zone_id}/actuator/command`.
+The dedicated actuator Pico subscribes to that topic, enforces the bounded runtime locally, and
+publishes `greenhouse/zones/{zone_id}/actuator/status`.
 
-Supported drivers:
+The runtime safety boundary is on the actuator Pico:
 
-- `mock`
-  - default safe mode for development and packaging validation
-- `shell`
-  - runs `ACTUATOR_HOOK_COMMAND action zone_id runtime_seconds idempotency_key`
-  - the repo now includes a Pi relay hook at `python -m tools.relay_actuator_hook`
-
-Relevant env vars:
-
-- `ACTUATOR_DRIVER`
-- `ACTUATOR_HOOK_COMMAND`
-- `ACTUATOR_GPIO_PIN`
-- `ACTUATOR_GPIO_ACTIVE_LOW`
-- `MQTT_HOST`
-- `MQTT_PORT`
-- `MQTT_USERNAME`
-- `MQTT_PASSWORD`
-
-For isolated hardware bring-up on the Pi, use:
-
-- `.venv/bin/python -m tools.test_relay_gpio --pin 17 --active-low --cycles 5 --on-seconds 2 --off-seconds 2`
+- relay defaults OFF at boot
+- `start_watering` includes a bounded `runtime_seconds`
+- the actuator Pico forces relay OFF when the runtime expires
+- `stop_watering` can stop the run early
 
 ## Runtime Boundaries
 
 - The Python controller is the authoritative automatic watering decision-maker for configured zones.
 - MQTT retained node state is its working input.
 - Rails/Postgres remains authoritative for crop definitions, zone claims, config publication, historical records, and manual operator actions.
-- The Python actuator daemon is part of the live stack and executes `greenhouse/zones/{zone_id}/actuator/command`.
+- The actuator Pico is part of the live stack and executes `greenhouse/zones/{zone_id}/actuator/command`.
 - Rails continues to schedule delayed rereads from actuator completion because that logic depends on persisted watering-event correlation.
 
 ## Notes
@@ -127,5 +108,5 @@ For isolated hardware bring-up on the Pi, use:
 - The controller uses the canonical `greenhouse/*` topic contract.
 - Incoming MQTT state is validated through `SensorReading` before any control logic touches it.
 - Empty retained clears are ignored cleanly.
-- The controller and actuator now emit structured JSON logs for MQTT lifecycle, decisions, skips, reread requests, command lifecycle, and driver errors.
+- The controller emits structured JSON logs for MQTT lifecycle, decisions, skips, reread requests, and command publication.
 - The current seeded thresholds are `30` for tomato and `40` for basil, reflecting current normalized sensor policy informed by crop watering preference rather than a universal absolute soil standard.

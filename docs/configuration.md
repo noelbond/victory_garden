@@ -8,6 +8,14 @@ The main Pi runtime environment file is:
 
 - `/etc/victory_garden.env`
 
+It is installed root-readable, so when you need broker credentials in a regular shell use:
+
+```bash
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
+```
+
 Template source in the repo:
 
 - [`../deploy/victory_garden.env.example`](/Users/noel/coding/python/victory_garden/deploy/victory_garden.env.example)
@@ -23,10 +31,9 @@ Current keys:
 - `PORT`
 - `MQTT_HOST`
 - `MQTT_PORT`
+- `MQTT_DISCOVERY_PORT`
 - `MQTT_USERNAME`
 - `MQTT_PASSWORD`
-- `ACTUATOR_DRIVER`
-- `ACTUATOR_HOOK_COMMAND`
 - `SOLID_QUEUE_IN_PUMA`
 - `SECRET_KEY_BASE`
 - `RUBY_SERVICE_DATABASE_PASSWORD`
@@ -37,7 +44,6 @@ Use this file for:
 - Rails web runtime
 - Rails MQTT consumer runtime
 - Python controller runtime
-- Python actuator service runtime
 - local broker address, port, and credentials
 
 ## Local Rails Development
@@ -105,6 +111,30 @@ Important:
 - see [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
 
 The Pico also supports persisted config in flash at runtime through retained `node-config/v1` messages from Rails.
+If the Pi broker IP changes later, the Pico will fall back to UDP discovery on `MQTT_DISCOVERY_PORT`, update its saved `mqtt_host`, and reconnect automatically.
+
+## Pico W Actuator Node Config
+
+Tracked defaults live in:
+
+- [`../firmware/pico_w_actuator_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/config.h)
+
+Create an untracked local override file from:
+
+- [`../firmware/pico_w_actuator_node/src/config_local.h.example`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/config_local.h.example)
+
+Typical values to set before flashing:
+
+- Wi‑Fi SSID/password
+- MQTT host/port/credentials
+- NTP server
+- node ID
+- zone ID
+- relay GPIO
+- relay polarity
+
+The actuator Pico also supports persisted config in flash at runtime through retained `node-config/v1` messages from Rails.
+If the Pi broker IP changes later, the actuator Pico uses the same UDP discovery fallback and persists the new `mqtt_host` before reconnecting.
 
 ## Shared MQTT Contract Fixtures
 

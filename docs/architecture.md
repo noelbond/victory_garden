@@ -1,8 +1,8 @@
 # Victory Garden Architecture
 
-Victory Garden is a local-first automated watering system built around MQTT, a Raspberry Pi, and either Arduino- or Pico-based sensor nodes.
+Victory Garden is a local-first automated watering system built around MQTT, a Raspberry Pi, and microcontroller nodes for sensing and actuation.
 
-The current deployment model is one Raspberry Pi running the broker, control plane, database, and actuator service on the same LAN as the sensor nodes.
+The current deployment model is one Raspberry Pi running the broker, control plane, database, and Python controller on the same LAN as the nodes.
 
 ## Runtime Components
 
@@ -21,6 +21,21 @@ Node responsibilities:
 - consume retained `node-config/v1` messages from `greenhouse/nodes/{node_id}/config`
 - publish command and config acknowledgements
 
+### Actuator nodes
+
+Supported actuator implementation in this repo:
+
+- native Raspberry Pi Pico W actuator firmware
+
+Actuator node responsibilities:
+
+- consume `greenhouse/zones/{zone_id}/actuator/command`
+- publish `greenhouse/zones/{zone_id}/actuator/status`
+- drive the local relay output
+- enforce the requested runtime cutoff locally on the actuator Pico
+- consume retained `node-config/v1` messages from `greenhouse/nodes/{node_id}/config`
+- publish `node-config-ack/v1`
+
 ### Mosquitto
 
 Mosquitto is the message transport hub.
@@ -32,6 +47,8 @@ It carries:
 - retained node config and config acknowledgements
 - non-retained actuator commands and status
 - controller telemetry topics
+
+The Pi also runs a small UDP broker-discovery responder so Pico nodes can recover automatically when the Pi's LAN IP changes.
 
 ### Rails control plane
 
@@ -55,18 +72,9 @@ Important routing rule:
 
 ### Python tools
 
-Python fills two live roles:
+Python fills one live role:
 
 - automatic controller
-- actuator daemon
-
-The actuator daemon is part of the live stack and subscribes to:
-
-- `greenhouse/zones/{zone_id}/actuator/command`
-
-It publishes:
-
-- `greenhouse/zones/{zone_id}/actuator/status`
 
 The Python controller:
 
@@ -88,7 +96,7 @@ Rails is no longer the automatic actuator-command publisher.
 4. The Python controller consumes the same retained node state and evaluates watering policy using the latest Rails-published system config.
 5. If watering is needed, Python publishes `start_watering` and emits a controller event containing the `idempotency_key`.
 6. Rails ingests that controller event and persists a `WateringEvent` with status `queued`.
-7. The actuator daemon runs the command and publishes status updates.
+7. The actuator Pico runs the command and publishes status updates.
 8. Rails ingests actuator status, updates the event, records faults when needed, and schedules a delayed reread after `COMPLETED`.
 9. `RequestReadingJob` publishes a retained `request_reading` command back to the node.
 
@@ -97,7 +105,7 @@ Rails is no longer the automatic actuator-command publisher.
 1. An operator triggers `Water Now` or `Stop` in Rails.
 2. Rails creates a `WateringEvent`.
 3. Rails publishes the actuator command.
-4. The actuator daemon reports progress or faults.
+4. The actuator Pico reports progress or faults.
 5. Rails updates the event and health/fault state.
 
 ### Node config flow
@@ -139,9 +147,13 @@ The intended local deployment is one Raspberry Pi running:
 - Rails MQTT consumer
 - PostgreSQL
 - Python controller
-- Python actuator daemon
 
-The default Pi install also provisions MQTT broker authentication and shares the broker credentials with Rails and the Python services through `/etc/victory_garden.env`.
+With separate networked nodes on the same LAN:
+
+- a sensor node
+- an actuator Pico node
+
+The default Pi install also provisions MQTT broker authentication, shares the broker credentials with Rails and the Python services through `/etc/victory_garden.env`, and exposes `MQTT_DISCOVERY_PORT` for Pico broker rediscovery.
 
 Useful endpoints:
 
@@ -154,8 +166,8 @@ Useful endpoints:
 - the Pico W path is integrated end to end with the live stack
 - Python now owns automatic watering decisions and consumes Rails-published live config
 - Rails persists automatic watering history from Python controller events and remains the manual/operator surface
-- actuator timeout and reread scheduling are covered in tests
-- the remaining end-to-end gap is physical hardware validation, not software architecture
+- manual watering, manual stop, reboot recovery, broker restart recovery, and PostgreSQL restart recovery have all been validated on the Pi stack
+- the remaining live gap is sensor reread validation with the replacement moisture sensor
 
 ## Related Docs
 
@@ -165,3 +177,4 @@ Useful endpoints:
 - Rails control plane: [`../ruby_service/README.md`](/Users/noel/coding/python/victory_garden/ruby_service/README.md)
 - Python tools: [`../python_tools/README.md`](/Users/noel/coding/python/victory_garden/python_tools/README.md)
 - Pico firmware: [`../firmware/pico_w_sensor_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/README.md)
+- Pico actuator firmware: [`../firmware/pico_w_actuator_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/README.md)

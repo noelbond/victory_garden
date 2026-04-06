@@ -77,11 +77,7 @@ The script will:
 - fall back to local `vendor/cache` or internet installs when needed
 - create the production PostgreSQL role and databases
 - run `db:prepare` and `db:seed`
-- install or update systemd units for:
-- `greenhouse.service`
-- `victory-garden-actuator.service`
-- `victory-garden-web.service`
-- `victory-garden-mqtt-consumer.service`
+- install or update systemd units for `greenhouse.service`, `victory-garden-mqtt-discovery.service`, `victory-garden-web.service`, and `victory-garden-mqtt-consumer.service`
 - restart the full stack
 
 Generated config:
@@ -99,16 +95,28 @@ Verify after install:
 
 ```bash
 sudo systemctl status greenhouse.service --no-pager
-sudo systemctl status victory-garden-actuator.service --no-pager
+sudo systemctl status victory-garden-mqtt-discovery.service --no-pager
 sudo systemctl status victory-garden-web.service --no-pager
 sudo systemctl status victory-garden-mqtt-consumer.service --no-pager
 sudo journalctl -u greenhouse.service -n 50 --no-pager
-sudo journalctl -u victory-garden-actuator.service -n 50 --no-pager
+sudo journalctl -u victory-garden-mqtt-discovery.service -n 50 --no-pager
 sudo journalctl -u victory-garden-web.service -n 50 --no-pager
 sudo journalctl -u victory-garden-mqtt-consumer.service -n 50 --no-pager
-source /etc/victory_garden.env
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
 mosquitto_sub -h 127.0.0.1 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/state' -v
 ```
+
+Helpful Pi-side validation helpers:
+
+- `./deploy/pi_validate_actuator.sh`
+- `./deploy/pi_validate_request_reading.sh`
+- `./deploy/pi_cleanup_validation_data.sh`
+
+The request-reading validation helper clears its own retained validation command after the check so it does not pollute later runs.
+
+The Pi install also starts `victory-garden-mqtt-discovery.service`, a small UDP responder that returns the Pi's current broker IP and MQTT port so Pico nodes can recover automatically if the Pi's LAN IP changes.
 
 Notes:
 

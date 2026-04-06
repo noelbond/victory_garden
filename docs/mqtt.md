@@ -1,6 +1,6 @@
 # Victory Garden MQTT Contract
 
-This document defines the canonical MQTT transport used by the Pico/Arduino nodes, the Python controller and actuator service, and the Rails control plane.
+This document defines the canonical MQTT transport used by the Pico/Arduino nodes, the Python controller, and the Rails control plane.
 
 ## Conventions
 
@@ -12,6 +12,8 @@ This document defines the canonical MQTT transport used by the Pico/Arduino node
 - Retained topics are used only where replay-on-reconnect is intentional
 - The deployed Pi stack uses MQTT username/password authentication on the local broker
 
+Outside MQTT itself, the Pi also exposes a small UDP discovery responder on `MQTT_DISCOVERY_PORT`. Pico nodes use it only when their saved broker IP is stale so they can learn the Pi's current IP and then reconnect over normal MQTT.
+
 ## Topic Summary
 
 | Topic | Producer | Consumer | Retained | Purpose |
@@ -21,8 +23,8 @@ This document defines the canonical MQTT transport used by the Pico/Arduino node
 | `greenhouse/zones/{zone_id}/command_ack` | sensor node | Rails, operators | yes | acknowledgement of handled or ignored node command |
 | `greenhouse/nodes/{node_id}/config` | Rails | sensor node | yes | retained node assignment and crop config |
 | `greenhouse/nodes/{node_id}/config_ack` | sensor node | Rails | yes | acknowledgement of applied or rejected node config |
-| `greenhouse/zones/{zone_id}/actuator/command` | Python controller, Rails manual ops | actuator service | no | start or stop watering |
-| `greenhouse/zones/{zone_id}/actuator/status` | actuator service | Rails | no | watering progress or fault |
+| `greenhouse/zones/{zone_id}/actuator/command` | Python controller, Rails manual ops | actuator Pico node | no | start or stop watering |
+| `greenhouse/zones/{zone_id}/actuator/status` | actuator Pico node | Rails | no | watering progress or fault |
 | `greenhouse/zones/{zone_id}/controller/event` | Python controller | operators | no | decision summary for a watering pass |
 | `greenhouse/zones/{zone_id}/controller/skip` | Python controller | operators | no | skipped-decision summary |
 | `greenhouse/zones/{zone_id}/controller/moisture_percent` | Python controller | operators | no | latest controller input moisture |
@@ -355,3 +357,5 @@ This document is derived from the actual implementation in:
 - [`python_tools/watering/schemas.py`](/Users/noel/coding/python/victory_garden/python_tools/watering/schemas.py)
 - [`firmware/pico_w_sensor_node/src/topics.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/topics.c)
 - [`firmware/pico_w_sensor_node/src/mqtt_node.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/mqtt_node.c)
+- [`firmware/pico_w_actuator_node/src/topics.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/topics.c)
+- [`firmware/pico_w_actuator_node/src/mqtt_node.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/mqtt_node.c)
