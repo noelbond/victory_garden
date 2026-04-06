@@ -1,8 +1,7 @@
 [Unit]
 Description=Victory Garden Greenhouse Controller
 After=network-online.target mosquitto.service
-Wants=network-online.target
-Requires=mosquitto.service
+Wants=network-online.target mosquitto.service
 
 [Service]
 Type=simple

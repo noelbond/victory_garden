@@ -21,6 +21,13 @@ def utcnow() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
+def mqtt_reason_code_value(reason_code) -> int | str:
+    value = getattr(reason_code, "value", reason_code)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return str(reason_code)
+
+
 def parse_actuator_command(topic: str, payload_bytes: bytes) -> WaterCommand | None:
     if not payload_bytes:
         return None
@@ -116,7 +123,7 @@ class ActiveRun:
     idempotency_key: str
     started_monotonic: float
     runtime_seconds: int
-    timer: threading.Timer
+    completion_timer: threading.Timer
 
 
 class ActuatorService:
@@ -160,7 +167,7 @@ class ActuatorService:
             runs = list(self._active_runs.values())
             self._active_runs.clear()
         for run in runs:
-            run.timer.cancel()
+            run.completion_timer.cancel()
             try:
                 self._driver.stop(run.zone_id, run.idempotency_key)
             except Exception:
@@ -221,21 +228,21 @@ class ActuatorService:
                 self._publish_fault(command.zone_id, command.idempotency_key, "START_FAILED", str(exc))
                 return
 
-            timer = self._timer_factory(
+            completion_timer = self._timer_factory(
                 runtime_seconds,
                 self._complete_run,
                 args=(command.zone_id, command.idempotency_key),
             )
-            timer.daemon = True
             active_run = ActiveRun(
                 zone_id=command.zone_id,
                 idempotency_key=command.idempotency_key,
                 started_monotonic=time.monotonic(),
                 runtime_seconds=runtime_seconds,
-                timer=timer,
+                completion_timer=completion_timer,
             )
             self._active_runs[command.zone_id] = active_run
-            timer.start()
+            completion_timer.daemon = True
+            completion_timer.start()
 
         log_event(
             "actuator",
@@ -271,7 +278,7 @@ class ActuatorService:
             )
             return
 
-        active_run.timer.cancel()
+        active_run.completion_timer.cancel()
         actual_runtime = max(0, int(time.monotonic() - active_run.started_monotonic))
 
         try:
@@ -309,7 +316,6 @@ class ActuatorService:
             if active_run is None or active_run.idempotency_key != idempotency_key:
                 return
             self._active_runs.pop(zone_id, None)
-
         try:
             self._driver.stop(zone_id, idempotency_key)
         except Exception as exc:
@@ -390,7 +396,7 @@ def build_driver() -> ActuatorDriver:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Victory Garden actuator service.")
+    parser = argparse.ArgumentParser(description="Run the Victory Garden actuator loop.")
     parser.add_argument("--mqtt-host", default=os.environ.get("MQTT_HOST", "127.0.0.1"))
     parser.add_argument("--mqtt-port", type=int, default=int(os.environ.get("MQTT_PORT", "1883")))
     parser.add_argument("--mqtt-username", default=os.environ.get("MQTT_USERNAME"))
@@ -404,7 +410,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("MQTT_ACTUATOR_STATUS_TOPIC", "greenhouse/zones/{zone_id}/actuator/status"),
     )
     return parser
-
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
@@ -428,7 +433,7 @@ def main(argv: list[str] | None = None) -> None:
             "mqtt_connected",
             mqtt_host=args.mqtt_host,
             mqtt_port=args.mqtt_port,
-            reason_code=int(reason_code),
+            reason_code=mqtt_reason_code_value(reason_code),
             subscribed_topic=args.command_topic,
         )
 
@@ -439,7 +444,7 @@ def main(argv: list[str] | None = None) -> None:
             level="warning",
             mqtt_host=args.mqtt_host,
             mqtt_port=args.mqtt_port,
-            reason_code=int(reason_code),
+            reason_code=mqtt_reason_code_value(reason_code),
             disconnect_flags=str(disconnect_flags),
         )
 

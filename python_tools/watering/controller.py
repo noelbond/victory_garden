@@ -41,6 +41,13 @@ SUBSCRIPTION_FALLBACK_ZONES: dict[str, ZoneConfig] = {}
 SUBSCRIPTION_ZONE_FILTER: set[str] | None = None
 
 
+def mqtt_reason_code_value(reason_code) -> int | str:
+    value = getattr(reason_code, "value", reason_code)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return str(reason_code)
+
+
 def new_zone_runtime() -> dict[str, Any]:
     return {
         "last_processed_signature": None,
@@ -344,7 +351,7 @@ def publish_actuator_command(
     }
     client.publish(
         f"greenhouse/zones/{zone_id}/actuator/command",
-        json.dumps(payload),
+        json.dumps(payload, separators=(",", ":")),
     )
     log_event(
         "controller",
@@ -566,7 +573,7 @@ def main(argv: list[str] | None = None) -> None:
             role="publisher",
             mqtt_host=args.mqtt_host,
             mqtt_port=args.mqtt_port,
-            reason_code=int(reason_code),
+            reason_code=mqtt_reason_code_value(reason_code),
         )
 
     def on_controller_disconnect(_client: mqtt.Client, _userdata, disconnect_flags, reason_code, _properties=None) -> None:
@@ -577,7 +584,7 @@ def main(argv: list[str] | None = None) -> None:
             role="publisher",
             mqtt_host=args.mqtt_host,
             mqtt_port=args.mqtt_port,
-            reason_code=int(reason_code),
+            reason_code=mqtt_reason_code_value(reason_code),
             disconnect_flags=str(disconnect_flags),
         )
 
@@ -603,7 +610,7 @@ def main(argv: list[str] | None = None) -> None:
             role="subscriber",
             mqtt_host=args.mqtt_host,
             mqtt_port=args.mqtt_port,
-            reason_code=int(reason_code),
+            reason_code=mqtt_reason_code_value(reason_code),
             subscribed_topics=subscribed,
             unsubscribed_topics=removed_topics,
         )
@@ -616,7 +623,7 @@ def main(argv: list[str] | None = None) -> None:
             role="subscriber",
             mqtt_host=args.mqtt_host,
             mqtt_port=args.mqtt_port,
-            reason_code=int(reason_code),
+            reason_code=mqtt_reason_code_value(reason_code),
             disconnect_flags=str(disconnect_flags),
         )
 

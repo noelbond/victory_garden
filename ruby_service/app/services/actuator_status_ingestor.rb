@@ -53,6 +53,19 @@ class ActuatorStatusIngestor
              end
 
     event.update!(status: mapped)
+    mark_interrupted_run_stopped(event, status) if status.state == "STOPPED"
+  end
+
+  def mark_interrupted_run_stopped(event, status)
+    return unless event.command == "stop_watering"
+
+    WateringEvent
+      .where(zone: event.zone, command: "start_watering")
+      .where.not(status: ActuatorCommandTimeoutJob::TERMINAL_STATUSES)
+      .where("issued_at <= ?", status.recorded_at)
+      .order(issued_at: :desc)
+      .limit(1)
+      .update_all(status: "stopped", updated_at: Time.current)
   end
 
   def find_duplicate_status(zone)

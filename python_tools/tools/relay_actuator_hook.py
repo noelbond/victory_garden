@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 
-from watering.relay_gpio import RelayGPIOConfig, RelayGPIOController
+from watering.relay_gpio import (
+    RelayGPIOConfig,
+    RelayGPIOController,
+)
 from watering.structured_logging import log_event
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Relay-backed actuator hook for the Victory Garden actuator daemon.")
+    parser = argparse.ArgumentParser(description="Relay-backed actuator hook for legacy Victory Garden shell-driven actuator tests.")
     parser.add_argument("action", choices=["start", "stop"])
     parser.add_argument("zone_id")
     parser.add_argument("runtime_seconds", nargs="?", default="")
@@ -17,9 +20,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    controller = RelayGPIOController(RelayGPIOConfig.from_env())
-    controller.prepare()
+    config = RelayGPIOConfig.from_env()
+    controller = RelayGPIOController(config)
 
+    controller.prepare()
     if args.action == "start":
         controller.set_enabled(True)
     else:
@@ -32,8 +36,8 @@ def main(argv: list[str] | None = None) -> None:
         zone_id=args.zone_id,
         runtime_seconds=args.runtime_seconds or None,
         idempotency_key=args.idempotency_key or None,
-        gpio_pin=controller.config.gpio_pin,
-        active_low=controller.config.active_low,
+        gpio_pin=config.gpio_pin,
+        active_low=config.active_low,
     )
 
 

@@ -8,7 +8,10 @@ exec ./bin/dev-rails test \
   test/integration/operator_pages_smoke_test.rb \
   test/integration/zones_dashboard_test.rb \
   test/integration/zone_show_status_test.rb \
-  test/services/decision_service_test.rb \
+  test/jobs/config_publish_job_test.rb \
+  test/models/crop_profile_test.rb \
+  test/models/zone_test.rb \
+  test/services/controller_event_ingestor_test.rb \
   test/services/full_loop_test.rb \
   test/services/actuator_status_ingestor_test.rb \
   test/services/sensor_ingestor_test.rb \

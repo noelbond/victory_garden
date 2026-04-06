@@ -31,6 +31,16 @@ class CommandPublishJobTest < ActiveSupport::TestCase
       issued_at: Time.current,
       idempotency_key: "zone1-cmd-001"
     }
+    zone = create(:zone, zone_id: "zone1")
+    event = WateringEvent.create!(
+      zone: zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "manual_trigger",
+      issued_at: Time.current,
+      idempotency_key: "zone1-cmd-001",
+      status: "queued"
+    )
 
     published = []
 
@@ -47,6 +57,7 @@ class CommandPublishJobTest < ActiveSupport::TestCase
     end
 
     assert_equal [command], published
+    assert_equal "command_sent", event.reload.status
   end
 
   test "schedules a shorter watchdog for stop_watering" do

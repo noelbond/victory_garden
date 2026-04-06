@@ -1,4 +1,8 @@
-from watering.relay_gpio import RelayGPIOConfig, RelayGPIOController, level_for_enabled
+from watering.relay_gpio import (
+    RelayGPIOConfig,
+    RelayGPIOController,
+    level_for_enabled,
+)
 
 
 def test_level_for_enabled_active_low():

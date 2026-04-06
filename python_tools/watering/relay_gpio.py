@@ -67,4 +67,3 @@ class RelayGPIOController:
             ["pinctrl", "set", str(self._config.gpio_pin), *args],
             check=True,
         )
-

@@ -2,8 +2,9 @@ class ConfigPublishJob < ApplicationJob
   queue_as :default
 
   def perform
-    crops = CropProfile.where(active: true)
-    zones = Zone.where(active: true).includes(:crop_profile, :nodes)
+    zones = Zone.where(active: true).includes(:crop_profile, :nodes).order(:zone_id)
+    crop_ids = zones.map(&:crop_profile_id).uniq
+    crops = CropProfile.where(id: crop_ids).or(CropProfile.where(active: true)).distinct.order(:crop_id)
     payload = {
       crops: crops.map { |c| crop_payload(c) },
       zones: zones.map { |z| zone_payload(z) }
@@ -24,8 +25,7 @@ class ConfigPublishJob < ApplicationJob
       max_pulse_runtime_sec: crop.max_pulse_runtime_sec,
       daily_max_runtime_sec: crop.daily_max_runtime_sec,
       climate_preference: crop.climate_preference,
-      time_to_harvest_days: crop.time_to_harvest_days,
-      active: crop.active
+      time_to_harvest_days: crop.time_to_harvest_days
     }
   end
 

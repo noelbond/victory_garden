@@ -142,10 +142,10 @@ class ZonesController < ApplicationController
     start_hour = params.dig(:zone, :allowed_start_hour)
     end_hour = params.dig(:zone, :allowed_end_hour)
 
-    if start_hour.present? && end_hour.present?
+    if start_hour.present? || end_hour.present?
       attrs[:allowed_hours] = {
-        "start_hour" => start_hour.to_i,
-        "end_hour" => end_hour.to_i
+        "start_hour" => start_hour,
+        "end_hour" => end_hour
       }
     else
       attrs[:allowed_hours] = nil

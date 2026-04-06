@@ -1,8 +1,9 @@
+require "digest"
 require "json"
 require "mqtt"
 
 class MqttConsumer
-  def initialize
+  def initialize(dedupe_window_seconds: 120, monotonic_clock: nil)
     @settings = ConnectionSetting.first
     @host = setting_value("mqtt_host", "MQTT_HOST", "localhost")
     @port = Integer(setting_value("mqtt_port", "MQTT_PORT", "1883"))
@@ -12,6 +13,9 @@ class MqttConsumer
     @actuators_topic = normalized_actuators_topic
     @controller_events_topic = "greenhouse/zones/+/controller/event"
     @node_config_ack_topic = "greenhouse/nodes/+/config_ack"
+    @dedupe_window_seconds = dedupe_window_seconds
+    @monotonic_clock = monotonic_clock || -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    @recent_message_fingerprints = {}
   end
 
   def run
@@ -31,13 +35,14 @@ class MqttConsumer
         handle_message(topic, message)
       end
     end
-  rescue StandardError => e
+  rescue MQTT::Exception, StandardError => e
     log "MQTT error: #{e.class} #{e.message}", level: :error
   end
 
   def handle_message(topic, message)
     payload = parse_json(message)
     return unless payload
+    return if replayed_message?(topic, message)
 
     if topic_matches?(@readings_topic, topic)
       data = payload["sensor_reading"] || payload
@@ -95,5 +100,28 @@ class MqttConsumer
     options[:username] = @username if @username.present?
     options[:password] = @password if @password.present?
     options
+  end
+
+  def replayed_message?(topic, message)
+    return false unless dedupe_topic?(topic)
+
+    now = @monotonic_clock.call
+    prune_recent_message_fingerprints(now)
+    fingerprint = Digest::SHA256.hexdigest("#{topic}\0#{message}")
+    expires_at = @recent_message_fingerprints[fingerprint]
+    return true if expires_at.present? && expires_at > now
+
+    @recent_message_fingerprints[fingerprint] = now + @dedupe_window_seconds
+    false
+  end
+
+  def dedupe_topic?(topic)
+    topic_matches?(@readings_topic, topic) ||
+      topic_matches?(@actuators_topic, topic) ||
+      topic_matches?(@node_config_ack_topic, topic)
+  end
+
+  def prune_recent_message_fingerprints(now)
+    @recent_message_fingerprints.delete_if { |_fingerprint, expires_at| expires_at <= now }
   end
 end

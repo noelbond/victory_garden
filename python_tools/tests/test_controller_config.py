@@ -42,7 +42,6 @@ def sample_system_config() -> dict:
                 "dry_threshold": 30.0,
                 "max_pulse_runtime_sec": 45,
                 "daily_max_runtime_sec": 300,
-                "active": True,
             }
         ],
         "zones": [

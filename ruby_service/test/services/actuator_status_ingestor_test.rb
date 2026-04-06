@@ -81,6 +81,69 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     assert_equal "Pump reported no flow", fault.detail
   end
 
+  test "stopped actuator status marks the event stopped without scheduling reread" do
+    event = WateringEvent.create!(
+      zone: @zone,
+      command: "stop_watering",
+      runtime_seconds: nil,
+      reason: "manual_stop",
+      issued_at: Time.current,
+      idempotency_key: "zone1-stop-001",
+      status: "running"
+    )
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "STOPPED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => event.idempotency_key,
+      "actual_runtime_seconds" => 12
+    }
+
+    assert_no_enqueued_jobs only: RequestReadingJob do
+      ActuatorStatusIngestor.new(payload).call
+    end
+
+    assert_equal "stopped", event.reload.status
+    assert_equal 0, Fault.count
+  end
+
+  test "stopped stop command also marks the active start event stopped" do
+    started = WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "manual_trigger",
+      issued_at: 10.seconds.ago,
+      idempotency_key: "zone1-run-006",
+      status: "running"
+    )
+    stopped = WateringEvent.create!(
+      zone: @zone,
+      command: "stop_watering",
+      runtime_seconds: nil,
+      reason: "manual_stop",
+      issued_at: Time.current,
+      idempotency_key: "zone1-stop-006",
+      status: "command_sent"
+    )
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "STOPPED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => stopped.idempotency_key,
+      "actual_runtime_seconds" => 3
+    }
+
+    assert_no_enqueued_jobs only: RequestReadingJob do
+      ActuatorStatusIngestor.new(payload).call
+    end
+
+    assert_equal "stopped", stopped.reload.status
+    assert_equal "stopped", started.reload.status
+  end
+
   test "completed status does not schedule reread when daily runtime cap is already met" do
     WateringEvent.create!(
       zone: @zone,

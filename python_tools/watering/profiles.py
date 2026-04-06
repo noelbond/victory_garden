@@ -25,6 +25,7 @@ class CropProfile(BaseModel):
     )
     climate_preference: str | None = Field(default=None, max_length=200, examples=["Warm, sunny"])
     time_to_harvest_days: int | None = Field(default=None, ge=0, examples=[75])
+    active: bool = True
 
     @property
     def runtime_seconds(self) -> int:

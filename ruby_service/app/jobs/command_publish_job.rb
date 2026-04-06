@@ -4,10 +4,19 @@ class CommandPublishJob < ApplicationJob
 
   def perform(command)
     MqttClient.publish_command(command)
+    mark_event_command_sent(command)
     schedule_timeout_watchdog(command)
   end
 
   private
+
+  def mark_event_command_sent(command)
+    idempotency_key = command[:idempotency_key] || command["idempotency_key"]
+    return if idempotency_key.blank?
+
+    WateringEvent.where(idempotency_key: idempotency_key, status: "queued")
+      .update_all(status: "command_sent", updated_at: Time.current)
+  end
 
   def schedule_timeout_watchdog(command)
     idempotency_key = command[:idempotency_key] || command["idempotency_key"]
