@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from watering.state import ZoneState
-from watering.state_store import get_zone_state, load_state_store, save_state_store
+from watering.state_store import (
+    get_zone_state,
+    load_state_store,
+    load_state_store_resilient,
+    save_state_store,
+)
 
 
 class TestLoadStateStore:
@@ -112,6 +117,54 @@ class TestLoadStateStore:
                 load_state_store(temp_path)
         finally:
             temp_path.unlink()
+
+    def test_load_state_store_resilient_quarantines_invalid_json(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            f.write("not valid json")
+            temp_path = Path(f.name)
+
+        try:
+            states, quarantined_path, error = load_state_store_resilient(temp_path)
+            assert states == {}
+            assert quarantined_path is not None
+            assert quarantined_path.exists()
+            assert not temp_path.exists()
+            assert error is not None
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+            if quarantined_path is not None and quarantined_path.exists():
+                quarantined_path.unlink()
+
+    def test_load_state_store_resilient_quarantines_invalid_state_data(self):
+        state_data = {
+            "zone1": {
+                "zone_id": "zone1",
+                "day": "2026-02-06",
+                "runtime_seconds_today": -100,
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump(state_data, f)
+            temp_path = Path(f.name)
+
+        try:
+            states, quarantined_path, error = load_state_store_resilient(temp_path)
+            assert states == {}
+            assert quarantined_path is not None
+            assert quarantined_path.exists()
+            assert not temp_path.exists()
+            assert error is not None
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+            if quarantined_path is not None and quarantined_path.exists():
+                quarantined_path.unlink()
 
 
 class TestSaveStateStore:

@@ -4,7 +4,7 @@ Victory Garden MKR WiFi 1010 Sensor Node
 Payload schema versions:
 
 - node-state/v1
-  Required fields on greenhouse/zones/{zone_id}/state:
+  Required fields on greenhouse/zones/{zone_id}/nodes/{node_id}/state:
   schema_version, timestamp, zone_id, node_id, moisture_raw, moisture_percent
   Optional nullable fields on the same payload:
   soil_temp_c, battery_voltage, battery_percent, wifi_rssi, uptime_seconds,
@@ -79,7 +79,7 @@ void buildNodeTopic(char* buffer, size_t size, const char* suffix) {
 }
 
 void setupTopics() {
-  buildTopic(topicState, sizeof(topicState), "state");
+  snprintf(topicState, sizeof(topicState), "greenhouse/zones/%s/nodes/%s/state", currentConfig.zone_id, currentConfig.node_id);
   buildTopic(topicStatus, sizeof(topicStatus), "status");
   buildTopic(topicMoisture, sizeof(topicMoisture), "moisture_percent");
   buildTopic(topicTemp, sizeof(topicTemp), "soil_temp_c");
@@ -917,11 +917,34 @@ void setup() {
   runScheduledCycle();
 }
 
+unsigned long secondsUntilNextPublish() {
+  unsigned long epoch = WiFi.getTime();
+  if (epoch < 946684800UL) {
+    Serial.println("NTP unavailable, using fallback sleep interval");
+    return NTP_FALLBACK_SLEEP_SEC;
+  }
+
+  // Apply UTC offset to convert to local time
+  long localEpoch = (long)epoch + (long)UTC_OFFSET_HOURS * 3600L;
+  if (localEpoch < 0) localEpoch = 0;
+  struct tm* t = gmtime((time_t*)&localEpoch);
+
+  int nowSec = t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec;
+  unsigned long minDiff = 86400UL;
+  for (int i = 0; i < PUBLISH_SCHEDULE_COUNT; i++) {
+    int diff = PUBLISH_SCHEDULE_LOCAL_HOURS[i] * 3600 - nowSec;
+    if (diff <= 0) diff += 86400;
+    if ((unsigned long)diff < minDiff) minDiff = (unsigned long)diff;
+  }
+  return minDiff;
+}
+
 void loop() {
   disconnectForSleep();
-  Serial.print("Deep sleeping for ms: ");
-  Serial.println(PUBLISH_INTERVAL_MS);
-  LowPower.deepSleep(PUBLISH_INTERVAL_MS);
+  unsigned long sleepSec = secondsUntilNextPublish();
+  Serial.print("Deep sleeping for seconds: ");
+  Serial.println(sleepSec);
+  LowPower.deepSleep(sleepSec * 1000UL);
   Serial.println("Woke up for scheduled publish");
   runScheduledCycle();
 }

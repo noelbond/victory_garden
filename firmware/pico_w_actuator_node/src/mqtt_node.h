@@ -16,18 +16,28 @@ typedef enum {
 } actuator_status_t;
 
 typedef struct {
+    bool assigned;
+    bool active;
+    char zone_id[VG_MAX_ZONE_ID_LEN];
+    uint8_t irrigation_line;
+} actuator_zone_assignment_t;
+
+typedef struct {
+    bool running;
+    char zone_id[VG_MAX_ZONE_ID_LEN];
+    char idempotency_key[96];
+    uint32_t started_at_ms;
+    uint32_t runtime_seconds;
+    absolute_time_t hard_deadline;
+} actuator_line_run_t;
+
+typedef struct {
     node_config_t *config;
     bool config_changed_requires_reconnect;
-    bool actuator_running;
-    bool actuator_relay_enabled;
-    bool actuator_status_pending;
-    uint32_t actuator_started_at_ms;
-    uint32_t actuator_runtime_seconds;
-    absolute_time_t actuator_hard_deadline;
-    actuator_status_t pending_actuator_status;
-    char actuator_idempotency_key[96];
-    char actuator_fault_code[32];
-    char actuator_fault_detail[128];
+    uint8_t irrigation_line_count;
+    actuator_zone_assignment_t assignments[VG_MAX_IRRIGATION_LINES];
+    actuator_line_run_t runs[VG_MAX_IRRIGATION_LINES];
+    bool relay_enabled[VG_MAX_IRRIGATION_LINES];
     char last_error[128];
 } mqtt_node_t;
 

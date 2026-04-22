@@ -11,7 +11,7 @@ sequenceDiagram
 
     Note over Node: Wakes from deep sleep
     Node->>Node: Read moisture, battery, temp
-    Node->>MQTT: publish greenhouse/zones/{zone_id}/state<br/>(retained, JSON state payload)
+    Node->>MQTT: publish greenhouse/zones/{zone_id}/nodes/{node_id}/state<br/>(retained, JSON state payload)
     MQTT-->>Py: retained state delivered
     MC->>MQTT: subscribed — receives message
     MC->>SI: SensorIngestor.new(payload).call

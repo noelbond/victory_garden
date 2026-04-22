@@ -1,6 +1,9 @@
 <div class="page-header">
   <h1 class="page-title"><%= @crop_profile.crop_name %></h1>
-  <%= link_to "Back to Crops", crop_profiles_path, class: "btn light" %>
+  <div>
+    <%= link_to "Edit", edit_crop_profile_path(@crop_profile), class: "btn" %>
+    <%= link_to "Back to Crops", crop_profiles_path, class: "btn light" %>
+  </div>
 </div>
 
 <div class="card">

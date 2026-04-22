@@ -30,6 +30,10 @@ module MqttClient
     publish(system_config_topic, payload, retain: true)
   end
 
+  def publish_actuator_config(payload)
+    publish(actuator_config_topic, payload, retain: true)
+  end
+
   def publish(topic, payload, retain: false)
     MQTT::Client.connect(mqtt_options) do |c|
       c.publish(topic, payload.to_json, retain)
@@ -63,6 +67,10 @@ module MqttClient
   def system_config_topic
     topic = setting_value("config_topic", "MQTT_CONFIG_TOPIC", "greenhouse/system/config/current")
     topic == "greenhouse/config/current" ? "greenhouse/system/config/current" : topic
+  end
+
+  def actuator_config_topic
+    "greenhouse/system/actuator/config/current"
   end
 
   def setting_value(attr, env_key, fallback)

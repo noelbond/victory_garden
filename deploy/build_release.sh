@@ -11,12 +11,20 @@ Builds a target-specific Victory Garden release tarball containing:
 - Python wheelhouse
 - Rails vendor/bundle
 - Rails vendor/cache
+
+The release build also verifies that both Pico firmware targets compile:
+- pico_w_sensor_node
+- pico_w_actuator_node
 EOF
 }
 
 fail() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
 }
 
 TARGET=""
@@ -133,6 +141,15 @@ ensure_bundler() {
   fail "Bundler was installed but the executable was not found on PATH."
 }
 
+ensure_firmware_build_toolchain() {
+  require_cmd cmake
+  require_cmd ninja
+  require_cmd arm-none-eabi-gcc
+  require_cmd arm-none-eabi-g++
+  require_cmd arm-none-eabi-objcopy
+  require_cmd arm-none-eabi-objdump
+}
+
 copy_required_source_files() {
   local path
 
@@ -185,6 +202,24 @@ copy_repo_source() {
 
   copy_required_source_files
   validate_release_stage
+}
+
+verify_staged_firmware_builds() {
+  ensure_firmware_build_toolchain
+
+  local verify_build_dir
+  verify_build_dir="$BUILD_ROOT/firmware-build-verify"
+
+  cmake \
+    -S "$STAGE_DIR/firmware/pico_w_sensor_node" \
+    -B "$verify_build_dir" \
+    -G Ninja \
+    -DPICO_BOARD=pico_w
+
+  cmake --build "$verify_build_dir" --target pico_w_sensor_node pico_w_actuator_node
+
+  [[ -f "$verify_build_dir/pico_w_sensor_node.uf2" ]] || fail "Firmware verification build did not produce pico_w_sensor_node.uf2"
+  [[ -f "$verify_build_dir/pico_w_actuator_node.uf2" ]] || fail "Firmware verification build did not produce pico_w_actuator_node.uf2"
 }
 
 build_python_wheelhouse() {
@@ -267,6 +302,15 @@ manifest = {
         "bundle_path": "ruby_service/vendor/bundle",
         "cache_path": "ruby_service/vendor/cache",
     },
+    "firmware": {
+        "status": "passed",
+        "build_system": "cmake+ninja",
+        "source_dir": "firmware/pico_w_sensor_node",
+        "targets": [
+            "pico_w_sensor_node",
+            "pico_w_actuator_node",
+        ],
+    },
     "contents": [
         "app source",
         "scripts",
@@ -290,6 +334,7 @@ create_tarball() {
 main() {
   ensure_host_matches_target
   copy_repo_source
+  verify_staged_firmware_builds
   build_python_wheelhouse
   build_ruby_bundle
   write_manifest

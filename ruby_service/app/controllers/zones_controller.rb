@@ -1,9 +1,14 @@
 class ZonesController < ApplicationController
+  AGGREGATE_READING_FRESHNESS_WINDOW = 15.minutes
+  AGGREGATE_READING_FRESHNESS_MINUTES = (AGGREGATE_READING_FRESHNESS_WINDOW / 1.minute).to_i
+
   before_action :set_zone, only: %i[show edit update destroy water_now stop_watering toggle_active]
 
   def index
     @zones = Zone.includes(:crop_profile, :nodes).order(:zone_id)
     @latest_readings = latest_readings_for(@zones)
+    @zone_moisture_snapshots = zone_moisture_snapshots_for(@zones)
+    @aggregate_freshness_minutes = AGGREGATE_READING_FRESHNESS_MINUTES
     @latest_statuses = latest_statuses_for(@zones)
     @latest_watering_events = latest_watering_events_for(@zones)
     @open_fault_counts = open_fault_counts_for(@zones)
@@ -11,7 +16,8 @@ class ZonesController < ApplicationController
     @summary = {
       zones: @zones.count,
       active_zones: @zones.count(&:active?),
-      nodes_online: @latest_readings.values.count { |reading| reading.recorded_at > 5.minutes.ago },
+      fresh_sensor_count: @zone_moisture_snapshots.values.sum { |snapshot| snapshot[:valid_sensor_count] },
+      expected_sensor_count: @zone_moisture_snapshots.values.sum { |snapshot| snapshot[:expected_sensor_count] },
       zones_watering: @latest_statuses.values.count { |status| status.state == "RUNNING" },
       open_fault_zones: @open_fault_counts.values.count(&:positive?)
     }
@@ -21,11 +27,14 @@ class ZonesController < ApplicationController
     @claimed_nodes = @zone.nodes.order(:node_id)
     @recent_readings = @zone.sensor_readings.order(recorded_at: :desc).limit(10)
     @latest_reading = @recent_readings.first
+    @zone_moisture_snapshot = zone_moisture_snapshots_for([@zone]).fetch(@zone.id)
+    @aggregate_freshness_minutes = AGGREGATE_READING_FRESHNESS_MINUTES
     @last_watering_event = @zone.watering_events.order(issued_at: :desc).first
     @latest_actuator_status = @zone.actuator_statuses.order(recorded_at: :desc).first
     @recent_faults = @zone.faults.order(recorded_at: :desc).limit(5)
     @open_fault_count = @zone.faults.where(resolved_at: nil).count
     @reading_freshness = reading_freshness(@latest_reading)
+    @aggregate_freshness = aggregate_freshness(@zone_moisture_snapshot)
     @actuator_state_class = actuator_state_class(@latest_actuator_status)
     @zone_attention = zone_attention_items
 
@@ -134,7 +143,7 @@ class ZonesController < ApplicationController
   end
 
   def zone_params
-    params.require(:zone).permit(:name, :crop_profile_id, :active)
+    params.require(:zone).permit(:name, :crop_profile_id, :active, :irrigation_line)
   end
 
   def zone_params_with_allowed_hours
@@ -239,6 +248,63 @@ class ZonesController < ApplicationController
     rows.index_by(&:zone_id)
   end
 
+  def zone_moisture_snapshots_for(zones)
+    readings_by_zone = latest_node_readings_for(zones)
+    zones.each_with_object({}) do |zone, snapshots|
+      snapshots[zone.id] = zone_moisture_snapshot(zone, readings_by_zone.fetch(zone.id, {}))
+    end
+  end
+
+  def latest_node_readings_for(zones)
+    ids = zones.map(&:id)
+    return {} if ids.empty?
+
+    rows = SensorReading
+      .select("DISTINCT ON (zone_id, node_id) *")
+      .where(zone_id: ids)
+      .order("zone_id, node_id, recorded_at DESC")
+
+    rows.group_by(&:zone_id).transform_values { |readings| readings.index_by(&:node_id) }
+  end
+
+  def zone_moisture_snapshot(zone, readings_by_node)
+    configured_node_ids = zone.nodes.map(&:node_id).compact.sort
+    node_ids = (configured_node_ids.presence || readings_by_node.keys).sort
+
+    valid = []
+    stale = []
+    missing = []
+    null_moisture = []
+
+    node_ids.each do |node_id|
+      reading = readings_by_node[node_id]
+      if reading.blank?
+        missing << node_id
+      elsif reading.recorded_at <= AGGREGATE_READING_FRESHNESS_WINDOW.ago
+        stale << node_id
+      elsif reading.moisture_percent.nil?
+        null_moisture << node_id
+      else
+        valid << reading
+      end
+    end
+
+    moisture_values = valid.map { |reading| reading.moisture_percent.to_f }
+    raw_values = valid.map(&:moisture_raw).compact
+
+    {
+      average_moisture: moisture_values.any? ? (moisture_values.sum / moisture_values.size).round(1) : nil,
+      average_raw: raw_values.any? ? (raw_values.sum.to_f / raw_values.size).round : nil,
+      valid_sensor_count: valid.size,
+      expected_sensor_count: node_ids.size,
+      valid_node_ids: valid.map(&:node_id),
+      stale_node_ids: stale,
+      missing_node_ids: missing,
+      null_moisture_node_ids: null_moisture,
+      latest_recorded_at: valid.map(&:recorded_at).max
+    }
+  end
+
   def latest_statuses_for(zones)
     ids = zones.map(&:id)
     return {} if ids.empty?
@@ -276,6 +342,13 @@ class ZonesController < ApplicationController
     "offline"
   end
 
+  def aggregate_freshness(snapshot)
+    return "offline" if snapshot.blank? || snapshot[:valid_sensor_count].zero?
+    return "ok" if snapshot[:expected_sensor_count].positive? && snapshot[:valid_sensor_count] >= snapshot[:expected_sensor_count]
+
+    "stale"
+  end
+
   def actuator_state_class(status)
     return "offline" if status.blank?
 
@@ -291,6 +364,26 @@ class ZonesController < ApplicationController
 
   def zone_attention_items
     items = []
+    aggregate = @zone_moisture_snapshot
+
+    if aggregate[:valid_sensor_count].zero?
+      items << {
+        label: "No fresh aggregate",
+        detail: "The controller does not have a fresh moisture average for this zone.",
+        severity: "warn"
+      }
+    elsif aggregate[:valid_sensor_count] < aggregate[:expected_sensor_count]
+      missing_parts = []
+      missing_parts << "#{aggregate[:missing_node_ids].count} missing" if aggregate[:missing_node_ids].any?
+      missing_parts << "#{aggregate[:stale_node_ids].count} stale" if aggregate[:stale_node_ids].any?
+      missing_parts << "#{aggregate[:null_moisture_node_ids].count} without moisture" if aggregate[:null_moisture_node_ids].any?
+
+      items << {
+        label: "Partial aggregate",
+        detail: "#{aggregate[:valid_sensor_count]} of #{aggregate[:expected_sensor_count]} sensors are fresh#{": #{missing_parts.join(', ')}" if missing_parts.any?}.",
+        severity: "warn"
+      }
+    end
 
     if @latest_reading.blank?
       items << { label: "No readings", detail: "This zone has not published any persisted readings yet.", severity: "warn" }

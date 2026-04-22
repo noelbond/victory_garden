@@ -28,7 +28,13 @@ const int DRY_READING = 322;
 const int WET_READING = 510;
 
 // Timing
-const unsigned long PUBLISH_INTERVAL_MS = 10800000UL;
+// UTC offset for your local timezone (e.g. -5 for EST, -4 for EDT, -7 for PDT, -8 for PST)
+const int UTC_OFFSET_HOURS = 0;
+// Publish schedule: local-time hours (24h, must be sorted ascending)
+const int PUBLISH_SCHEDULE_LOCAL_HOURS[] = {6, 9, 12, 14, 16, 19};
+const int PUBLISH_SCHEDULE_COUNT = 6;
+// Fallback sleep duration if NTP is unavailable (seconds)
+const unsigned long NTP_FALLBACK_SLEEP_SEC = 10800UL;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000UL;
 const unsigned long MQTT_CONNECT_TIMEOUT_MS = 15000UL;
 const unsigned long COMMAND_LISTEN_WINDOW_MS = 420000UL;

@@ -32,7 +32,7 @@ graph TB
 
     BROWSER["Web Browser\n(Local UI)"]
 
-    MCU -->|"WiFi: state payload\ngreenhouse/zones/{id}/state"| MQTT
+    MCU -->|"WiFi: state payload\ngreenhouse/zones/{id}/nodes/{node_id}/state"| MQTT
     MQTT -->|"node command / config\ngreenhouse/zones/{id}/command\ngreenhouse/nodes/{id}/config"| MCU
     Rails -->|"actuator command\ngreenhouse/zones/{id}/actuator/command"| MQTT
     MQTT -->|"actuator status\ngreenhouse/zones/{id}/actuator/status"| Rails

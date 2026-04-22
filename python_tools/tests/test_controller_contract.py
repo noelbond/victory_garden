@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from watering.controller import (
     LATEST_STATE,
+    LATEST_ZONE_READINGS,
     on_message,
     parse_sensor_message,
     reading_ready_for_control,
@@ -25,6 +26,7 @@ def load_fixture(name: str) -> dict:
 class TestControllerContract:
     def setup_method(self):
         LATEST_STATE.clear()
+        LATEST_ZONE_READINGS.clear()
 
     def test_real_node_payload_flows_through_controller(self):
         payload = load_fixture("node-state-v1.json")
@@ -84,6 +86,34 @@ class TestControllerContract:
         assert reading is not None
         assert reading.moisture_percent is None
         assert reading_ready_for_control(reading) is False
+
+    def test_out_of_range_moisture_payload_is_rejected(self):
+        payload = load_fixture("node-state-v1.json")
+        payload["moisture_percent"] = 101.0
+
+        reading = parse_sensor_message(
+            "greenhouse/zones/zone1/state",
+            json.dumps(payload).encode("utf-8"),
+        )
+
+        assert reading is None
+
+    def test_invalid_payload_does_not_replace_latest_state(self):
+        payload = load_fixture("node-state-v1.json")
+        valid_message = SimpleNamespace(
+            topic=f"greenhouse/zones/{payload['zone_id']}/state",
+            payload=json.dumps(payload).encode("utf-8"),
+        )
+        on_message(None, None, valid_message)
+
+        invalid_message = SimpleNamespace(
+            topic=f"greenhouse/zones/{payload['zone_id']}/state",
+            payload=json.dumps(["not", "an", "object"]).encode("utf-8"),
+        )
+        on_message(None, None, invalid_message)
+
+        assert LATEST_STATE["zone1"].node_id == "mkr1010-zone1"
+        assert LATEST_STATE["zone1"].moisture_percent == payload["moisture_percent"]
 
     def test_optional_metadata_payload_is_accepted(self):
         payload = load_fixture("node-state-optional-nulls.json")

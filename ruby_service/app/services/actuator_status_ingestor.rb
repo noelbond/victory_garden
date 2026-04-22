@@ -10,16 +10,20 @@ class ActuatorStatusIngestor
     duplicate_status = find_duplicate_status(zone)
     return duplicate_status if duplicate_status
 
-    status = ActuatorStatus.create!(
-      zone: zone,
-      state: @payload.fetch("state"),
-      recorded_at: @payload.fetch("timestamp"),
-      idempotency_key: @payload["idempotency_key"],
-      actual_runtime_seconds: @payload["actual_runtime_seconds"],
-      flow_ml: @payload["flow_ml"],
-      fault_code: @payload["fault_code"],
-      fault_detail: @payload["fault_detail"]
-    )
+    status = begin
+      ActuatorStatus.create!(
+        zone: zone,
+        state: @payload.fetch("state"),
+        recorded_at: @payload.fetch("timestamp"),
+        idempotency_key: @payload["idempotency_key"],
+        actual_runtime_seconds: @payload["actual_runtime_seconds"],
+        flow_ml: @payload["flow_ml"],
+        fault_code: @payload["fault_code"],
+        fault_detail: @payload["fault_detail"]
+      )
+    rescue ActiveRecord::RecordNotUnique
+      find_duplicate_status(zone) || raise
+    end
 
     update_watering_event_status(status)
 

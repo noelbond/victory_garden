@@ -10,6 +10,7 @@ class MqttConsumer
     @username = setting_value("mqtt_username", "MQTT_USERNAME", nil)
     @password = setting_value("mqtt_password", "MQTT_PASSWORD", nil)
     @readings_topic = setting_value("readings_topic", "MQTT_READINGS_TOPIC", "greenhouse/zones/+/state")
+    @node_readings_topic = "greenhouse/zones/+/nodes/+/state"
     @actuators_topic = normalized_actuators_topic
     @controller_events_topic = "greenhouse/zones/+/controller/event"
     @node_config_ack_topic = "greenhouse/nodes/+/config_ack"
@@ -29,8 +30,8 @@ class MqttConsumer
 
   def connect_and_subscribe
     MQTT::Client.connect(mqtt_options) do |client|
-      client.subscribe(@readings_topic, @actuators_topic, @controller_events_topic, @node_config_ack_topic)
-      log "Subscribed to #{@readings_topic}, #{@actuators_topic}, #{@controller_events_topic}, and #{@node_config_ack_topic}"
+      client.subscribe(@readings_topic, @node_readings_topic, @actuators_topic, @controller_events_topic, @node_config_ack_topic)
+      log "Subscribed to #{@readings_topic}, #{@node_readings_topic}, #{@actuators_topic}, #{@controller_events_topic}, and #{@node_config_ack_topic}"
       client.get do |topic, message|
         handle_message(topic, message)
       end
@@ -44,7 +45,7 @@ class MqttConsumer
     return unless payload
     return if replayed_message?(topic, message)
 
-    if topic_matches?(@readings_topic, topic)
+    if topic_matches?(@readings_topic, topic) || topic_matches?(@node_readings_topic, topic)
       data = payload["sensor_reading"] || payload
       SensorIngestJob.perform_later(data)
     elsif topic_matches?(@actuators_topic, topic)
@@ -117,7 +118,9 @@ class MqttConsumer
 
   def dedupe_topic?(topic)
     topic_matches?(@readings_topic, topic) ||
+      topic_matches?(@node_readings_topic, topic) ||
       topic_matches?(@actuators_topic, topic) ||
+      topic_matches?(@controller_events_topic, topic) ||
       topic_matches?(@node_config_ack_topic, topic)
   end
 

@@ -11,6 +11,11 @@
 #define VG_DEFAULT_NODE_ID "pico-w-zone1"
 #define VG_DEFAULT_ZONE_ID "zone1"
 #define VG_DEFAULT_PUBLISH_INTERVAL_MS 60000u
+/* UTC offset for your timezone (e.g. -5 for EST, -4 for EDT, -7 for PDT, -8 for PST) */
+#define VG_DEFAULT_UTC_OFFSET_HOURS 0
+/* Publish schedule: local-time hours (24h), must be sorted ascending */
+#define VG_DEFAULT_PUBLISH_SCHEDULE_HOURS {6, 9, 12, 14, 16, 19}
+#define VG_DEFAULT_PUBLISH_SCHEDULE_COUNT 6
 #define VG_DEFAULT_SEESAW_I2C_SDA_GPIO 4u
 #define VG_DEFAULT_SEESAW_I2C_SCL_GPIO 5u
 #define VG_DEFAULT_SEESAW_I2C_ADDRESS 0x36u

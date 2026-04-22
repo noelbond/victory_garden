@@ -11,7 +11,7 @@ Current scope:
 - persisted node config stored in flash
 - Wi-Fi connect using Pico W native `cyw43_arch`
 - lwIP MQTT client connection
-- publishes canonical `node-state/v1` payloads
+- publishes canonical `node-state/v1` payloads to `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
 - handles retained `request_reading` commands
 - handles retained `node-config/v1` payloads
 - publishes `node-command-ack/v1`
@@ -56,7 +56,6 @@ Runtime logging:
 - use:
   - `screen /dev/cu.usbmodemXXXX 115200`
   - replacing the device path with the Pico's current USB modem path on your machine
-- the separate `serial_test` target also keeps USB stdio enabled for minimal USB-only checks
 
 Network architecture:
 - the runtime target now links `pico_cyw43_arch_lwip_threadsafe_background`

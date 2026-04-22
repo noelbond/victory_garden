@@ -50,4 +50,13 @@ class ActuatorCommandTimeoutJobTest < ActiveSupport::TestCase
 
     assert_equal "completed", event.reload.status
   end
+
+  test "does nothing when the watering event cannot be found" do
+    assert_no_difference -> { Fault.count } do
+      ActuatorCommandTimeoutJob.perform_now(
+        idempotency_key: "missing-timeout-key",
+        timeout_seconds: 75
+      )
+    end
+  end
 end

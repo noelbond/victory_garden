@@ -36,3 +36,12 @@
     <li>The health page is the best place to verify that the live system is operating correctly.</li>
   </ul>
 </div>
+
+<div class="card" style="margin-top: 16px;">
+  <h3>Custom Crop Profiles</h3>
+  <p class="muted">If the built-in presets do not match your plant, create a custom crop profile before you assign a zone.</p>
+  <div style="margin-top: 16px;">
+    <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: onboarding_path), class: "btn" %>
+    <%= link_to "Browse Profiles", crop_profiles_path, class: "btn light" %>
+  </div>
+</div>

@@ -15,6 +15,11 @@
     </div>
 
     <div class="field">
+      <%= f.label :irrigation_line, "Irrigation Line" %>
+      <%= f.number_field :irrigation_line, min: 1, placeholder: "1" %>
+    </div>
+
+    <div class="field">
       <%= label_tag :allowed_start_hour, "Allowed Start Hour (0-23)" %>
       <%= number_field_tag "zone[allowed_start_hour]", @zone.allowed_hours&.dig("start_hour"), min: 0, max: 23 %>
     </div>
@@ -28,10 +33,14 @@
   <div style="margin-top: 16px;">
     <%= f.submit class: "btn" %>
     <%= link_to "Cancel", zones_path, class: "btn light" %>
+    <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: request.fullpath), class: "btn light" %>
   </div>
+  <p class="muted" style="margin-top: 12px;">
+    One irrigation line maps to one zone. Assign the line number that physically feeds this zone on the shared splitter.
+  </p>
   <div class="section-header">
     <h2>Pick a Crop Profile</h2>
-    <p class="muted">These are read-only presets. Selecting one assigns it to the zone.</p>
+    <p class="muted">Select any existing profile or create your own custom profile for this zone.</p>
   </div>
 
   <div class="crop-section">
@@ -46,6 +55,7 @@
             <p>Daily Max Runtime: <%= crop.daily_max_runtime_sec %> s</p>
             <p>Climate: <%= crop.climate_preference.presence || "—" %></p>
             <p>Time to Harvest: <%= crop.time_to_harvest_days || "—" %> days</p>
+            <p class="muted"><%= link_to "Edit profile", edit_crop_profile_path(crop, return_to: request.fullpath) %></p>
           <% end %>
         </div>
       <% end %>

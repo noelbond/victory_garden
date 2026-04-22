@@ -63,7 +63,7 @@ in:
 
 ### Calibration note
 
-The Pico moisture path now uses the seesaw I2C sensor with calibrated dry/wet bounds in firmware. Current default calibration values are `raw_dry = 540` and `raw_wet = 820`.
+The Pico moisture path now uses the seesaw I2C sensor with calibrated dry/wet bounds in firmware. The current measured calibration values for the live replacement sensor are `raw_dry = 552` and `raw_wet = 943`.
 
 For the calibration model and current status, see:
 

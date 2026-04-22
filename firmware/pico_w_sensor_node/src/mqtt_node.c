@@ -8,6 +8,7 @@
 #include "lwip/apps/mqtt.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/ip_addr.h"
+#include "lwip/netif.h"
 #include "lwip/pbuf.h"
 #include "lwip/udp.h"
 #include "pico/cyw43_arch.h"
@@ -22,6 +23,7 @@
 #define MQTT_DISCOVERY_PORT 44737u
 #define MQTT_DISCOVERY_INTERVAL_MS 10000u
 #define MQTT_DISCOVERY_TIMEOUT_MS 2000u
+#define MQTT_DISCOVERY_MAX_TARGETS 260u
 #define MQTT_DISCOVERY_REQUEST_PAYLOAD "{\"schema_version\":\"mqtt-discovery/v1\",\"command\":\"discover\"}"
 
 typedef struct {
@@ -29,6 +31,7 @@ typedef struct {
     mqtt_client_t *client;
     struct udp_pcb *discovery_pcb;
     bool connected;
+    bool subscriptions_pending;
     bool discovery_in_progress;
     bool discovery_resolved;
     absolute_time_t next_reconnect_at;
@@ -37,8 +40,19 @@ typedef struct {
     char incoming_topic[MQTT_RX_TOPIC_MAX];
     char incoming_payload[MQTT_RX_PAYLOAD_MAX];
     char discovered_mqtt_host[VG_MAX_HOST_LEN];
+    char client_id[VG_MAX_NODE_ID_LEN + 8];
+    char pending_command[32];
+    char pending_command_id[64];
+    char pending_command_status[16];
+    char tx_topic[MQTT_RX_TOPIC_MAX];
+    char tx_payload[MQTT_TX_PAYLOAD_MAX];
+    char tx_timestamp[32];
+    char tx_ip[32];
     size_t incoming_payload_len;
     uint16_t discovered_mqtt_port;
+    bool pending_command_ack;
+    bool pending_clear_retained_command;
+    bool pending_publish_request;
 } mqtt_runtime_t;
 
 static mqtt_runtime_t g_runtime;
@@ -56,6 +70,7 @@ static const struct mqtt_connect_client_info_t g_client_info_template = {
 };
 
 static void mqtt_request_cb(void *arg, err_t err);
+static void mqtt_state_publish_cb(void *arg, err_t err);
 
 static void set_error(mqtt_node_t *node, const char *message) {
     snprintf(node->last_error, sizeof(node->last_error), "%s", message ? message : "none");
@@ -180,6 +195,70 @@ static void mqtt_close_broker_discovery(void) {
     g_runtime.discovery_in_progress = false;
 }
 
+static bool mqtt_add_discovery_target(ip_addr_t *targets, size_t *target_count, size_t max_targets, const ip_addr_t *target) {
+    if (!target || ip_addr_isany(target) || *target_count >= max_targets) {
+        return false;
+    }
+
+    for (size_t i = 0; i < *target_count; ++i) {
+        if (ip_addr_cmp(&targets[i], target)) {
+            return false;
+        }
+    }
+
+    ip_addr_copy(targets[*target_count], *target);
+    ++(*target_count);
+    return true;
+}
+
+static bool mqtt_add_ipv4_discovery_target(ip_addr_t *targets, size_t *target_count, size_t max_targets, const ip4_addr_t *target) {
+    if (!target || ip4_addr_isany_val(*target)) {
+        return false;
+    }
+
+    ip_addr_t addr;
+    ip_addr_copy_from_ip4(addr, *target);
+    return mqtt_add_discovery_target(targets, target_count, max_targets, &addr);
+}
+
+static size_t mqtt_build_discovery_targets(ip_addr_t *targets, size_t max_targets) {
+    size_t target_count = 0;
+    mqtt_add_discovery_target(targets, &target_count, max_targets, IP_ADDR_BROADCAST);
+
+    struct netif *netif = netif_default;
+    if (!netif) {
+        return target_count;
+    }
+
+    const ip4_addr_t *ip = netif_ip4_addr(netif);
+    const ip4_addr_t *mask = netif_ip4_netmask(netif);
+    const ip4_addr_t *gateway = netif_ip4_gw(netif);
+    if (!ip || ip4_addr_isany_val(*ip)) {
+        return target_count;
+    }
+
+    if (mask && !ip4_addr_isany_val(*mask)) {
+        ip4_addr_t directed_broadcast;
+        directed_broadcast.addr = ip->addr | ~mask->addr;
+        mqtt_add_ipv4_discovery_target(targets, &target_count, max_targets, &directed_broadcast);
+    }
+    mqtt_add_ipv4_discovery_target(targets, &target_count, max_targets, gateway);
+
+    // Some APs drop broadcast packets. Sweep the local /24 as a fallback so the Pi
+    // can still be found after DHCP changes its address.
+    const uint32_t local_24 = ip->addr & PP_HTONL(0xFFFFFF00UL);
+    for (uint32_t host = 1; host <= 254 && target_count < max_targets; ++host) {
+        ip4_addr_t candidate;
+        candidate.addr = local_24 | PP_HTONL(host);
+        if (candidate.addr == ip->addr) {
+            continue;
+        }
+        mqtt_add_ipv4_discovery_target(targets, &target_count, max_targets, &candidate);
+    }
+
+    return target_count;
+}
+
 static void mqtt_discovery_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port) {
     mqtt_node_t *node = (mqtt_node_t *)arg;
     (void)pcb;
@@ -236,7 +315,21 @@ static void mqtt_start_broker_discovery(mqtt_node_t *node) {
             packet = pbuf_alloc(PBUF_TRANSPORT, sizeof(MQTT_DISCOVERY_REQUEST_PAYLOAD) - 1u, PBUF_RAM);
             if (packet) {
                 memcpy(packet->payload, MQTT_DISCOVERY_REQUEST_PAYLOAD, sizeof(MQTT_DISCOVERY_REQUEST_PAYLOAD) - 1u);
-                err = udp_sendto(pcb, packet, IP_ADDR_BROADCAST, MQTT_DISCOVERY_PORT);
+                ip_addr_t targets[MQTT_DISCOVERY_MAX_TARGETS];
+                const size_t target_count = mqtt_build_discovery_targets(targets, MQTT_DISCOVERY_MAX_TARGETS);
+                bool sent_any = false;
+                err = ERR_VAL;
+                for (size_t i = 0; i < target_count; ++i) {
+                    err_t send_err = udp_sendto(pcb, packet, &targets[i], MQTT_DISCOVERY_PORT);
+                    if (send_err == ERR_OK) {
+                        sent_any = true;
+                    } else {
+                        err = send_err;
+                    }
+                }
+                if (sent_any) {
+                    err = ERR_OK;
+                }
             } else {
                 err = ERR_MEM;
             }
@@ -266,7 +359,6 @@ static void mqtt_start_broker_discovery(mqtt_node_t *node) {
     g_runtime.discovery_resolved = false;
     g_runtime.discovery_deadline = make_timeout_time_ms(MQTT_DISCOVERY_TIMEOUT_MS);
     g_runtime.discovery_next_attempt_at = make_timeout_time_ms(MQTT_DISCOVERY_INTERVAL_MS);
-    printf("[mqtt] broker discovery broadcast sent\n");
 }
 
 static void mqtt_apply_discovered_broker(mqtt_node_t *node) {
@@ -354,13 +446,11 @@ static void clear_retained_command(mqtt_node_t *node) {
 }
 
 static void publish_command_ack(mqtt_node_t *node, const char *command, const char *command_id, const char *status) {
-    char topic[MQTT_RX_TOPIC_MAX];
-    char payload[MQTT_TX_PAYLOAD_MAX];
-    topic_command_ack(node->config, topic, sizeof(topic));
+    topic_command_ack(node->config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
 
     snprintf(
-        payload,
-        sizeof(payload),
+        g_runtime.tx_payload,
+        sizeof(g_runtime.tx_payload),
         "{\"schema_version\":\"node-command-ack/v1\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"command\":\"%s\",\"command_id\":\"%s\",\"status\":\"%s\"}",
         node->config->zone_id,
         node->config->node_id,
@@ -368,25 +458,30 @@ static void publish_command_ack(mqtt_node_t *node, const char *command, const ch
         command_id,
         status
     );
-    mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), 0, 1, NULL, NULL);
+    mqtt_publish_locked(
+        g_runtime.client,
+        g_runtime.tx_topic,
+        g_runtime.tx_payload,
+        (u16_t)strlen(g_runtime.tx_payload),
+        0,
+        1,
+        NULL,
+        NULL);
 }
 
 static void publish_config_ack(mqtt_node_t *node, const char *status, const char *error_message) {
-    char topic[MQTT_RX_TOPIC_MAX];
-    char payload[MQTT_TX_PAYLOAD_MAX];
-    char timestamp[32];
-    topic_node_config_ack(node->config, topic, sizeof(topic));
-    config_ack_timestamp(node, timestamp, sizeof(timestamp));
+    topic_node_config_ack(node->config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
+    config_ack_timestamp(node, g_runtime.tx_timestamp, sizeof(g_runtime.tx_timestamp));
 
     if (node->config->assigned) {
         snprintf(
-            payload,
-            sizeof(payload),
+            g_runtime.tx_payload,
+            sizeof(g_runtime.tx_payload),
             "{\"schema_version\":\"node-config-ack/v1\",\"node_id\":\"%s\",\"config_version\":\"%s\",\"status\":\"%s\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"applied_config\":{\"assigned\":true,\"zone_id\":\"%s\",\"crop_id\":\"%s\"},\"error\":%s}",
             node->config->node_id,
             node->config->config_version,
             status,
-            timestamp,
+            g_runtime.tx_timestamp,
             node->config->zone_id,
             node->config->zone_id,
             node->config->crop_id,
@@ -394,25 +489,40 @@ static void publish_config_ack(mqtt_node_t *node, const char *status, const char
         );
     } else {
         snprintf(
-            payload,
-            sizeof(payload),
+            g_runtime.tx_payload,
+            sizeof(g_runtime.tx_payload),
             "{\"schema_version\":\"node-config-ack/v1\",\"node_id\":\"%s\",\"config_version\":\"%s\",\"status\":\"%s\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"applied_config\":{\"assigned\":false},\"error\":%s}",
             node->config->node_id,
             node->config->config_version,
             status,
-            timestamp,
+            g_runtime.tx_timestamp,
             node->config->zone_id,
             error_message ? error_message : "null"
         );
     }
 
-    mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), 0, 1, NULL, NULL);
+    mqtt_publish_locked(
+        g_runtime.client,
+        g_runtime.tx_topic,
+        g_runtime.tx_payload,
+        (u16_t)strlen(g_runtime.tx_payload),
+        0,
+        1,
+        NULL,
+        NULL);
 }
 
 static void mqtt_request_cb(void *arg, err_t err) {
     mqtt_node_t *node = (mqtt_node_t *)arg;
     if (err != ERR_OK) {
         set_error(node, "mqtt request failed");
+    }
+}
+
+static void mqtt_state_publish_cb(void *arg, err_t err) {
+    mqtt_node_t *node = (mqtt_node_t *)arg;
+    if (err != ERR_OK && node) {
+        set_errorf(node, "mqtt state publish cb failed", err);
     }
 }
 
@@ -427,12 +537,18 @@ static void handle_command_message(mqtt_node_t *node, const char *payload) {
     }
 
     if (strcmp(command, "request_reading") == 0) {
-        publish_command_ack(node, command, command_id, "acknowledged");
-        clear_retained_command(node);
-        node->publish_requested = true;
+        snprintf(g_runtime.pending_command, sizeof(g_runtime.pending_command), "%s", command);
+        snprintf(g_runtime.pending_command_id, sizeof(g_runtime.pending_command_id), "%s", command_id);
+        snprintf(g_runtime.pending_command_status, sizeof(g_runtime.pending_command_status), "%s", "acknowledged");
+        g_runtime.pending_command_ack = true;
+        g_runtime.pending_clear_retained_command = true;
+        g_runtime.pending_publish_request = true;
         set_error(node, "none");
     } else {
-        publish_command_ack(node, command, command_id, "ignored");
+        snprintf(g_runtime.pending_command, sizeof(g_runtime.pending_command), "%s", command);
+        snprintf(g_runtime.pending_command_id, sizeof(g_runtime.pending_command_id), "%s", command_id);
+        snprintf(g_runtime.pending_command_status, sizeof(g_runtime.pending_command_status), "%s", "ignored");
+        g_runtime.pending_command_ack = true;
     }
 }
 
@@ -522,17 +638,13 @@ static void subscribe_topics(mqtt_node_t *node) {
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status) {
     mqtt_node_t *node = (mqtt_node_t *)arg;
     (void)client;
-    printf("[mqtt_cb] status=%d\n", (int)status);
     g_runtime.connected = (status == MQTT_CONNECT_ACCEPTED);
     if (g_runtime.connected) {
         mqtt_close_broker_discovery();
         g_runtime.next_reconnect_at = get_absolute_time();
-        mqtt_set_inpub_callback(g_runtime.client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb, node);
-        subscribe_topics(node);
-        node->publish_requested = true;
+        g_runtime.subscriptions_pending = true;
         set_error(node, "none");
     } else {
-        printf("[mqtt_cb] not accepted - status=%d\n", (int)status);
         set_error(node, "mqtt disconnected");
         g_runtime.next_reconnect_at = make_timeout_time_ms(5000);
         g_runtime.discovery_next_attempt_at = get_absolute_time();
@@ -551,7 +663,6 @@ void mqtt_node_init(mqtt_node_t *node, node_config_t *config) {
     g_runtime.node = node;
     g_runtime.next_reconnect_at = get_absolute_time();
     g_runtime.discovery_next_attempt_at = get_absolute_time();
-
 }
 
 static void mqtt_ensure_connected(mqtt_node_t *node) {
@@ -586,7 +697,8 @@ static void mqtt_ensure_connected(mqtt_node_t *node) {
     }
 
     struct mqtt_connect_client_info_t info = g_client_info_template;
-    info.client_id = node->config->node_id;
+    snprintf(g_runtime.client_id, sizeof(g_runtime.client_id), "sensor-%s", node->config->node_id);
+    info.client_id = g_runtime.client_id;
     info.client_user = node->config->mqtt_username[0] != '\0' ? node->config->mqtt_username : NULL;
     info.client_pass = node->config->mqtt_password[0] != '\0' ? node->config->mqtt_password : NULL;
     printf("[mqtt] connecting to %s:%d\n", node->config->mqtt_host, node->config->mqtt_port);
@@ -606,13 +718,50 @@ static void mqtt_ensure_connected(mqtt_node_t *node) {
         g_runtime.discovery_next_attempt_at = get_absolute_time();
         g_runtime.next_reconnect_at = make_timeout_time_ms(5000);
     } else {
-        printf("[mqtt] connect initiated - waiting for callback\n");
         g_runtime.next_reconnect_at = make_timeout_time_ms(15000);
+    }
+}
+
+static void mqtt_finish_connect(mqtt_node_t *node) {
+    if (!g_runtime.subscriptions_pending || !g_runtime.client || !mqtt_client_is_connected(g_runtime.client)) {
+        return;
+    }
+
+    mqtt_set_inpub_callback(g_runtime.client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb, node);
+    subscribe_topics(node);
+    g_runtime.subscriptions_pending = false;
+    printf("[mqtt] subscriptions ready\n");
+}
+
+static void mqtt_flush_deferred_actions(mqtt_node_t *node) {
+    if (!g_runtime.client || !mqtt_client_is_connected(g_runtime.client)) {
+        return;
+    }
+
+    if (g_runtime.pending_command_ack) {
+        publish_command_ack(
+            node,
+            g_runtime.pending_command,
+            g_runtime.pending_command_id,
+            g_runtime.pending_command_status);
+        g_runtime.pending_command_ack = false;
+    }
+
+    if (g_runtime.pending_clear_retained_command) {
+        clear_retained_command(node);
+        g_runtime.pending_clear_retained_command = false;
+    }
+
+    if (g_runtime.pending_publish_request) {
+        node->publish_requested = true;
+        g_runtime.pending_publish_request = false;
     }
 }
 
 void mqtt_node_poll(mqtt_node_t *node) {
     mqtt_ensure_connected(g_runtime.node);
+    mqtt_finish_connect(g_runtime.node);
+    mqtt_flush_deferred_actions(g_runtime.node);
 }
 
 bool mqtt_node_is_connected(const mqtt_node_t *node) {
@@ -646,21 +795,17 @@ bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapsho
         return false;
     }
 
-    char topic[MQTT_RX_TOPIC_MAX];
-    char timestamp[32];
-    char ip[32];
-    char payload[MQTT_TX_PAYLOAD_MAX];
     int32_t rssi = wifi_rssi();
-    bool has_ip = wifi_ip_string(ip, sizeof(ip));
-    topic_state(node->config, topic, sizeof(topic));
-    time_sync_format_iso8601(timestamp, sizeof(timestamp));
+    bool has_ip = wifi_ip_string(g_runtime.tx_ip, sizeof(g_runtime.tx_ip));
+    topic_state(node->config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
+    time_sync_format_iso8601(g_runtime.tx_timestamp, sizeof(g_runtime.tx_timestamp));
 
     if (has_ip) {
         snprintf(
-            payload,
-            sizeof(payload),
+            g_runtime.tx_payload,
+            sizeof(g_runtime.tx_payload),
             "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_temp_c\":null,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,\"ip\":\"%s\",\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
-            timestamp,
+            g_runtime.tx_timestamp,
             node->config->zone_id,
             node->config->node_id,
             snapshot->moisture_raw,
@@ -668,17 +813,17 @@ bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapsho
             (long)rssi,
             (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
             (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            ip,
+            g_runtime.tx_ip,
             snapshot->healthy ? "ok" : "degraded",
             node->last_error,
             reason
         );
     } else {
         snprintf(
-            payload,
-            sizeof(payload),
+            g_runtime.tx_payload,
+            sizeof(g_runtime.tx_payload),
             "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_temp_c\":null,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,\"ip\":null,\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
-            timestamp,
+            g_runtime.tx_timestamp,
             node->config->zone_id,
             node->config->node_id,
             snapshot->moisture_raw,
@@ -692,7 +837,17 @@ bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapsho
         );
     }
 
-    err_t err = mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), 0, 1, mqtt_request_cb, node);
+    topic_state(node->config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
+    size_t payload_len = strlen(g_runtime.tx_payload);
+    err_t err = mqtt_publish_locked(
+        g_runtime.client,
+        g_runtime.tx_topic,
+        g_runtime.tx_payload,
+        (u16_t)payload_len,
+        0,
+        1,
+        mqtt_state_publish_cb,
+        node);
     if (err == ERR_OK) {
         set_error(node, "none");
         return true;

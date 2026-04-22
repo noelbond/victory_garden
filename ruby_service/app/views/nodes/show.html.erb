@@ -56,3 +56,36 @@
     </div>
   </div>
 </div>
+
+<div class="row" style="margin-top: 16px;">
+  <div class="col card">
+    <h3>Crop Profile</h3>
+    <% if @node.zone.present? %>
+      <p><strong>Zone:</strong> <%= @node.zone.name.presence || @node.zone.zone_id %></p>
+      <p><strong>Current Profile:</strong> <%= @node.zone.crop_profile.crop_name %></p>
+      <p><strong>Dry Threshold:</strong> <%= @node.zone.crop_profile.dry_threshold %>%</p>
+      <p><strong>Max Pulse Runtime:</strong> <%= @node.zone.crop_profile.max_pulse_runtime_sec %> s</p>
+      <p><strong>Daily Max Runtime:</strong> <%= @node.zone.crop_profile.daily_max_runtime_sec %> s</p>
+
+      <%= form_with url: crop_profile_node_path(@node), method: :patch do %>
+        <div class="field">
+          <label for="crop_profile_id">Apply Profile To This Node's Zone</label>
+          <%= select_tag :crop_profile_id, options_from_collection_for_select(@crop_profiles, :id, :crop_name, @node.zone.crop_profile_id) %>
+        </div>
+        <div style="margin-top: 16px;">
+          <%= submit_tag "Apply Profile", class: "btn" %>
+        </div>
+      <% end %>
+
+      <div style="margin-top: 16px;">
+        <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: node_path(@node)), class: "btn light" %>
+        <%= link_to "Edit Current Profile", edit_crop_profile_path(@node.zone.crop_profile, return_to: node_path(@node)), class: "btn light" %>
+      </div>
+    <% else %>
+      <p class="muted">Claim this node first, then assign or create a crop profile for its zone.</p>
+      <div style="margin-top: 16px;">
+        <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: node_path(@node)), class: "btn light" %>
+      </div>
+    <% end %>
+  </div>
+</div>

@@ -8,14 +8,12 @@ distinct MQTT identities.
 
 Current scope:
 - boot and serial logging
-- persisted node config stored in flash
 - Wi-Fi connect using Pico W native `cyw43_arch`
 - lwIP MQTT client connection
 - handles non-retained `start_watering` / `stop_watering` commands
+- subscribes to exact per-zone command topics derived from retained actuator topology config
 - publishes canonical actuator status updates
-- handles retained `node-config/v1` payloads
-- publishes `node-config-ack/v1`
-- drives a relay on the configured GPIO
+- drives one relay per configured irrigation line
 - enforces a local runtime cutoff on the actuator Pico itself
 - syncs UTC time over SNTP after Wi-Fi is up
 
@@ -54,7 +52,6 @@ Runtime logging:
 - use:
   - `screen /dev/cu.usbmodemXXXX 115200`
   - replacing the device path with the Pico's current USB modem path on your machine
-- the separate `serial_test` target also keeps USB stdio enabled for minimal USB-only checks
 
 Network architecture:
 - the runtime target now links `pico_cyw43_arch_lwip_threadsafe_background`
@@ -73,8 +70,7 @@ before flashing:
 - MQTT host/port
 - NTP server
 - node ID
-- zone ID
-- relay GPIO
+- first-line relay GPIO
 - relay polarity
 
 Example:
@@ -89,4 +85,14 @@ Then edit `src/config_local.h` with your real Wi-Fi and broker settings.
 MQTT contract:
 - commands: `greenhouse/zones/{zone_id}/actuator/command`
 - status: `greenhouse/zones/{zone_id}/actuator/status`
-- node config: `greenhouse/nodes/{node_id}/config`
+- actuator config: `greenhouse/system/actuator/config/current`
+
+Shared actuator model:
+
+- one irrigation line maps to one zone
+- Rails publishes the installed `irrigation_line_count` and the zone-to-line assignments
+- the actuator Pico subscribes to the exact zone command topics from that mapping
+- each assigned zone gets its own exact command subscription after retained actuator config is applied
+- the `active` field in retained actuator config is informational today; command acceptance is based on zone-to-line assignment
+- line 1 uses the configured `actuator_relay_gpio`
+- lines 2-12 use the default relay GPIO table in `src/config.h` unless overridden in `config_local.h`

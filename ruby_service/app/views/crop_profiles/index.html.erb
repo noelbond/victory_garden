@@ -1,5 +1,6 @@
 <div class="page-header">
   <h1 class="page-title">Crop Profiles</h1>
+  <%= link_to "New Crop Profile", new_crop_profile_path, class: "btn" %>
 </div>
 
 <div class="zone-grid">
@@ -12,6 +13,7 @@
       <p>Climate: <%= crop.climate_preference.presence || "—" %></p>
       <p>Time to Harvest: <%= crop.time_to_harvest_days || "—" %> days</p>
       <%= link_to "View", crop_profile_path(crop), class: "btn light" %>
+      <%= link_to "Edit", edit_crop_profile_path(crop), class: "btn light" %>
     </div>
   <% end %>
 </div>

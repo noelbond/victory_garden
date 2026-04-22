@@ -16,7 +16,7 @@ Supported node implementations in this repo:
 Node responsibilities:
 
 - read soil moisture
-- publish retained `node-state/v1` payloads to `greenhouse/zones/{zone_id}/state`
+- publish retained `node-state/v1` payloads to `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
 - consume retained `request_reading` commands from `greenhouse/zones/{zone_id}/command`
 - consume retained `node-config/v1` messages from `greenhouse/nodes/{node_id}/config`
 - publish command and config acknowledgements
@@ -33,8 +33,6 @@ Actuator node responsibilities:
 - publish `greenhouse/zones/{zone_id}/actuator/status`
 - drive the local relay output
 - enforce the requested runtime cutoff locally on the actuator Pico
-- consume retained `node-config/v1` messages from `greenhouse/nodes/{node_id}/config`
-- publish `node-config-ack/v1`
 
 ### Mosquitto
 

@@ -18,6 +18,12 @@ Each tarball contains:
 - `ruby_service/vendor/cache/`
 - `deploy/release_manifest.json`
 
+Release builds are now strict about firmware too:
+
+- `deploy/build_release.sh` verifies `pico_w_sensor_node` and `pico_w_actuator_node` from staged source before writing the release manifest
+- the build host must have `cmake`, `ninja`, and the ARM embedded toolchain (`arm-none-eabi-gcc`, `arm-none-eabi-g++`, `arm-none-eabi-objcopy`, `arm-none-eabi-objdump`)
+- `deploy/install_pi.sh` rejects a release tarball whose manifest does not show a successful firmware verification step
+
 Output:
 
 - `deploy/releases/victory-garden-linux-armv7.tar.gz`
@@ -105,16 +111,8 @@ sudo journalctl -u victory-garden-mqtt-consumer.service -n 50 --no-pager
 set -a
 source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
 set +a
-mosquitto_sub -h 127.0.0.1 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/state' -v
+mosquitto_sub -h 127.0.0.1 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/nodes/+/state' -v
 ```
-
-Helpful Pi-side validation helpers:
-
-- `./deploy/pi_validate_actuator.sh`
-- `./deploy/pi_validate_request_reading.sh`
-- `./deploy/pi_cleanup_validation_data.sh`
-
-The request-reading validation helper clears its own retained validation command after the check so it does not pollute later runs.
 
 The Pi install also starts `victory-garden-mqtt-discovery.service`, a small UDP responder that returns the Pi's current broker IP and MQTT port so Pico nodes can recover automatically if the Pi's LAN IP changes.
 

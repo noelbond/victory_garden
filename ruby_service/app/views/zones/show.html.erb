@@ -18,14 +18,15 @@
     <div class="metric-value"><%= @zone.active ? "Active" : "Inactive" %></div>
     <div class="muted"><%= @zone.crop_profile.crop_name %></div>
   </div>
-  <div class="card metric-card <%= @reading_freshness == "ok" ? "metric-ok" : "metric-warn" %>">
-    <div class="metric-label">Latest Reading</div>
-    <div class="metric-value"><%= @latest_reading&.moisture_percent || "—" %><%= "%" if @latest_reading&.moisture_percent.present? %></div>
+  <div class="card metric-card <%= @aggregate_freshness == "ok" ? "metric-ok" : (@aggregate_freshness == "stale" ? "metric-warn" : "metric-alert") %>">
+    <div class="metric-label">Zone Average</div>
+    <div class="metric-value"><%= @zone_moisture_snapshot[:average_moisture] || "—" %><%= "%" if @zone_moisture_snapshot[:average_moisture].present? %></div>
     <div class="muted">
-      <% if @latest_reading.present? %>
-        <%= time_ago_in_words(@latest_reading.recorded_at) %> ago
+      <% if @zone_moisture_snapshot[:latest_recorded_at].present? %>
+        <%= @zone_moisture_snapshot[:valid_sensor_count] %> / <%= @zone_moisture_snapshot[:expected_sensor_count] %> fresh sensors,
+        updated <%= time_ago_in_words(@zone_moisture_snapshot[:latest_recorded_at]) %> ago
       <% else %>
-        no reading yet
+        no fresh sensor average
       <% end %>
     </div>
   </div>
@@ -69,6 +70,7 @@
       <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
       <li>Max Pulse Runtime: <%= @zone.crop_profile.max_pulse_runtime_sec %> s</li>
       <li>Daily Max Runtime: <%= @zone.crop_profile.daily_max_runtime_sec %> s</li>
+      <li>Irrigation Line: <%= @zone.irrigation_line || "—" %></li>
       <li>Climate: <%= @zone.crop_profile.climate_preference.presence || "—" %></li>
       <li>Time to Harvest: <%= @zone.crop_profile.time_to_harvest_days || "—" %> days</li>
       <li>
@@ -83,6 +85,29 @@
         Allowed Hours:
         <% if @zone.allowed_hours.present? %>
           <%= @zone.allowed_hours["start_hour"] %>–<%= @zone.allowed_hours["end_hour"] %>
+        <% else %>
+          —
+        <% end %>
+      </li>
+    </ul>
+  </div>
+
+  <div class="col card">
+    <h3>Zone Moisture Aggregate</h3>
+    <ul class="list">
+      <li>Freshness: <span class="health-pill <%= @aggregate_freshness %>"><%= @aggregate_freshness %></span></li>
+      <li>Average Moisture: <%= @zone_moisture_snapshot[:average_moisture] || "—" %><%= "%" if @zone_moisture_snapshot[:average_moisture].present? %></li>
+      <li>Average Raw: <%= @zone_moisture_snapshot[:average_raw] || "—" %></li>
+      <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
+      <li>Fresh Sensors: <%= @zone_moisture_snapshot[:valid_sensor_count] %> / <%= @zone_moisture_snapshot[:expected_sensor_count] %></li>
+      <li>Fresh Nodes: <%= @zone_moisture_snapshot[:valid_node_ids].presence&.join(", ") || "—" %></li>
+      <li>Missing Nodes: <%= @zone_moisture_snapshot[:missing_node_ids].presence&.join(", ") || "—" %></li>
+      <li>Stale Nodes: <%= @zone_moisture_snapshot[:stale_node_ids].presence&.join(", ") || "—" %></li>
+      <li>No-Moisture Nodes: <%= @zone_moisture_snapshot[:null_moisture_node_ids].presence&.join(", ") || "—" %></li>
+      <li>
+        Aggregate Updated:
+        <% if @zone_moisture_snapshot[:latest_recorded_at].present? %>
+          <%= @zone_moisture_snapshot[:latest_recorded_at] %>
         <% else %>
           —
         <% end %>
@@ -163,6 +188,7 @@
           temp: <%= reading.soil_temp_c || "—" %> C,
           battery: <%= reading.battery_percent || "—" %>%,
           wifi_rssi: <%= reading.wifi_rssi || "—" %> dBm,
+          node: <%= reading.node_id %>,
           health: <%= reading.health || "—" %>
         </li>
       <% end %>

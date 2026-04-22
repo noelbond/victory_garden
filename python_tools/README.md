@@ -37,6 +37,8 @@ From [`python_tools/`](/Users/noel/coding/python/victory_garden/python_tools):
 Both tools expect a running MQTT broker. Override the broker with `--mqtt-host` and `--mqtt-port` if needed.
 Both also accept `--mqtt-username` and `--mqtt-password`, and default those from `MQTT_USERNAME` / `MQTT_PASSWORD` when present.
 When available, the controller prefers retained `greenhouse/system/config/current` from Rails over local YAML so `allowed_hours`, active zones, and crop thresholds stay consistent with the UI.
+The controller also refuses to act on stale retained readings older than `--max-reading-age-seconds` (default: 900) so an old dry payload cannot trigger watering after a long outage or restart.
+For multi-sensor zones, it averages fresh readings from the zone's configured `node_ids` and can require a quorum with `--min-zone-sensor-readings` before watering.
 
 ## Crop Config Schema
 
@@ -69,8 +71,10 @@ The Python controller consumes and publishes:
 
 | Topic | Purpose |
 |---|---|
-| `greenhouse/zones/{zone_id}/state` | node state payload with required fields and nullable optional telemetry |
+| `greenhouse/zones/{zone_id}/nodes/{node_id}/state` | canonical retained node state payload with required fields and nullable optional telemetry |
+| `greenhouse/zones/{zone_id}/state` | legacy retained node state payload accepted for compatibility |
 | `greenhouse/system/config/current` | retained crop/zone policy broadcast from Rails |
+| `greenhouse/system/actuator/config/current` | retained shared actuator topology broadcast from Rails |
 | `greenhouse/zones/{zone_id}/command` | retained `request_reading` command |
 | `greenhouse/zones/{zone_id}/actuator/command` | actuator commands published by the Python controller |
 | `greenhouse/zones/{zone_id}/controller/event` | per-zone watering decision summary |
@@ -78,7 +82,7 @@ The Python controller consumes and publishes:
 | `greenhouse/zones/{zone_id}/controller/moisture_percent` | controller input moisture |
 | `greenhouse/zones/{zone_id}/controller/action` | `water` or `none` |
 | `greenhouse/zones/{zone_id}/controller/runtime_seconds_today` | cumulative runtime |
-| `greenhouse/zones/{zone_id}/controller/skip_reason` | cooldown or duplicate-read reason |
+| `greenhouse/zones/{zone_id}/controller/skip_reason` | cooldown / policy / stale-reading reason |
 | `greenhouse/zones/{zone_id}/actuator/status` | actuator status published by the actuator Pico |
 
 ## Actuator Commands
@@ -86,6 +90,8 @@ The Python controller consumes and publishes:
 The Python controller publishes `greenhouse/zones/{zone_id}/actuator/command`.
 The dedicated actuator Pico subscribes to that topic, enforces the bounded runtime locally, and
 publishes `greenhouse/zones/{zone_id}/actuator/status`.
+Rails separately publishes `greenhouse/system/actuator/config/current` so the actuator Pico knows
+how many irrigation lines exist and which zone is assigned to each line.
 
 The runtime safety boundary is on the actuator Pico:
 
@@ -100,6 +106,7 @@ The runtime safety boundary is on the actuator Pico:
 - MQTT retained node state is its working input.
 - Rails/Postgres remains authoritative for crop definitions, zone claims, config publication, historical records, and manual operator actions.
 - The actuator Pico is part of the live stack and executes `greenhouse/zones/{zone_id}/actuator/command`.
+- Shared actuator topology is configured in Rails with one irrigation line per zone.
 - Rails continues to schedule delayed rereads from actuator completion because that logic depends on persisted watering-event correlation.
 
 ## Notes
@@ -108,5 +115,7 @@ The runtime safety boundary is on the actuator Pico:
 - The controller uses the canonical `greenhouse/*` topic contract.
 - Incoming MQTT state is validated through `SensorReading` before any control logic touches it.
 - Empty retained clears are ignored cleanly.
+- Invalid or out-of-range sensor payloads are ignored, and stale retained readings are skipped rather than watered.
+- Multi-sensor zones use the average fresh moisture across configured nodes; insufficient fresh readings publish `insufficient_sensor_quorum`.
 - The controller emits structured JSON logs for MQTT lifecycle, decisions, skips, reread requests, and command publication.
 - The current seeded thresholds are `30` for tomato and `40` for basil, reflecting current normalized sensor policy informed by crop watering preference rather than a universal absolute soil standard.

@@ -66,4 +66,56 @@ class ZoneShowStatusTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Moisture Trend"
     assert_includes response.body, "Water Usage"
   end
+
+  test "zone page shows aggregate moisture and sensor coverage details" do
+    crop = create(:crop_profile, dry_threshold: 35.0)
+    zone = create(:zone, name: "Aggregate Detail Zone", crop_profile: crop)
+
+    %w[sensor-a sensor-b sensor-c sensor-d].each do |node_id|
+      Node.create!(
+        node_id: node_id,
+        zone: zone,
+        reported_zone_id: zone.zone_id,
+        last_seen_at: 2.minutes.ago,
+        provisioned: true
+      )
+    end
+
+    SensorReading.create!(
+      zone: zone,
+      node_id: "sensor-a",
+      recorded_at: 2.minutes.ago,
+      moisture_raw: 500,
+      moisture_percent: 20.0,
+      raw_payload: {}
+    )
+    SensorReading.create!(
+      zone: zone,
+      node_id: "sensor-b",
+      recorded_at: 1.minute.ago,
+      moisture_raw: 540,
+      moisture_percent: 40.0,
+      raw_payload: {}
+    )
+    SensorReading.create!(
+      zone: zone,
+      node_id: "sensor-c",
+      recorded_at: 20.minutes.ago,
+      moisture_raw: 900,
+      moisture_percent: 90.0,
+      raw_payload: {}
+    )
+
+    get zone_path(zone)
+
+    assert_response :success
+    assert_includes response.body, "Zone Moisture Aggregate"
+    assert_includes response.body, "Average Moisture: 30.0%"
+    assert_includes response.body, "Average Raw: 520"
+    assert_includes response.body, "Fresh Sensors: 2 / 4"
+    assert_includes response.body, "Fresh Nodes: sensor-a, sensor-b"
+    assert_includes response.body, "Stale Nodes: sensor-c"
+    assert_includes response.body, "Missing Nodes: sensor-d"
+    assert_includes response.body, "Partial aggregate"
+  end
 end

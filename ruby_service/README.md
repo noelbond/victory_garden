@@ -41,6 +41,13 @@ Recommended local verification after setup:
 
 - `./bin/dev-smoke`
 
+`dev-smoke` is the fastest local check for the Rails-side end-to-end flow surface:
+
+- manual watering command creation
+- actuator status ingest and reread scheduling
+- node config publish and config ack ingest
+- MQTT topic normalization and retained-clear handling
+
 ## Main Models
 
 - `CropProfile`
@@ -51,6 +58,8 @@ Recommended local verification after setup:
 - `ActuatorStatus`
 - `Fault`
 - `ConnectionSetting`
+
+Crop profiles are user-managed from the Rails UI. Operators can create custom profiles during onboarding, while creating/editing zones, or from a claimed node's detail page.
 
 ## MQTT Defaults
 
@@ -160,6 +169,8 @@ Published crop config includes:
 - `time_to_harvest_days`
 
 Claiming or unclaiming a node also publishes a node-specific config payload to `greenhouse/nodes/{node_id}/config`. Rails tracks the desired config, the last acked config, and the config sync status on each node record.
+
+Changing a zone's assigned crop profile or editing a crop profile that is already assigned also republishes node config for the affected claimed nodes.
 
 ## MQTT Consumer
 

@@ -120,7 +120,7 @@ The node subscribes to its retained config topic each time it connects to MQTT, 
 
 Topic:
 
-`greenhouse/zones/{zone_id}/state`
+`greenhouse/zones/{zone_id}/nodes/{node_id}/state`
 
 Payload:
 

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_03_31_190000) do
+ActiveRecord::Schema[8.0].define(version: 2026_04_22_190000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -25,6 +25,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_03_31_190000) do
     t.text "fault_detail"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.index ["idempotency_key", "state"], name: "index_actuator_statuses_on_idempotency_key_and_state_unique", unique: true, where: "(idempotency_key IS NOT NULL)"
     t.index ["zone_id", "recorded_at"], name: "index_actuator_statuses_on_zone_id_and_recorded_at"
     t.index ["zone_id"], name: "index_actuator_statuses_on_zone_id"
   end
@@ -42,6 +43,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_03_31_190000) do
     t.datetime "updated_at", null: false
     t.string "mqtt_username"
     t.string "mqtt_password"
+    t.integer "irrigation_line_count"
   end
 
   create_table "crop_profiles", force: :cascade do |t|
@@ -143,7 +145,9 @@ ActiveRecord::Schema[8.0].define(version: 2026_03_31_190000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.string "name"
+    t.integer "irrigation_line"
     t.index ["crop_profile_id"], name: "index_zones_on_crop_profile_id"
+    t.index ["irrigation_line"], name: "index_zones_on_irrigation_line", unique: true, where: "(irrigation_line IS NOT NULL)"
     t.index ["zone_id"], name: "index_zones_on_zone_id", unique: true
   end
 

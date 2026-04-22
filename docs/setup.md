@@ -108,7 +108,6 @@ Why:
 
 - the Pi should ideally keep a stable broker IP
 - Pico nodes can rediscover the Pi automatically through the Pi's UDP discovery service if the broker address changes
-- the Pi changed IP earlier during debugging when Wi-Fi dropped and DHCP reissued an address
 
 Recommended startup order:
 
@@ -261,7 +260,7 @@ On the Pi:
 set -a
 source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
 set +a
-mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/zone1/state' -v
+mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/zone1/nodes/+/state' -v
 ```
 
 Expected:

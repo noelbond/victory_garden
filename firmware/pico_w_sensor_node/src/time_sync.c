@@ -54,6 +54,15 @@ bool time_sync_ready(void) {
     return g_time_sync.synced;
 }
 
+uint32_t time_sync_epoch_sec(void) {
+    if (!g_time_sync.synced) {
+        return 0;
+    }
+    uint64_t now_us = g_time_sync.synced_epoch_us +
+                      (to_us_since_boot(get_absolute_time()) - g_time_sync.synced_boot_us);
+    return (uint32_t)(now_us / 1000000ull);
+}
+
 void time_sync_format_iso8601(char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return;

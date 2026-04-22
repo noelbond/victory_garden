@@ -18,6 +18,7 @@ add_executable(pico_w_sensor_node
     src/main.c
     src/mqtt_node.c
     src/node_config.c
+    src/seesaw.c
     src/sensors.c
     src/time_sync.c
     src/topics.c
@@ -69,9 +70,3 @@ pico_enable_stdio_uart(pico_w_actuator_node 0)
 pico_enable_stdio_usb(pico_w_actuator_node 1)
 
 pico_add_extra_outputs(pico_w_actuator_node)
-
-add_executable(serial_test src/serial_test_main.c)
-target_link_libraries(serial_test pico_stdlib)
-pico_enable_stdio_uart(serial_test 1)
-pico_enable_stdio_usb(serial_test 1)
-pico_add_extra_outputs(serial_test)

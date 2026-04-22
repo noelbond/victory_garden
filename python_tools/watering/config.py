@@ -39,6 +39,7 @@ class SystemZoneConfig(BaseModel):
     node_ids: List[str] = Field(default_factory=list)
     active: bool = True
     allowed_hours: AllowedHoursConfig | None = None
+    irrigation_line: int | None = Field(default=None, ge=1)
 
 
 class SystemConfigPayload(BaseModel):

@@ -19,10 +19,10 @@
     <div class="metric-value"><%= @summary[:active_zones] %> / <%= @summary[:zones] %></div>
     <div class="muted">currently enabled zones</div>
   </div>
-  <div class="card metric-card <%= @summary[:nodes_online] == @summary[:zones] && @summary[:zones] > 0 ? "metric-ok" : "metric-warn" %>">
-    <div class="metric-label">Zones Online</div>
-    <div class="metric-value"><%= @summary[:nodes_online] %> / <%= @summary[:zones] %></div>
-    <div class="muted">fresh readings within 5 minutes</div>
+  <div class="card metric-card <%= @summary[:expected_sensor_count].positive? && @summary[:fresh_sensor_count] == @summary[:expected_sensor_count] ? "metric-ok" : "metric-warn" %>">
+    <div class="metric-label">Fresh Sensors</div>
+    <div class="metric-value"><%= @summary[:fresh_sensor_count] %> / <%= @summary[:expected_sensor_count] %></div>
+    <div class="muted">aggregate inputs within <%= @aggregate_freshness_minutes %> minutes</div>
   </div>
   <div class="card metric-card <%= @summary[:zones_watering] > 0 ? "metric-warn" : "metric-ok" %>">
     <div class="metric-label">Watering Now</div>
@@ -39,17 +39,16 @@
 <div class="zone-grid">
   <% @zones.each do |zone| %>
     <% reading = @latest_readings[zone.id] %>
+    <% snapshot = @zone_moisture_snapshots[zone.id] %>
     <% status = @latest_statuses[zone.id] %>
     <% last_watering = @latest_watering_events[zone.id] %>
     <% open_faults = @open_fault_counts.fetch(zone.id, 0) %>
-    <% freshness_class = if reading.blank?
+    <% aggregate_class = if snapshot[:valid_sensor_count].zero?
                            "offline"
-                         elsif reading.recorded_at > 5.minutes.ago
+                         elsif snapshot[:valid_sensor_count] >= snapshot[:expected_sensor_count]
                            "ok"
-                         elsif reading.recorded_at > 30.minutes.ago
-                           "stale"
                          else
-                           "offline"
+                           "stale"
                          end %>
 
     <%= link_to zone_path(zone), class: "card zone-card zone-dashboard-card" do %>
@@ -74,6 +73,11 @@
         </div>
 
         <div>
+          <div class="zone-metric-label">Line</div>
+          <div><strong><%= zone.irrigation_line || "—" %></strong></div>
+        </div>
+
+        <div>
           <div class="zone-metric-label">Nodes</div>
           <% if zone.nodes.any? %>
             <div><%= zone.nodes.sort_by(&:node_id).map(&:node_id).join(", ") %></div>
@@ -83,21 +87,24 @@
         </div>
 
         <div>
-          <div class="zone-metric-label">Latest Reading</div>
-          <% if reading.present? %>
-            <div><strong><%= reading.moisture_percent || "—" %>%</strong></div>
-            <div class="muted">raw <%= reading.moisture_raw %></div>
+          <div class="zone-metric-label">Zone Average</div>
+          <% if snapshot[:average_moisture].present? %>
+            <div><strong><%= snapshot[:average_moisture] %>%</strong></div>
+            <div class="muted">raw avg <%= snapshot[:average_raw] || "—" %></div>
           <% else %>
-            <div class="muted">No readings</div>
+            <div class="muted">No fresh average</div>
           <% end %>
         </div>
 
         <div>
-          <div class="zone-metric-label">Last Seen</div>
-          <% if reading.present? %>
-            <span class="health-pill <%= freshness_class %>"><%= time_ago_in_words(reading.recorded_at) %> ago</span>
+          <div class="zone-metric-label">Sensor Coverage</div>
+          <% if snapshot[:expected_sensor_count].positive? %>
+            <span class="health-pill <%= aggregate_class %>"><%= snapshot[:valid_sensor_count] %> / <%= snapshot[:expected_sensor_count] %> fresh</span>
+            <% if snapshot[:latest_recorded_at].present? %>
+              <div class="muted">updated <%= time_ago_in_words(snapshot[:latest_recorded_at]) %> ago</div>
+            <% end %>
           <% else %>
-            <span class="health-pill offline">never</span>
+            <span class="health-pill offline">no sensors</span>
           <% end %>
         </div>
 

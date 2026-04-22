@@ -3,7 +3,7 @@
 Victory Garden is an open-source automated watering platform for small gardens and greenhouse zones. The project combines:
 
 - Sensor node firmware for Arduino MKR WiFi 1010 and native Pico W hardware
-- A Python automatic controller and zone-scoped actuator daemon
+- A Python automatic controller and dedicated actuator-node firmware
 - A Rails control plane and UI for configuration, history, telemetry, and reporting
 
 ## Canonical Contract
@@ -36,7 +36,7 @@ The firmware, Python controller, tests, and docs should all be updated from the 
 - [`firmware/pico_w_sensor_node/`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node)
   Native Pico W sensor node firmware
 - [`python_tools/`](/Users/noel/coding/python/victory_garden/python_tools)
-  Python controller, actuator daemon, schemas, tests, and simulation tools
+  Python controller, shared policy logic, tests, and simulation tools
 - [`ruby_service/`](/Users/noel/coding/python/victory_garden/ruby_service)
   Rails UI, MQTT consumer, configuration publishing, and historical reporting
 - [`docs/`](/Users/noel/coding/python/victory_garden/docs)
@@ -44,8 +44,10 @@ The firmware, Python controller, tests, and docs should all be updated from the 
 
 ## Canonical MQTT Topics
 
+- `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
+  Canonical retained node state payload with required control fields and optional nullable telemetry fields
 - `greenhouse/zones/{zone_id}/state`
-  Node state payload with required control fields and optional nullable telemetry fields
+  Legacy retained node state payload accepted for compatibility
 - `greenhouse/zones/{zone_id}/command`
   Retained node command payload, including `request_reading`
 - `greenhouse/zones/{zone_id}/command_ack`
@@ -65,8 +67,7 @@ The firmware, Python controller, tests, and docs should all be updated from the 
 
 - PostgreSQL in Rails is the source of truth for crop profiles, zone definitions, node claims, watering history, and config sync status.
 - MQTT retained node state is the live transport and working state for nodes and the Python controller, not the long-term source of truth.
-- The actuator path is zone-scoped. Rails publishes to `greenhouse/zones/{zone_id}/actuator/command`, and an actuator service is expected to publish results to `greenhouse/zones/{zone_id}/actuator/status`.
-- The repository now includes that actuator service in `python_tools/`.
+- The actuator path is zone-scoped. Rails publishes to `greenhouse/zones/{zone_id}/actuator/command`, and the dedicated actuator Pico publishes results to `greenhouse/zones/{zone_id}/actuator/status`.
 - Python is the authoritative automatic actuator-command publisher in the deployed stack.
 - Rails remains the manual actuator-command publisher, persistence layer, and config authority.
 - The deployed Pi stack expects MQTT username/password auth on the local broker.
@@ -120,11 +121,10 @@ They are informed by crop care guidance, then tuned into normalized sensor perce
 
 ## Single-Pi Install
 
-The Pi installer now provisions the full local stack:
+The Pi installer now provisions the local backend stack:
 
 - Mosquitto
 - Python controller
-- Python actuator service
 - PostgreSQL
 - Rails web app
 - Rails MQTT consumer
@@ -149,7 +149,8 @@ Each release tarball contains:
 - Rails `vendor/cache`
 - Python wheelhouse
 
-The installer validates the tarball target against the Pi before it installs.
+The release build also verifies that `pico_w_sensor_node` and `pico_w_actuator_node` compile before it writes the release manifest.
+The installer validates both the tarball target and that firmware verification step before it installs.
 
 Useful runtime pages after install:
 

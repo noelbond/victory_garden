@@ -23,6 +23,10 @@
         <%= f.password_field :mqtt_password, placeholder: "Broker password" %>
       </div>
       <div class="field">
+        <%= f.label :irrigation_line_count, "Installed Irrigation Lines" %>
+        <%= f.number_field :irrigation_line_count, min: 1, placeholder: "1" %>
+      </div>
+      <div class="field">
         <%= f.label :readings_topic, "Readings Topic" %>
         <%= f.text_field :readings_topic, placeholder: "greenhouse/zones/+/state" %>
       </div>
@@ -52,5 +56,9 @@
       <%= f.submit "Save", class: "btn" %>
       <%= button_to "Publish Config", admin_publish_config_path, method: :post, class: "btn light" %>
     </div>
+    <p class="muted" style="margin-top: 12px;">
+      Installed irrigation lines define how many valve-controlled branches exist on the shared watering system.
+      Each active zone can be assigned to one line.
+    </p>
   <% end %>
 </div>

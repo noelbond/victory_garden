@@ -133,8 +133,13 @@ Typical values to set before flashing:
 - relay GPIO
 - relay polarity
 
-The actuator Pico also supports persisted config in flash at runtime through retained `node-config/v1` messages from Rails.
-If the Pi broker IP changes later, the actuator Pico uses the same UDP discovery fallback and persists the new `mqtt_host` before reconnecting.
+Rails publishes retained shared actuator topology on `greenhouse/system/actuator/config/current`,
+including `irrigation_line_count` and the zone-to-line assignments. If the Pi broker IP changes later,
+the actuator Pico uses the same UDP discovery fallback and persists the new `mqtt_host` before reconnecting.
+
+The retained actuator topology is also what drives exact MQTT command subscriptions on the actuator Pico.
+Today the Pico uses the `zone_id` to `irrigation_line` assignment from that payload directly; the `active`
+field is published for shared topology visibility but is not yet enforced as a device-side command gate.
 
 ## Shared MQTT Contract Fixtures
 
@@ -146,7 +151,7 @@ These are the canonical reference fixtures for:
 
 - tests
 - docs
-- live debugging
+- contract validation
 
 The topic-level contract is documented in:
 
@@ -175,6 +180,9 @@ Node runtime behavior comes from a mix of:
 - untracked local secret overrides
 - persisted local node config
 - retained `node-config/v1` messages from Rails
+
+For the actuator Pico specifically, live topology comes from retained
+`greenhouse/system/actuator/config/current` rather than `node-config/v1`.
 
 ### Broker transport
 

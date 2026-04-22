@@ -13,12 +13,13 @@ Rails.application.routes.draw do
     end
   end
   resources :watering_events, only: [:index]
-  resources :crop_profiles, only: [:index, :show]
+  resources :crop_profiles, only: [:index, :show, :new, :create, :edit, :update]
   resources :nodes, only: [:index, :show] do
     member do
       patch :claim
       patch :unclaim
       post :publish_config
+      patch :crop_profile
     end
   end
   resource :settings, only: [:show, :update]

@@ -1,0 +1,56 @@
+<%= form_with model: crop_profile do |f| %>
+  <% if crop_profile.errors.any? %>
+    <div class="card" style="margin-bottom: 16px;">
+      <h3>Profile could not be saved</h3>
+      <ul class="list">
+        <% crop_profile.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <%= hidden_field_tag :return_to, params[:return_to] if params[:return_to].present? %>
+
+  <div class="form-grid">
+    <div class="field">
+      <%= f.label :crop_name, "Crop Name" %>
+      <%= f.text_field :crop_name, placeholder: "Custom Tomato" %>
+    </div>
+
+    <div class="field">
+      <%= f.label :dry_threshold, "Dry Threshold (%)" %>
+      <%= f.number_field :dry_threshold, step: 0.1, min: 0, max: 100 %>
+    </div>
+
+    <div class="field">
+      <%= f.label :max_pulse_runtime_sec, "Max Pulse Runtime (s)" %>
+      <%= f.number_field :max_pulse_runtime_sec, min: 0 %>
+    </div>
+
+    <div class="field">
+      <%= f.label :daily_max_runtime_sec, "Daily Max Runtime (s)" %>
+      <%= f.number_field :daily_max_runtime_sec, min: 0 %>
+    </div>
+
+    <div class="field">
+      <%= f.label :climate_preference, "Climate Preference" %>
+      <%= f.text_field :climate_preference, placeholder: "Warm, sunny" %>
+    </div>
+
+    <div class="field">
+      <%= f.label :time_to_harvest_days, "Time to Harvest (days)" %>
+      <%= f.number_field :time_to_harvest_days, min: 0 %>
+    </div>
+  </div>
+
+  <div class="field" style="margin-top: 16px;">
+    <%= f.label :notes, "Notes" %>
+    <%= f.text_area :notes, rows: 5, placeholder: "Optional growing notes or calibration reminders" %>
+  </div>
+
+  <div style="margin-top: 16px;">
+    <%= f.submit class: "btn" %>
+    <%= link_to "Cancel", params[:return_to].presence || crop_profiles_path, class: "btn light" %>
+  </div>
+<% end %>

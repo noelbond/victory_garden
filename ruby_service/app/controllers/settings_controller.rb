@@ -20,6 +20,7 @@ class SettingsController < ApplicationController
       :mqtt_port,
       :mqtt_username,
       :mqtt_password,
+      :irrigation_line_count,
       :readings_topic,
       :actuators_topic,
       :command_topic,

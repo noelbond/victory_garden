@@ -5,7 +5,7 @@ flowchart TD
     end
 
     subgraph BROKER["MQTT Broker (Mosquitto)"]
-        T_STATE["greenhouse/zones/{id}/state\n(retained)"]
+        T_STATE["greenhouse/zones/{id}/nodes/{node_id}/state\n(retained)"]
         T_CMD["greenhouse/zones/{id}/command\n(retained)"]
         T_ACT_STATUS["greenhouse/zones/{id}/actuator/status"]
         T_ACT_CMD["greenhouse/zones/{id}/actuator/command"]

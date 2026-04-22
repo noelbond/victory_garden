@@ -45,7 +45,24 @@ class MqttConsumerTest < ActiveSupport::TestCase
     assert_equal 2, enqueued.length
   end
 
-  test "controller events are not deduped by payload" do
+  test "node-scoped sensor state topic is routed to sensor ingest" do
+    consumer = MqttConsumer.new
+    payload = { zone_id: "zone1", node_id: "node-1", moisture_raw: 321, timestamp: "2026-04-06T18:00:00Z" }.to_json
+    enqueued = []
+    original = SensorIngestJob.method(:perform_later)
+
+    SensorIngestJob.define_singleton_method(:perform_later, ->(data) { enqueued << data })
+    begin
+      consumer.send(:handle_message, "greenhouse/zones/zone1/nodes/node-1/state", payload)
+    ensure
+      SensorIngestJob.define_singleton_method(:perform_later, &original)
+    end
+
+    assert_equal 1, enqueued.length
+    assert_equal "node-1", enqueued.first["node_id"]
+  end
+
+  test "controller events are deduped by payload within the dedupe window" do
     now = 100.0
     consumer = MqttConsumer.new(dedupe_window_seconds: 60, monotonic_clock: -> { now })
     payload = {
@@ -66,6 +83,6 @@ class MqttConsumerTest < ActiveSupport::TestCase
       ControllerEventIngestJob.define_singleton_method(:perform_later, &original)
     end
 
-    assert_equal 2, enqueued.length
+    assert_equal 1, enqueued.length
   end
 end

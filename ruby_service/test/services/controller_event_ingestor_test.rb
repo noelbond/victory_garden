@@ -87,4 +87,36 @@ class ControllerEventIngestorTest < ActiveSupport::TestCase
     assert_match "Invalid runtime_seconds", error.message
     assert_equal 0, WateringEvent.count
   end
+
+  test "rejects unknown zone id" do
+    payload = {
+      "zone_id" => "missing-zone",
+      "timestamp" => "2026-03-31T20:00:00Z",
+      "action" => "water",
+      "runtime_seconds" => 45,
+      "idempotency_key" => "missing-zone-20260331T200000Z-abcd1234"
+    }
+
+    error = assert_raises(ArgumentError) do
+      ControllerEventIngestor.new(payload).call
+    end
+
+    assert_match "Unknown zone_id", error.message
+  end
+
+  test "rejects non-integer runtime_seconds values" do
+    payload = {
+      "zone_id" => "zone1",
+      "timestamp" => "2026-03-31T20:00:00Z",
+      "action" => "water",
+      "runtime_seconds" => "forty-five",
+      "idempotency_key" => "zone1-20260331T200000Z-abcd1234"
+    }
+
+    error = assert_raises(ArgumentError) do
+      ControllerEventIngestor.new(payload).call
+    end
+
+    assert_match "Invalid runtime_seconds", error.message
+  end
 end

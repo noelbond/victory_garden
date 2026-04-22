@@ -47,6 +47,7 @@ In the Rails UI:
    - MQTT port is `1883`
    - MQTT username/password match the Pi broker if auth is enabled
 3. create one crop profile if needed
+   - use the onboarding page, the crop profile library, or the zone form's `Create Custom Profile` action
 4. create one zone
 
 The health page should show the app is running even before a node is claimed.
@@ -89,7 +90,7 @@ On the Pi:
 set -a
 source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
 set +a
-mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/state' -v
+mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/nodes/+/state' -v
 ```
 
 You should see retained `node-state/v1` messages from the sensor node.
@@ -99,6 +100,7 @@ In Rails:
 1. open `Nodes`
 2. confirm the sensor node appears
 3. claim it to the zone you created
+4. if needed, open the node detail page and change the zone's crop profile there
 
 Important:
 
@@ -148,17 +150,6 @@ You should see:
 - actuator status
 - later, a retained `request_reading`
 - a fresh node-state publish
-
-Pi-side validation helpers:
-
-```bash
-set -a
-source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
-set +a
-./deploy/pi_validate_actuator.sh
-./deploy/pi_validate_request_reading.sh
-./deploy/pi_cleanup_validation_data.sh
-```
 
 ## 7. Confirm the operator pages
 

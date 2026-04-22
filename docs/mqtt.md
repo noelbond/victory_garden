@@ -18,13 +18,15 @@ Outside MQTT itself, the Pi also exposes a small UDP discovery responder on `MQT
 
 | Topic | Producer | Consumer | Retained | Purpose |
 |---|---|---|---|---|
-| `greenhouse/zones/{zone_id}/state` | sensor node | Rails, Python controller | yes | latest node reading and telemetry |
+| `greenhouse/zones/{zone_id}/nodes/{node_id}/state` | sensor node | Rails, Python controller | yes | latest node reading and telemetry |
+| `greenhouse/zones/{zone_id}/state` | legacy sensor node | Rails, Python controller | yes | legacy latest node reading and telemetry |
 | `greenhouse/zones/{zone_id}/command` | Rails, Python controller | sensor node | yes | retained `request_reading` reread command |
 | `greenhouse/zones/{zone_id}/command_ack` | sensor node | Rails, operators | yes | acknowledgement of handled or ignored node command |
 | `greenhouse/nodes/{node_id}/config` | Rails | sensor node | yes | retained node assignment and crop config |
 | `greenhouse/nodes/{node_id}/config_ack` | sensor node | Rails | yes | acknowledgement of applied or rejected node config |
 | `greenhouse/zones/{zone_id}/actuator/command` | Python controller, Rails manual ops | actuator Pico node | no | start or stop watering |
 | `greenhouse/zones/{zone_id}/actuator/status` | actuator Pico node | Rails | no | watering progress or fault |
+| `greenhouse/system/actuator/config/current` | Rails | actuator Pico node | yes | retained shared actuator topology, line count, and zone-to-line mapping |
 | `greenhouse/zones/{zone_id}/controller/event` | Python controller | operators | no | decision summary for a watering pass |
 | `greenhouse/zones/{zone_id}/controller/skip` | Python controller | operators | no | skipped-decision summary |
 | `greenhouse/zones/{zone_id}/controller/moisture_percent` | Python controller | operators | no | latest controller input moisture |
@@ -39,7 +41,7 @@ Outside MQTT itself, the Pi also exposes a small UDP discovery responder on `MQT
 
 Topic:
 
-`greenhouse/zones/{zone_id}/state`
+`greenhouse/zones/{zone_id}/nodes/{node_id}/state`
 
 Schema:
 
@@ -87,6 +89,8 @@ Compatibility note:
 
 - Rails and Python still accept the legacy `rssi` field as an alias for `wifi_rssi`
 - canonical publishers should emit `wifi_rssi`
+- Rails and Python still accept the legacy retained topic `greenhouse/zones/{zone_id}/state`
+- multi-sensor zones should publish to the per-node retained topic so each sensor's latest reading survives broker and controller restarts
 
 ### Node Command
 
@@ -219,6 +223,36 @@ Example:
 
 Observed status values:
 
+### Actuator Config
+
+Topic:
+
+`greenhouse/system/actuator/config/current`
+
+Example:
+
+```json
+{
+  "schema_version": "actuator-config/v1",
+  "config_version": "2026-04-07T18:10:00Z",
+  "irrigation_line_count": 4,
+  "zones": [
+    { "zone_id": "zone1", "irrigation_line": 1, "active": true },
+    { "zone_id": "zone2", "irrigation_line": 2, "active": true },
+    { "zone_id": "zone3", "irrigation_line": 3, "active": false }
+  ]
+}
+```
+
+Behavior:
+
+- published retained
+- defines the installed irrigation line count on the shared actuator controller
+- maps one irrigation line to one zone
+- lets the actuator Pico subscribe to exact per-zone command topics such as `greenhouse/zones/zone1/actuator/command`
+- zone subscriptions are derived from the retained zone-to-line assignments, not from a wildcard topic
+- `active` is currently topology metadata for operators and upstream publishers; the actuator Pico uses `zone_id` to `irrigation_line` mapping and does not reject commands only because `active` is `false`
+
 - `applied`
 - `error`
 
@@ -309,7 +343,10 @@ Example:
   "moisture_percent": 86.0,
   "action": "none",
   "runtime_seconds": 0,
-  "runtime_seconds_today": 0
+  "runtime_seconds_today": 0,
+  "valid_sensor_count": 4,
+  "expected_sensor_count": 6,
+  "valid_node_ids": ["sensor-a", "sensor-b", "sensor-c", "sensor-d"]
 }
 ```
 
@@ -319,6 +356,8 @@ Related single-value controller topics:
 - `greenhouse/zones/{zone_id}/controller/action`
 - `greenhouse/zones/{zone_id}/controller/runtime_seconds_today`
 - `greenhouse/zones/{zone_id}/controller/skip_reason`
+
+When a zone has multiple claimed nodes, the Python controller averages fresh, non-null `moisture_percent` values from the configured `node_ids` and uses that aggregate as the watering decision input. A zone can require a minimum fresh sensor count with `--min-zone-sensor-readings`; if quorum is not met, the controller publishes `insufficient_sensor_quorum`.
 
 ## Retained Message Rules
 

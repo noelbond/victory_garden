@@ -124,7 +124,7 @@ ensure_supported_platform() {
 validate_release_manifest() {
   [[ -f "$RELEASE_MANIFEST" ]] || return 0
 
-  local expected_target current_target expected_ruby current_ruby expected_python current_python
+  local expected_target current_target expected_ruby current_ruby expected_python current_python firmware_status
 
   expected_target="$(manifest_value "target")"
   current_target="$(detect_platform_target)"
@@ -137,6 +137,9 @@ validate_release_manifest() {
   expected_python="$(manifest_value "python.version")"
   current_python="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')"
   [[ "$expected_python" == "$current_python" ]] || fail "Release wheelhouse targets Python $expected_python but this Pi has Python $current_python."
+
+  firmware_status="$(manifest_value "firmware.status")"
+  [[ "$firmware_status" == "passed" ]] || fail "Release manifest does not show a successful firmware build verification step."
 }
 
 ensure_release_bundle_complete() {
