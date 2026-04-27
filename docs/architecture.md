@@ -165,7 +165,8 @@ Useful endpoints:
 - Python now owns automatic watering decisions and consumes Rails-published live config
 - Rails persists automatic watering history from Python controller events and remains the manual/operator surface
 - manual watering, manual stop, reboot recovery, broker restart recovery, and PostgreSQL restart recovery have all been validated on the Pi stack
-- the remaining live gap is sensor reread validation with the replacement moisture sensor
+- delayed `request_reading` rereads are validated on the replacement Pico sensor path
+- remaining validation is operational rather than architectural: soak behavior, multi-cycle stability, and broader hardware rollout
 
 ## Related Docs
 

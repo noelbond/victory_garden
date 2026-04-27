@@ -323,10 +323,16 @@ Expected during a test run:
 - Pico firmware: [`../firmware/pico_w_sensor_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/README.md)
 - Pico actuator firmware: [`../firmware/pico_w_actuator_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/README.md)
 
-## 5. Current Remaining Gap
+## 5. Current Remaining Work
 
-The remaining live gap is the sensor reread path on replacement hardware:
+The replacement-sensor live path is now validated end to end:
 
-- install the replacement moisture sensor on the Pico sensor node
-- recalibrate dry and wet bounds for that sensor
-- rerun the full dry-soil -> water -> stop -> reread loop on hardware
+- replacement Pico sensor installed and publishing live readings
+- dry and wet bounds calibrated for the current hardware
+- dry-soil -> water -> stop -> reread loop validated on hardware
+
+The remaining work is longer-running field validation:
+
+- multi-cycle stability on the real plant
+- reboot/recovery checks on the live stack
+- soak testing to confirm watering raises moisture above threshold over time
