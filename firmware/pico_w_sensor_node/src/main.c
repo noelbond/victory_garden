@@ -138,8 +138,14 @@ int main(void) {
 
         bool publish_due = absolute_time_diff_us(get_absolute_time(), next_publish_at) <= 0;
         bool publish_allowed = absolute_time_diff_us(get_absolute_time(), next_publish_attempt_at) <= 0;
-        bool publish_requested = mqtt_node_take_publish_request(&node);
-        if ((publish_due || publish_requested) && publish_allowed && mqtt_node_is_connected(&node) && canary_published) {
+        bool publish_requested = mqtt_node_has_publish_request(&node);
+        bool mqtt_ready = mqtt_node_is_connected(&node);
+        bool publish_ready = mqtt_ready && (canary_published || publish_requested);
+
+        if ((publish_due || publish_requested) && publish_allowed && publish_ready) {
+            if (publish_requested) {
+                mqtt_node_take_publish_request(&node);
+            }
             if (!time_sync_ready() && !publish_requested) {
                 next_publish_attempt_at = make_timeout_time_ms(VG_TIME_SYNC_RETRY_MS);
                 tight_loop_contents();
@@ -149,6 +155,9 @@ int main(void) {
             const char *reason = publish_requested ? "request_reading" : "interval";
             if (sensors_read(&config, &snapshot)) {
                 if (mqtt_node_publish_state(&node, &snapshot, reason)) {
+                    if (publish_requested) {
+                        mqtt_node_mark_publish_request_handled(&node);
+                    }
                     next_publish_at = make_timeout_time_ms(config.publish_interval_ms);
                     next_publish_attempt_at = get_absolute_time();
                 } else {
@@ -159,6 +168,9 @@ int main(void) {
                     next_publish_attempt_at = make_timeout_time_ms(VG_PUBLISH_RETRY_MS);
                 }
             } else {
+                if (publish_requested) {
+                    node.publish_requested = true;
+                }
                 next_publish_at = make_timeout_time_ms(config.publish_interval_ms);
                 next_publish_attempt_at = make_timeout_time_ms(VG_PUBLISH_RETRY_MS);
             }

@@ -44,6 +44,7 @@ typedef struct {
     char pending_command[32];
     char pending_command_id[64];
     char pending_command_status[16];
+    char pending_config_payload[MQTT_RX_PAYLOAD_MAX];
     char tx_topic[MQTT_RX_TOPIC_MAX];
     char tx_payload[MQTT_TX_PAYLOAD_MAX];
     char tx_timestamp[32];
@@ -53,6 +54,8 @@ typedef struct {
     bool pending_command_ack;
     bool pending_clear_retained_command;
     bool pending_publish_request;
+    bool publish_request_needs_command_clear;
+    bool pending_config_apply;
 } mqtt_runtime_t;
 
 static mqtt_runtime_t g_runtime;
@@ -435,17 +438,29 @@ static void config_ack_timestamp(const mqtt_node_t *node, char *out, size_t out_
     time_sync_format_iso8601(out, out_size);
 }
 
-static void clear_retained_topic(const char *topic) {
-    mqtt_publish_locked(g_runtime.client, topic, "", 0, 0, 1, NULL, NULL);
+static bool clear_retained_topic(mqtt_node_t *node, const char *topic) {
+    err_t err = mqtt_publish_locked(g_runtime.client, topic, "", 0, 0, 1, NULL, NULL);
+    if (err == ERR_OK) {
+        return true;
+    }
+
+    if (node) {
+        if (err == ERR_MEM) {
+            set_error(node, "mqtt clear buffer full");
+        } else {
+            set_errorf(node, "mqtt clear failed", err);
+        }
+    }
+    return false;
 }
 
-static void clear_retained_command(mqtt_node_t *node) {
+static bool clear_retained_command(mqtt_node_t *node) {
     char topic[MQTT_RX_TOPIC_MAX];
     topic_command(node->config, topic, sizeof(topic));
-    clear_retained_topic(topic);
+    return clear_retained_topic(node, topic);
 }
 
-static void publish_command_ack(mqtt_node_t *node, const char *command, const char *command_id, const char *status) {
+static bool publish_command_ack(mqtt_node_t *node, const char *command, const char *command_id, const char *status) {
     topic_command_ack(node->config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
 
     snprintf(
@@ -458,7 +473,7 @@ static void publish_command_ack(mqtt_node_t *node, const char *command, const ch
         command_id,
         status
     );
-    mqtt_publish_locked(
+    err_t err = mqtt_publish_locked(
         g_runtime.client,
         g_runtime.tx_topic,
         g_runtime.tx_payload,
@@ -467,6 +482,16 @@ static void publish_command_ack(mqtt_node_t *node, const char *command, const ch
         1,
         NULL,
         NULL);
+    if (err == ERR_OK) {
+        return true;
+    }
+
+    if (err == ERR_MEM) {
+        set_error(node, "mqtt ack buffer full");
+    } else {
+        set_errorf(node, "mqtt ack failed", err);
+    }
+    return false;
 }
 
 static void publish_config_ack(mqtt_node_t *node, const char *status, const char *error_message) {
@@ -541,8 +566,8 @@ static void handle_command_message(mqtt_node_t *node, const char *payload) {
         snprintf(g_runtime.pending_command_id, sizeof(g_runtime.pending_command_id), "%s", command_id);
         snprintf(g_runtime.pending_command_status, sizeof(g_runtime.pending_command_status), "%s", "acknowledged");
         g_runtime.pending_command_ack = true;
-        g_runtime.pending_clear_retained_command = true;
         g_runtime.pending_publish_request = true;
+        g_runtime.publish_request_needs_command_clear = true;
         set_error(node, "none");
     } else {
         snprintf(g_runtime.pending_command, sizeof(g_runtime.pending_command), "%s", command);
@@ -566,11 +591,8 @@ static void handle_config_message(mqtt_node_t *node, const char *payload) {
     }
 
     if (node_config_apply_json(node->config, payload, &zone_changed, error, sizeof(error))) {
-        if (!node_config_save(node->config, error, sizeof(error))) {
-            set_error(node, error);
-            publish_config_ack(node, "error", "\"flash save failed\"");
-            return;
-        }
+        // Broker-retained node config is the source of truth for zone/crop settings.
+        // Applying it in memory avoids flash writes while the MQTT/Wi-Fi stack is active.
         publish_config_ack(node, "applied", NULL);
         node->publish_requested = true;
         node->config_changed_requires_reconnect = zone_changed;
@@ -590,7 +612,11 @@ static void handle_incoming_message(mqtt_node_t *node) {
     if (topic_equals(g_runtime.incoming_topic, command_topic)) {
         handle_command_message(node, g_runtime.incoming_payload);
     } else if (topic_equals(g_runtime.incoming_topic, config_topic)) {
-        handle_config_message(node, g_runtime.incoming_payload);
+        snprintf(g_runtime.pending_config_payload,
+                 sizeof(g_runtime.pending_config_payload),
+                 "%s",
+                 g_runtime.incoming_payload);
+        g_runtime.pending_config_apply = true;
     }
 }
 
@@ -606,17 +632,19 @@ static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len
 
 static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags) {
     mqtt_node_t *node = (mqtt_node_t *)arg;
-    if (g_runtime.incoming_topic[0] == '\0' || !data) {
+    if (g_runtime.incoming_topic[0] == '\0') {
         return;
     }
-    if (g_runtime.incoming_payload_len + len >= sizeof(g_runtime.incoming_payload)) {
+    if (data && g_runtime.incoming_payload_len + len >= sizeof(g_runtime.incoming_payload)) {
         set_error(node, "incoming payload too large");
         g_runtime.incoming_topic[0] = '\0';
         g_runtime.incoming_payload_len = 0;
         return;
     }
-    memcpy(g_runtime.incoming_payload + g_runtime.incoming_payload_len, data, len);
-    g_runtime.incoming_payload_len += len;
+    if (data && len > 0) {
+        memcpy(g_runtime.incoming_payload + g_runtime.incoming_payload_len, data, len);
+        g_runtime.incoming_payload_len += len;
+    }
     g_runtime.incoming_payload[g_runtime.incoming_payload_len] = '\0';
 
     if (flags & MQTT_DATA_FLAG_LAST) {
@@ -738,18 +766,25 @@ static void mqtt_flush_deferred_actions(mqtt_node_t *node) {
         return;
     }
 
+    if (g_runtime.pending_config_apply) {
+        handle_config_message(node, g_runtime.pending_config_payload);
+        g_runtime.pending_config_apply = false;
+    }
+
     if (g_runtime.pending_command_ack) {
-        publish_command_ack(
-            node,
-            g_runtime.pending_command,
-            g_runtime.pending_command_id,
-            g_runtime.pending_command_status);
-        g_runtime.pending_command_ack = false;
+        if (publish_command_ack(
+                node,
+                g_runtime.pending_command,
+                g_runtime.pending_command_id,
+                g_runtime.pending_command_status)) {
+            g_runtime.pending_command_ack = false;
+        }
     }
 
     if (g_runtime.pending_clear_retained_command) {
-        clear_retained_command(node);
-        g_runtime.pending_clear_retained_command = false;
+        if (clear_retained_command(node)) {
+            g_runtime.pending_clear_retained_command = false;
+        }
     }
 
     if (g_runtime.pending_publish_request) {
@@ -862,6 +897,10 @@ bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapsho
     return false;
 }
 
+bool mqtt_node_has_publish_request(const mqtt_node_t *node) {
+    return node && node->publish_requested;
+}
+
 bool mqtt_node_take_publish_request(mqtt_node_t *node) {
     bool requested = node->publish_requested;
     node->publish_requested = false;
@@ -872,4 +911,12 @@ bool mqtt_node_take_reconnect_request(mqtt_node_t *node) {
     bool requested = node->config_changed_requires_reconnect;
     node->config_changed_requires_reconnect = false;
     return requested;
+}
+
+void mqtt_node_mark_publish_request_handled(mqtt_node_t *node) {
+    (void)node;
+    if (g_runtime.publish_request_needs_command_clear) {
+        g_runtime.pending_clear_retained_command = true;
+        g_runtime.publish_request_needs_command_clear = false;
+    }
 }

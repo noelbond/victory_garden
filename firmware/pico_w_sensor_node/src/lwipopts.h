@@ -44,6 +44,7 @@
 #define LWIP_CHKSUM_ALGORITHM           3
 #define LWIP_TIMEVAL_PRIVATE            0
 #define MQTT_OUTPUT_RINGBUF_SIZE        1024
+#define MQTT_VAR_HEADER_BUFFER_LEN      1024
 #define SNTP_SERVER_DNS                 1
 #define SNTP_MAX_SERVERS                1
 #define SNTP_UPDATE_DELAY               3600000
