@@ -31,6 +31,33 @@ class ManualWateringActionsTest < ActionDispatch::IntegrationTest
     assert event.idempotency_key.present?
   end
 
+  test "water now runtime comes from the crop max_pulse_runtime_sec" do
+    post water_now_zone_path(@zone)
+
+    event = WateringEvent.order(:id).last
+    assert_equal @crop.max_pulse_runtime_sec, event.runtime_seconds
+  end
+
+  test "water now while a zone is already running still enqueues a second command" do
+    # The firmware guards re-triggering during an active cycle — Rails does not.
+    # This test documents that intentional behaviour.
+    WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "manual_trigger",
+      issued_at: 1.minute.ago,
+      idempotency_key: "zone1-already-running",
+      status: "running"
+    )
+
+    assert_difference("WateringEvent.count", 1) do
+      assert_enqueued_jobs 1, only: CommandPublishJob do
+        post water_now_zone_path(@zone)
+      end
+    end
+  end
+
   test "stop watering queues a manual stop event and publish job" do
     assert_enqueued_jobs 1, only: CommandPublishJob do
       post stop_watering_zone_path(@zone)

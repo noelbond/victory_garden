@@ -1,5 +1,5 @@
 class WateringEvent < ApplicationRecord
-  STATUSES = %w[queued command_sent running completed stopped fault timeout unknown].freeze
+  STATUSES = %w[queued command_sent acknowledged running completed stopped fault timeout unknown].freeze
 
   belongs_to :zone
 

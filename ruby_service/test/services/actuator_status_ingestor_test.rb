@@ -209,6 +209,86 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     assert_equal "completed", event.reload.status
   end
 
+  test "acknowledged actuator status creates status record and marks event acknowledged" do
+    event = WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "below_dry_threshold",
+      issued_at: Time.current,
+      idempotency_key: "zone1-run-007",
+      status: "command_sent"
+    )
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "ACKNOWLEDGED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => event.idempotency_key
+    }
+
+    assert_no_enqueued_jobs only: RequestReadingJob do
+      ActuatorStatusIngestor.new(payload).call
+    end
+
+    assert_equal "acknowledged", event.reload.status
+    assert ActuatorStatus.exists?(zone: @zone, idempotency_key: event.idempotency_key, state: "ACKNOWLEDGED")
+  end
+
+  test "running actuator status creates status record and marks event running" do
+    event = WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "below_dry_threshold",
+      issued_at: Time.current,
+      idempotency_key: "zone1-run-008",
+      status: "acknowledged"
+    )
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "RUNNING",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => event.idempotency_key
+    }
+
+    assert_no_enqueued_jobs only: RequestReadingJob do
+      ActuatorStatusIngestor.new(payload).call
+    end
+
+    assert_equal "running", event.reload.status
+    assert ActuatorStatus.exists?(zone: @zone, idempotency_key: event.idempotency_key, state: "RUNNING")
+  end
+
+  test "raises for an unknown zone_id" do
+    payload = {
+      "zone_id" => "does-not-exist",
+      "state" => "COMPLETED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => "orphan-key-001"
+    }
+
+    error = assert_raises(ArgumentError) { ActuatorStatusIngestor.new(payload).call }
+
+    assert_match "Unknown zone_id", error.message
+  end
+
+  test "creates status record even when no matching watering event exists" do
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "COMPLETED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => "orphan-key-002"
+    }
+
+    assert_difference -> { ActuatorStatus.count }, 1 do
+      ActuatorStatusIngestor.new(payload).call
+    end
+
+    assert_equal 0, WateringEvent.count
+  end
+
   test "duplicate fault status does not create duplicate faults" do
     event = WateringEvent.create!(
       zone: @zone,
