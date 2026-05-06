@@ -1,4 +1,6 @@
 class HealthController < ApplicationController
+  helper_method :node_seen_freshness_state, :reading_freshness_state_for
+
   def show
     @nodes = Node.includes(:zone).to_a.sort_by do |node|
       [
@@ -13,12 +15,14 @@ class HealthController < ApplicationController
     @recent_faults = Fault.includes(:zone).order(recorded_at: :desc).limit(10)
     @environment_label = Rails.env.production? ? "Production" : Rails.env.titleize
     @recent_activity = build_recent_activity
+    claimed_zones = @nodes.filter_map(&:zone).uniq(&:id)
 
     @summary = {
       nodes: @nodes.count,
       claimed_nodes: @nodes.count(&:claimed?),
-      stale_nodes: @nodes.count { |node| node.last_seen_at <= 5.minutes.ago },
-      fresh_readings: @latest_readings.values.count { |reading| reading.recorded_at > 5.minutes.ago },
+      claimed_zones: claimed_zones.count,
+      stale_nodes: @nodes.count { |node| node_seen_freshness_state(node) != "ok" },
+      fresh_readings: claimed_zones.count { |zone| reading_freshness_state_for(zone) == "ok" },
       config_errors: @nodes.count { |node| node.config_status == "error" },
       config_pending: @nodes.count { |node| node.config_status == "pending" },
       open_faults: Fault.where(resolved_at: nil).count
@@ -35,10 +39,11 @@ class HealthController < ApplicationController
   end
 
   def node_freshness_rank(node)
-    return 2 if node.last_seen_at <= 30.minutes.ago
-    return 1 if node.last_seen_at <= 5.minutes.ago
-
-    0
+    case node_seen_freshness_state(node)
+    when "offline" then 2
+    when "stale" then 1
+    else 0
+    end
   end
 
   def config_rank(node)
@@ -85,16 +90,16 @@ class HealthController < ApplicationController
     if @summary[:stale_nodes] > 0
       items << {
         label: "Stale Nodes",
-        detail: "#{@summary[:stale_nodes]} node#{'s' unless @summary[:stale_nodes] == 1} have not checked in within 5 minutes.",
+        detail: "#{@summary[:stale_nodes]} node#{'s' unless @summary[:stale_nodes] == 1} have not checked in within the expected interval.",
         tone: "alert"
       }
     end
 
-    stale_readings = @summary[:claimed_nodes] - @summary[:fresh_readings]
+    stale_readings = @summary[:claimed_zones] - @summary[:fresh_readings]
     if stale_readings > 0
       items << {
         label: "Stale Readings",
-        detail: "#{stale_readings} claimed zone#{'s' unless stale_readings == 1} do not have a fresh reading within 5 minutes.",
+        detail: "#{stale_readings} claimed zone#{'s' unless stale_readings == 1} do not have a fresh reading in the expected interval.",
         tone: "warn"
       }
     end
@@ -124,5 +129,35 @@ class HealthController < ApplicationController
     end
 
     items
+  end
+
+  def node_seen_freshness_state(node)
+    return "offline" if node.last_seen_at.blank?
+
+    freshness_state_for(node.last_seen_at, expected_interval_for(node.zone))
+  end
+
+  def reading_freshness_state_for(zone)
+    return "offline" if zone.blank?
+
+    reading = @latest_readings[zone.id]
+    return "offline" if reading.blank? || reading.recorded_at.blank?
+
+    freshness_state_for(reading.recorded_at, expected_interval_for(zone))
+  end
+
+  def expected_interval_for(zone)
+    interval_ms = zone&.publish_interval_ms.presence || Zone::DEFAULT_PUBLISH_INTERVAL_MS
+
+    [interval_ms.to_i / 1000.0, 1.0].max
+  end
+
+  def freshness_state_for(recorded_at, interval)
+    age = Time.current - recorded_at
+
+    return "ok" if age <= interval
+    return "stale" if age <= interval * 2
+
+    "offline"
   end
 end

@@ -1,0 +1,100 @@
+<div class="zone-show-layout">
+  <%= render "side_nav_fallback", zone: @zone %>
+
+  <div class="zone-show-content">
+    <%= turbo_frame_tag "zone_workspace" do %>
+      <div class="page-header">
+        <div>
+          <h1 class="page-title"><%= @zone.name.presence || @zone.zone_id %> Nodes</h1>
+          <div class="muted">
+            <%= @claimed_nodes.count %> claimed node<%= "s" unless @claimed_nodes.count == 1 %> for this zone.
+          </div>
+        </div>
+        <div class="dashboard-actions">
+          <%= link_to "Back to Zone", zone_path(@zone), class: "btn light", data: { turbo_frame: "zone_workspace" } %>
+          <%= link_to "All Nodes", nodes_path, class: "btn light", data: { turbo_frame: "_top" } %>
+        </div>
+      </div>
+
+      <% if @claimed_nodes.any? %>
+        <div class="zone-grid">
+          <% @claimed_nodes.each do |node| %>
+            <% reading = @latest_readings_by_node_id[node.node_id] %>
+            <% freshness_class = if node.last_seen_at.blank?
+                                   "offline"
+                                 elsif node.last_seen_at > 5.minutes.ago
+                                   "ok"
+                                 elsif node.last_seen_at > 30.minutes.ago
+                                   "stale"
+                                 else
+                                   "offline"
+                                 end %>
+
+            <%= link_to node_path(node), class: "card zone-card zone-dashboard-card", data: { turbo_frame: "_top" } do %>
+              <div class="zone-dashboard-header">
+                <div>
+                  <h3><%= node.node_id %></h3>
+                  <div class="muted"><%= node.reported_zone_id.presence || @zone.zone_id %></div>
+                </div>
+                <div class="zone-dashboard-pills">
+                  <span class="health-pill <%= freshness_class %>"><%= node.claimed? ? "claimed" : "unclaimed" %></span>
+                  <span class="health-pill <%= freshness_class %>"><%= freshness_class %></span>
+                </div>
+              </div>
+
+              <div class="zone-dashboard-grid">
+                <div>
+                  <div class="zone-metric-label">Last Seen</div>
+                  <div>
+                    <strong><%= node.last_seen_at.present? ? "#{time_ago_in_words(node.last_seen_at)} ago" : "never" %></strong>
+                  </div>
+                </div>
+
+                <div>
+                  <div class="zone-metric-label">Health</div>
+                  <div><strong><%= node.health.presence || "—" %></strong></div>
+                </div>
+
+                <div>
+                  <div class="zone-metric-label">Latest Moisture</div>
+                  <% if reading.present? && reading.moisture_percent.present? %>
+                    <div><strong><%= reading.moisture_percent %>%</strong></div>
+                    <div class="muted">raw <%= reading.moisture_raw || "—" %></div>
+                  <% else %>
+                    <div class="muted">No reading yet</div>
+                  <% end %>
+                </div>
+
+                <div>
+                  <div class="zone-metric-label">Config</div>
+                  <div><strong><%= node.config_status.presence || "—" %></strong></div>
+                </div>
+
+                <div>
+                  <div class="zone-metric-label">WiFi RSSI</div>
+                  <div><strong><%= node.wifi_rssi || "—" %></strong></div>
+                </div>
+
+                <div>
+                  <div class="zone-metric-label">Last Error</div>
+                  <div><strong><%= node.last_error.presence || "none" %></strong></div>
+                </div>
+              </div>
+            <% end %>
+          <% end %>
+        </div>
+      <% else %>
+        <div class="card">
+          <h3>No Nodes Claimed To This Zone</h3>
+          <p class="muted">
+            This zone does not have any claimed sensor nodes yet.
+          </p>
+          <div style="margin-top: 16px;">
+            <%= link_to "Open Nodes", nodes_path, class: "btn", data: { turbo_frame: "_top" } %>
+            <%= link_to "Open Onboarding", onboarding_path, class: "btn light", data: { turbo_frame: "_top" } %>
+          </div>
+        </div>
+      <% end %>
+    <% end %>
+  </div>
+</div>

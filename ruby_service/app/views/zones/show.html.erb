@@ -7,8 +7,6 @@
     <%= button_to "Water Now", water_now_zone_path(@zone), method: :post, class: "btn" %>
     <%= button_to "Stop", stop_watering_zone_path(@zone), method: :post, class: "btn secondary" %>
     <%= button_to(@zone.active ? "Disable" : "Enable", toggle_active_zone_path(@zone), method: :post, class: "btn light") %>
-    <%= link_to "Edit Zone", edit_zone_path(@zone), class: "btn light" %>
-    <%= link_to "View Crop Profile", crop_profile_path(@zone.crop_profile), class: "btn light" %>
   </div>
 </div>
 
@@ -48,53 +46,63 @@
   </div>
 </div>
 
-<% if @zone_attention.any? %>
-  <div class="card" style="margin-bottom: 16px;">
-    <h3 style="margin-top: 0;">Needs Attention</h3>
-    <div class="attention-list">
-      <% @zone_attention.each do |item| %>
-        <div class="attention-item <%= item[:severity] == "alert" ? "attention-alert" : "attention-warn" %>">
-          <div class="attention-label"><%= item[:label] %></div>
-          <div><%= item[:detail] %></div>
-        </div>
-      <% end %>
-    </div>
-  </div>
-<% end %>
+<% active_zone_tab = params[:zone_tab].presence_in(%w[zone-details zone-history notifications recent-faults]) || "zone-details" %>
 
-<div class="row">
-  <div class="col card">
-    <h3>Zone Configuration</h3>
-    <ul class="list">
+<div class="zone-show-layout">
+  <input type="radio" name="zone-section" id="zone-nav-details" class="zone-nav-toggle" <%= "checked" if active_zone_tab == "zone-details" %>>
+  <input type="radio" name="zone-section" id="zone-nav-history" class="zone-nav-toggle" <%= "checked" if active_zone_tab == "zone-history" %>>
+  <input type="radio" name="zone-section" id="zone-nav-notifications" class="zone-nav-toggle" <%= "checked" if active_zone_tab == "notifications" %>>
+  <input type="radio" name="zone-section" id="zone-nav-faults" class="zone-nav-toggle" <%= "checked" if active_zone_tab == "recent-faults" %>>
+
+  <aside class="card zone-side-nav">
+    <h3>Navigate</h3>
+    <nav class="zone-side-nav-links" aria-label="Zone sections">
+      <label class="zone-side-nav-link" for="zone-nav-notifications">Notifications</label>
+      <label class="zone-side-nav-link" for="zone-nav-details">Zone Details</label>
+      <label class="zone-side-nav-link" for="zone-nav-history">Zone History</label>
+      <label class="zone-side-nav-link" for="zone-nav-faults">Recent Faults</label>
+      <%= link_to "Edit Zone", edit_zone_path(@zone), class: "zone-side-nav-link zone-side-nav-action", data: { turbo_frame: "zone_workspace" } %>
+      <%= link_to "Crop Profile", crop_profile_path(@zone.crop_profile, return_to: zone_path(@zone), zone_id: @zone.id), class: "zone-side-nav-link zone-side-nav-action", data: { turbo_frame: "zone_workspace" } %>
+      <%= link_to "Nodes", zone_nodes_path(@zone), class: "zone-side-nav-link zone-side-nav-action", data: { turbo_frame: "zone_workspace" } %>
+    </nav>
+  </aside>
+
+  <div class="zone-show-content">
+    <%= turbo_frame_tag "zone_workspace", class: "card zone-workspace" %>
+
+    <section id="zone-details" class="card zone-section zone-panel zone-panel-details">
+      <div class="zone-section-header">
+        <h3>Zone Details</h3>
+        <div class="muted">Configuration, aggregate moisture, latest reading, and watering state.</div>
+      </div>
+
+      <div class="row">
+        <div class="col card">
+          <h3>Zone Configuration</h3>
+          <ul class="list">
       <li>Crop: <strong><%= @zone.crop_profile.crop_name %></strong></li>
       <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
       <li>Max Pulse Runtime: <%= @zone.crop_profile.max_pulse_runtime_sec %> s</li>
       <li>Daily Max Runtime: <%= @zone.crop_profile.daily_max_runtime_sec %> s</li>
-      <li>Irrigation Line: <%= @zone.irrigation_line || "—" %></li>
+      <li>Zone: <%= @zone.irrigation_line || "—" %></li>
+      <li>Reading Frequency: <%= @zone.reading_frequency_hours || "—" %><%= " hours" if @zone.reading_frequency_hours.present? %></li>
       <li>Climate: <%= @zone.crop_profile.climate_preference.presence || "—" %></li>
       <li>Time to Harvest: <%= @zone.crop_profile.time_to_harvest_days || "—" %> days</li>
       <li>
-        Claimed Nodes:
+        Claimed Nodes (<%= @claimed_nodes.count %>):
         <% if @claimed_nodes.any? %>
           <%= @claimed_nodes.map(&:node_id).join(", ") %>
+          (<%= link_to "view", zone_nodes_path(@zone) %>)
         <% else %>
           —
         <% end %>
       </li>
-      <li>
-        Allowed Hours:
-        <% if @zone.allowed_hours.present? %>
-          <%= @zone.allowed_hours["start_hour"] %>–<%= @zone.allowed_hours["end_hour"] %>
-        <% else %>
-          —
-        <% end %>
-      </li>
-    </ul>
-  </div>
+          </ul>
+        </div>
 
-  <div class="col card">
-    <h3>Zone Moisture Aggregate</h3>
-    <ul class="list">
+        <div class="col card">
+          <h3>Zone Moisture Aggregate</h3>
+          <ul class="list">
       <li>Freshness: <span class="health-pill <%= @aggregate_freshness %>"><%= @aggregate_freshness %></span></li>
       <li>Average Moisture: <%= @zone_moisture_snapshot[:average_moisture] || "—" %><%= "%" if @zone_moisture_snapshot[:average_moisture].present? %></li>
       <li>Average Raw: <%= @zone_moisture_snapshot[:average_raw] || "—" %></li>
@@ -112,13 +120,14 @@
           —
         <% end %>
       </li>
-    </ul>
-  </div>
+          </ul>
+        </div>
 
-  <div class="col card">
-    <h3>Latest Reading Detail</h3>
-    <% if @latest_reading %>
-      <ul class="list">
+        <div class="col card">
+          <h3>Latest Reading Detail</h3>
+          <% if @latest_reading %>
+            <% reading_guidance = reading_error_guidance(@latest_reading) %>
+            <ul class="list">
         <li>Freshness: <span class="health-pill <%= @reading_freshness %>"><%= @reading_freshness %></span></li>
         <li>Schema: <%= @latest_reading.schema_version || "—" %></li>
         <li>Moisture: <%= @latest_reading.moisture_percent || "—" %>%</li>
@@ -129,18 +138,29 @@
         <li>WiFi RSSI: <%= @latest_reading.wifi_rssi || "—" %> dBm</li>
         <li>Wake Count: <%= @latest_reading.wake_count || "—" %></li>
         <li>Health: <%= @latest_reading.health || "—" %></li>
-        <li>Last Error: <%= @latest_reading.last_error.presence || "—" %></li>
+        <li>
+          Last Error: <%= @latest_reading.last_error.presence || "—" %>
+          <% if @latest_reading.last_error.present? && @latest_reading.last_error != "none" %>
+            <%= render "shared/issue_guidance",
+                       summary: "Description and fix",
+                       description_label: "Description",
+                       description: reading_guidance[:description],
+                       fix_label: "Suggested fix",
+                       fix: reading_guidance[:fix] %>
+          <% end %>
+        </li>
         <li>Reason: <%= @latest_reading.publish_reason || "—" %></li>
         <li>Recorded: <%= @latest_reading.recorded_at %></li>
-      </ul>
-    <% else %>
-      <p class="muted">No readings yet.</p>
-    <% end %>
-  </div>
+            </ul>
+          <% else %>
+            <p class="muted">No readings yet.</p>
+          <% end %>
+        </div>
 
-  <div class="col card">
-    <h3>Watering Status</h3>
-    <ul class="list">
+        <div class="col card">
+          <h3>Watering Status</h3>
+          <% actuator_guidance = actuator_fault_guidance(@latest_actuator_status) %>
+          <ul class="list">
       <li>
         Actuator:
         <% if @latest_actuator_status.present? %>
@@ -153,7 +173,17 @@
         <li>Actuator Updated: <%= @latest_actuator_status.recorded_at %></li>
         <li>Actual Runtime: <%= @latest_actuator_status.actual_runtime_seconds || "—" %> s</li>
         <li>Flow: <%= @latest_actuator_status.flow_ml || "—" %> mL</li>
-        <li>Fault Code: <%= @latest_actuator_status.fault_code.presence || "—" %></li>
+        <li>
+          Fault Code: <%= @latest_actuator_status.fault_code.presence || "—" %>
+          <% if @latest_actuator_status.fault_code.present? %>
+            <%= render "shared/issue_guidance",
+                       summary: "Description and fix",
+                       description_label: "Description",
+                       description: actuator_guidance[:description],
+                       fix_label: "Suggested fix",
+                       fix: actuator_guidance[:fix] %>
+          <% end %>
+        </li>
       <% end %>
       <% if @last_watering_event %>
         <li>Last Command: <%= @last_watering_event.command %></li>
@@ -164,114 +194,159 @@
       <% else %>
         <li>No watering events yet.</li>
       <% end %>
-    </ul>
-  </div>
-</div>
-
-<div class="card" style="margin-top: 16px;">
-  <h3>Recent Readings</h3>
-  <% if @recent_readings.any? %>
-    <ul class="list">
-      <% @recent_readings.each do |reading| %>
-        <% reading_state = if reading.recorded_at > 5.minutes.ago
-                             "ok"
-                           elsif reading.recorded_at > 30.minutes.ago
-                             "stale"
-                           else
-                             "offline"
-                           end %>
-        <li>
-          <strong><%= reading.recorded_at %></strong>
-          <span class="health-pill <%= reading_state %>"><%= time_ago_in_words(reading.recorded_at) %> ago</span>
-          —
-          moisture: <%= reading.moisture_percent || "—" %>%,
-          temp: <%= reading.soil_temp_c || "—" %> C,
-          battery: <%= reading.battery_percent || "—" %>%,
-          wifi_rssi: <%= reading.wifi_rssi || "—" %> dBm,
-          node: <%= reading.node_id %>,
-          health: <%= reading.health || "—" %>
-        </li>
-      <% end %>
-    </ul>
-  <% else %>
-    <p class="muted">No reading history yet.</p>
-  <% end %>
-</div>
-
-<div class="card" style="margin-top: 16px;">
-  <div class="page-header" style="margin-bottom: 8px;">
-    <h3 style="margin: 0;">Zone History</h3>
-    <div class="chart-controls">
-      <% ["week", "month", "year", "ytd"].each do |r| %>
-        <%= link_to r.upcase, zone_path(@zone, range: r), class: "btn light" %>
-      <% end %>
-    </div>
-  </div>
-  <div class="chart-summary-grid" style="margin-bottom: 16px;">
-    <% @window_summaries.each do |label, summary| %>
-      <div class="chart-summary-card">
-        <div class="zone-metric-label"><%= label %></div>
-        <div><strong>Avg Moisture:</strong> <%= summary[:avg_moisture] || "—" %><%= "%" if summary[:avg_moisture].present? %></div>
-        <div><strong>Min Moisture:</strong> <%= summary[:min_moisture] || "—" %><%= "%" if summary[:min_moisture].present? %></div>
-        <div><strong>Readings:</strong> <%= summary[:readings] %></div>
-        <div><strong>Watering Events:</strong> <%= summary[:watering_events] %></div>
-        <div><strong>Watering Runtime:</strong> <%= summary[:watering_seconds] %> s</div>
+          </ul>
+        </div>
       </div>
-    <% end %>
-  </div>
-  <div class="chart-summary-grid">
-    <div class="chart-summary-card">
-      <div class="zone-metric-label">Reading Count</div>
-      <div class="metric-value"><%= @history_summary[:count] %></div>
-      <div class="muted">persisted moisture readings in this range</div>
-    </div>
-    <div class="chart-summary-card">
-      <div class="zone-metric-label">Average Moisture</div>
-      <div class="metric-value"><%= @history_summary[:average] || "—" %><%= "%" if @history_summary[:average].present? %></div>
-      <div class="muted">average normalized moisture</div>
-    </div>
-    <div class="chart-summary-card">
-      <div class="zone-metric-label">Range Low</div>
-      <div class="metric-value"><%= @history_summary[:low] || "—" %><%= "%" if @history_summary[:low].present? %></div>
-      <div class="muted">lowest recorded moisture</div>
-    </div>
-    <div class="chart-summary-card">
-      <div class="zone-metric-label">Range High</div>
-      <div class="metric-value"><%= @history_summary[:high] || "—" %><%= "%" if @history_summary[:high].present? %></div>
-      <div class="muted">highest recorded moisture</div>
-    </div>
-  </div>
+    </section>
 
-  <div class="row" style="margin-top: 16px;">
-    <div class="col card chart-panel">
-      <h3>Moisture Trend</h3>
-      <% if @history_summary[:count].positive? %>
-        <%= line_chart @moisture_history, height: "260px", xtitle: "Time", ytitle: "Moisture %" %>
+    <section id="zone-history" class="card zone-section zone-panel zone-panel-history">
+      <div class="zone-section-header">
+        <h3>Zone History</h3>
+        <div class="chart-controls">
+          <% ["week", "month", "year", "ytd"].each do |r| %>
+            <%= link_to r.upcase, zone_path(@zone, range: r), class: "btn light" %>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 16px;">
+        <h3>Recent Readings</h3>
+        <% if @recent_readings.any? %>
+          <ul class="list">
+            <% @recent_readings.each do |reading| %>
+              <% reading_state = if reading.recorded_at > 5.minutes.ago
+                                   "ok"
+                                 elsif reading.recorded_at > 30.minutes.ago
+                                   "stale"
+                                 else
+                                   "offline"
+                                 end %>
+              <li>
+                <strong><%= reading.recorded_at %></strong>
+                <span class="health-pill <%= reading_state %>"><%= time_ago_in_words(reading.recorded_at) %> ago</span>
+                —
+                moisture: <%= reading.moisture_percent || "—" %>%,
+                temp: <%= reading.soil_temp_c || "—" %> C,
+                battery: <%= reading.battery_percent || "—" %>%,
+                wifi_rssi: <%= reading.wifi_rssi || "—" %> dBm,
+                node: <%= reading.node_id %>,
+                health: <%= reading.health || "—" %>
+              </li>
+            <% end %>
+          </ul>
+        <% else %>
+          <p class="muted">No reading history yet.</p>
+        <% end %>
+      </div>
+
+      <div class="chart-summary-grid" style="margin-bottom: 16px;">
+      <% @window_summaries.each do |label, summary| %>
+        <div class="chart-summary-card">
+          <div class="zone-metric-label"><%= label %></div>
+          <div><strong>Avg Moisture:</strong> <%= summary[:avg_moisture] || "—" %><%= "%" if summary[:avg_moisture].present? %></div>
+          <div><strong>Min Moisture:</strong> <%= summary[:min_moisture] || "—" %><%= "%" if summary[:min_moisture].present? %></div>
+          <div><strong>Readings:</strong> <%= summary[:readings] %></div>
+          <div><strong>Watering Events:</strong> <%= summary[:watering_events] %></div>
+          <div><strong>Watering Runtime:</strong> <%= summary[:watering_seconds] %> s</div>
+        </div>
+      <% end %>
+      </div>
+
+      <div class="chart-summary-grid">
+        <div class="chart-summary-card">
+          <div class="zone-metric-label">Reading Count</div>
+          <div class="metric-value"><%= @history_summary[:count] %></div>
+          <div class="muted">persisted moisture readings in this range</div>
+        </div>
+        <div class="chart-summary-card">
+          <div class="zone-metric-label">Average Moisture</div>
+          <div class="metric-value"><%= @history_summary[:average] || "—" %><%= "%" if @history_summary[:average].present? %></div>
+          <div class="muted">average normalized moisture</div>
+        </div>
+        <div class="chart-summary-card">
+          <div class="zone-metric-label">Range Low</div>
+          <div class="metric-value"><%= @history_summary[:low] || "—" %><%= "%" if @history_summary[:low].present? %></div>
+          <div class="muted">lowest recorded moisture</div>
+        </div>
+        <div class="chart-summary-card">
+          <div class="zone-metric-label">Range High</div>
+          <div class="metric-value"><%= @history_summary[:high] || "—" %><%= "%" if @history_summary[:high].present? %></div>
+          <div class="muted">highest recorded moisture</div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top: 16px;">
+        <div class="col card chart-panel">
+          <h3>Moisture Trend</h3>
+          <% if @history_summary[:count].positive? %>
+            <%= line_chart @moisture_history, height: "260px", xtitle: "Time", ytitle: "Moisture %" %>
+          <% else %>
+            <p class="muted">No moisture history in this range yet.</p>
+          <% end %>
+        </div>
+
+        <div class="col card chart-panel">
+          <h3>Water Usage</h3>
+          <%= line_chart @water_usage, height: "260px", xtitle: "Time", ytitle: "Seconds" %>
+        </div>
+      </div>
+    </section>
+
+    <section id="notifications" class="card zone-section zone-panel zone-panel-notifications">
+      <div class="zone-section-header">
+        <h3>Notifications</h3>
+        <div class="muted">Current alerts and warnings for this zone.</div>
+      </div>
+
+      <% if @zone_attention.any? %>
+        <div class="attention-list">
+          <% @zone_attention.each do |item| %>
+            <% guidance = zone_notification_guidance(item) %>
+            <div class="attention-item <%= item[:severity] == "alert" ? "attention-alert" : "attention-warn" %>">
+              <div class="attention-label"><%= item[:label] %></div>
+              <div><%= item[:detail] %></div>
+              <%= render "shared/issue_guidance",
+                         summary: "Description and fix",
+                         description_label: "Description",
+                         description: guidance[:description],
+                         fix_label: "Suggested fix",
+                         fix: guidance[:fix] %>
+            </div>
+          <% end %>
+        </div>
       <% else %>
-        <p class="muted">No moisture history in this range yet.</p>
+        <p class="muted">No active notifications for this zone.</p>
       <% end %>
-    </div>
+    </section>
 
-    <div class="col card chart-panel">
-      <h3>Water Usage</h3>
-      <%= line_chart @water_usage, height: "260px", xtitle: "Time", ytitle: "Seconds" %>
-    </div>
+    <section id="recent-faults" class="card zone-section zone-panel zone-panel-faults">
+      <div class="zone-section-header">
+        <h3>Recent Faults</h3>
+        <div class="muted">Most recent fault records for this zone.</div>
+      </div>
+
+      <% if @recent_faults.any? %>
+        <div class="attention-list">
+          <% @recent_faults.each do |fault| %>
+            <% guidance = fault_guidance(fault) %>
+            <div class="attention-item attention-warn">
+              <div class="attention-label">
+                <span class="health-pill warn"><%= fault.fault_code %></span>
+                <span class="muted"><%= fault.recorded_at %></span>
+              </div>
+              <div><%= fault.detail.presence || "No additional detail was provided." %></div>
+              <%= render "shared/issue_guidance",
+                         summary: "Description and fix",
+                         description_label: "Description",
+                         description: guidance[:description],
+                         fix_label: "Suggested fix",
+                         fix: guidance[:fix] %>
+            </div>
+          <% end %>
+        </div>
+      <% else %>
+        <p class="muted">No faults reported.</p>
+      <% end %>
+    </section>
   </div>
-</div>
-
-<div class="card" style="margin-top: 16px;">
-  <h3>Recent Faults</h3>
-  <% if @recent_faults.any? %>
-    <ul class="list">
-      <% @recent_faults.each do |fault| %>
-        <li>
-          <span class="health-pill warn"><%= fault.fault_code %></span>
-          <%= fault.detail %>
-          <span class="muted">(<%= fault.recorded_at %>)</span>
-        </li>
-      <% end %>
-    </ul>
-  <% else %>
-    <p class="muted">No faults reported.</p>
-  <% end %>
 </div>

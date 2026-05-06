@@ -13,8 +13,16 @@ class CropProfile < ApplicationRecord
   validates :max_pulse_runtime_sec, presence: true, numericality: { greater_than_or_equal_to: 0 }
   validates :daily_max_runtime_sec, presence: true, numericality: { greater_than_or_equal_to: 0 }
   validates :time_to_harvest_days, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true
+  validate :daily_max_runtime_covers_pulse_runtime
 
   private
+
+  def daily_max_runtime_covers_pulse_runtime
+    return if max_pulse_runtime_sec.blank? || daily_max_runtime_sec.blank?
+    return if daily_max_runtime_sec >= max_pulse_runtime_sec
+
+    errors.add(:daily_max_runtime_sec, "must be greater than or equal to max pulse runtime")
+  end
 
   def ensure_crop_id
     return if crop_id.present? || crop_name.blank?

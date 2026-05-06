@@ -4,9 +4,29 @@
     <div class="muted">Provisioned node identities discovered from MQTT state payloads.</div>
   </div>
   <div>
+    <span class="env-pill"><%= Rails.env.production? ? "Production" : Rails.env.titleize %></span>
     <%= link_to "Zones", zones_path, class: "btn light" %>
   </div>
 </div>
+
+<% if @nodes.empty? %>
+  <div class="card" style="margin-bottom: 16px;">
+    <h3>No Nodes Discovered Yet</h3>
+    <p class="muted">
+      This app has not received any node state payloads yet, so there is nothing to claim.
+    </p>
+    <ul class="list">
+      <li>Make sure the sensor node is powered on and publishing.</li>
+      <li>Make sure this <strong><%= Rails.env.production? ? "production" : Rails.env.titleize.downcase %></strong> app is connected to the same MQTT broker as the node.</li>
+      <li>Once a node publishes state, it will appear here automatically.</li>
+    </ul>
+    <div style="margin-top: 16px;">
+      <%= link_to "Open Health", health_path, class: "btn" %>
+      <%= link_to "Review Settings", settings_path, class: "btn light" %>
+      <%= link_to "Open Onboarding", onboarding_path, class: "btn light" %>
+    </div>
+  </div>
+<% end %>
 
 <div class="card" style="margin-bottom: 16px;">
   <h3>Unclaimed Nodes</h3>
@@ -24,7 +44,13 @@
       <% end %>
     </ul>
   <% else %>
-    <p class="muted">No unclaimed nodes discovered yet.</p>
+    <p class="muted">
+      <% if @nodes.empty? %>
+        No nodes have been discovered by this app yet.
+      <% else %>
+        No unclaimed nodes discovered yet.
+      <% end %>
+    </p>
   <% end %>
 </div>
 
@@ -44,6 +70,12 @@
       <% end %>
     </ul>
   <% else %>
-    <p class="muted">No claimed nodes yet.</p>
+    <p class="muted">
+      <% if @nodes.empty? %>
+        No claimed nodes yet because no nodes have been discovered.
+      <% else %>
+        No claimed nodes yet.
+      <% end %>
+    </p>
   <% end %>
 </div>

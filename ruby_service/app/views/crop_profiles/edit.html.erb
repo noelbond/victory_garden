@@ -1,5 +1,20 @@
-<div class="page-header">
-  <h1 class="page-title">Edit Crop Profile</h1>
-</div>
+<%
+  zone_from_return_to = params[:return_to].to_s[%r{\A/zones/(\d+)\z}, 1]
+  zone = Zone.find_by(id: params[:zone_id]) ||
+         Zone.find_by(id: zone_from_return_to) ||
+         Zone.where(crop_profile_id: @crop_profile.id).order(:id).first
+%>
 
-<%= render "form", crop_profile: @crop_profile %>
+<div class="zone-show-layout">
+  <%= render "zones/side_nav_fallback", zone: zone if zone.present? %>
+
+  <div class="zone-show-content">
+    <%= turbo_frame_tag "zone_workspace" do %>
+      <div class="page-header">
+        <h1 class="page-title">Edit Crop Profile</h1>
+      </div>
+
+      <%= render "form", crop_profile: @crop_profile %>
+    <% end %>
+  </div>
+</div>

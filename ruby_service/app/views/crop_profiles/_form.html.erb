@@ -1,4 +1,4 @@
-<%= form_with model: crop_profile do |f| %>
+<%= form_with model: crop_profile, data: { turbo_frame: "_top" } do |f| %>
   <% if crop_profile.errors.any? %>
     <div class="card" style="margin-bottom: 16px;">
       <h3>Profile could not be saved</h3>
@@ -11,6 +11,7 @@
   <% end %>
 
   <%= hidden_field_tag :return_to, params[:return_to] if params[:return_to].present? %>
+  <%= hidden_field_tag :apply_zone_id, params[:apply_zone_id] if params[:apply_zone_id].present? %>
 
   <div class="form-grid">
     <div class="field">
@@ -51,6 +52,9 @@
 
   <div style="margin-top: 16px;">
     <%= f.submit class: "btn" %>
-    <%= link_to "Cancel", params[:return_to].presence || crop_profiles_path, class: "btn light" %>
+    <%= link_to "Cancel",
+                params[:return_to].presence || crop_profiles_path,
+                class: "btn light",
+                data: { turbo_frame: (params[:return_to].present? ? "zone_workspace" : "_top") } %>
   </div>
 <% end %>

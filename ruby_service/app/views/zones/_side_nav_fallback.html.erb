@@ -1,0 +1,12 @@
+<aside class="card zone-side-nav">
+  <h3>Navigate</h3>
+  <nav class="zone-side-nav-links" aria-label="Zone sections">
+    <%= link_to "Notifications", zone_path(zone, zone_tab: "notifications"), class: "zone-side-nav-link zone-side-nav-action" %>
+    <%= link_to "Zone Details", zone_path(zone, zone_tab: "zone-details"), class: "zone-side-nav-link zone-side-nav-action" %>
+    <%= link_to "Zone History", zone_path(zone, zone_tab: "zone-history"), class: "zone-side-nav-link zone-side-nav-action" %>
+    <%= link_to "Recent Faults", zone_path(zone, zone_tab: "recent-faults"), class: "zone-side-nav-link zone-side-nav-action" %>
+    <%= link_to "Edit Zone", edit_zone_path(zone), class: "zone-side-nav-link zone-side-nav-action" %>
+    <%= link_to "Crop Profile", crop_profile_path(zone.crop_profile, return_to: zone_path(zone), zone_id: zone.id), class: "zone-side-nav-link zone-side-nav-action" %>
+    <%= link_to "Nodes", zone_nodes_path(zone), class: "zone-side-nav-link zone-side-nav-action" %>
+  </nav>
+</aside>

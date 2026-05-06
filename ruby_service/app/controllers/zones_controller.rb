@@ -1,8 +1,18 @@
 class ZonesController < ApplicationController
   AGGREGATE_READING_FRESHNESS_WINDOW = 15.minutes
   AGGREGATE_READING_FRESHNESS_MINUTES = (AGGREGATE_READING_FRESHNESS_WINDOW / 1.minute).to_i
+  READING_FREQUENCY_OPTIONS = [
+    [ "Every 1 hour", 3_600_000 ],
+    [ "Every 2 hours", 7_200_000 ],
+    [ "Every 3 hours", 10_800_000 ],
+    [ "Every 4 hours", 14_400_000 ],
+    [ "Every 6 hours", 21_600_000 ],
+    [ "Every 8 hours", 28_800_000 ],
+    [ "Every 12 hours", 43_200_000 ],
+    [ "Every 24 hours", 86_400_000 ]
+  ].freeze
 
-  before_action :set_zone, only: %i[show edit update destroy water_now stop_watering toggle_active]
+  before_action :set_zone, only: %i[show nodes edit update destroy water_now stop_watering toggle_active]
 
   def index
     @zones = Zone.includes(:crop_profile, :nodes).order(:zone_id)
@@ -48,6 +58,11 @@ class ZonesController < ApplicationController
     }
   end
 
+  def nodes
+    @claimed_nodes = @zone.nodes.order(:node_id)
+    @latest_readings_by_node_id = latest_node_readings_for_zone(@zone)
+  end
+
   def new
     @zone = Zone.new
     load_crop_profiles
@@ -58,7 +73,7 @@ class ZonesController < ApplicationController
   end
 
   def create
-    @zone = Zone.new(zone_params_with_allowed_hours)
+    @zone = Zone.new(zone_params)
     if @zone.save
       redirect_to zones_path, notice: "Zone created."
     else
@@ -68,8 +83,8 @@ class ZonesController < ApplicationController
   end
 
   def update
-    if @zone.update(zone_params_with_allowed_hours)
-      redirect_to zones_path, notice: "Zone updated."
+    if @zone.update(zone_params)
+      redirect_to @zone, notice: "Zone updated."
     else
       load_crop_profiles
       render :edit, status: :unprocessable_entity
@@ -140,27 +155,17 @@ class ZonesController < ApplicationController
 
   def load_crop_profiles
     @crop_profiles = CropProfile.order(:crop_name)
+    @reading_frequency_options = READING_FREQUENCY_OPTIONS
   end
 
   def zone_params
-    params.require(:zone).permit(:name, :crop_profile_id, :active, :irrigation_line)
-  end
-
-  def zone_params_with_allowed_hours
-    attrs = zone_params
-    start_hour = params.dig(:zone, :allowed_start_hour)
-    end_hour = params.dig(:zone, :allowed_end_hour)
-
-    if start_hour.present? || end_hour.present?
-      attrs[:allowed_hours] = {
-        "start_hour" => start_hour,
-        "end_hour" => end_hour
-      }
-    else
-      attrs[:allowed_hours] = nil
-    end
-
-    attrs
+    params.require(:zone).permit(
+      :name,
+      :crop_profile_id,
+      :active,
+      :irrigation_line,
+      :publish_interval_ms
+    )
   end
 
   def water_usage_series(zone, range)
@@ -246,6 +251,15 @@ class ZonesController < ApplicationController
       .where(zone_id: ids)
       .order("zone_id, recorded_at DESC")
     rows.index_by(&:zone_id)
+  end
+
+  def latest_node_readings_for_zone(zone)
+    rows = SensorReading
+      .select("DISTINCT ON (node_id) *")
+      .where(zone_id: zone.id, node_id: @zone.nodes.select(:node_id))
+      .order("node_id, recorded_at DESC")
+
+    rows.index_by(&:node_id)
   end
 
   def zone_moisture_snapshots_for(zones)

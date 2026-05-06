@@ -13,16 +13,24 @@
     <link rel="icon" href="/icon.png" type="image/png">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="/icon.png">
-    <%= stylesheet_link_tag :app, "data-turbo-track": "reload" %>
+    <%= stylesheet_link_tag :application, "data-turbo-track": "reload" %>
     <%= javascript_importmap_tags %>
   </head>
 
   <body>
     <header class="app-header">
-      <div class="app-title">Victory Garden</div>
+      <div class="app-title" aria-label="Victory Garden">
+        <span class="app-title-word">
+          <span class="app-title-initial">V</span>
+          <span class="app-title-rest">ictory</span>
+        </span>
+        <span class="app-title-word">
+          <span class="app-title-initial">G</span>
+          <span class="app-title-rest">arden</span>
+        </span>
+      </div>
       <nav class="app-nav">
         <%= link_to "Zones", zones_path, class: "nav-link" %>
-        <%= link_to "Onboarding", onboarding_path, class: "nav-link" %>
         <%= link_to "Health", health_path, class: "nav-link" %>
         <%= link_to "Watering Events", watering_events_path, class: "nav-link" %>
         <%= link_to "Settings", settings_path, class: "nav-link" %>
@@ -39,7 +47,7 @@
             </span>
           </div>
           <div>
-            <%= link_to "Open Onboarding", onboarding_path, class: "btn light" %>
+            <%= link_to "Open Setup", settings_path(anchor: "setup"), class: "btn light" %>
           </div>
         </div>
       <% end %>

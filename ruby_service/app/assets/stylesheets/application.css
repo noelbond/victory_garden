@@ -23,14 +23,41 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 20px;
   padding: 20px 32px;
   border-bottom: 1px solid var(--border);
   background: #fffaf2;
 }
 
 .app-title {
-  font-size: 22px;
-  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 10px 16px 8px;
+  border-radius: 14px;
+  font-family: "Bebas Neue Victory", "Georgia", serif;
+  text-transform: uppercase;
+  line-height: 0.85;
+  letter-spacing: 0.04em;
+}
+
+.app-title-word {
+  display: inline-flex;
+  align-items: flex-end;
+}
+
+.app-title-initial {
+  display: inline-block;
+  margin-right: 2px;
+  font-size: 72px;
+  line-height: 0.72;
+  color: #16264d;
+}
+
+.app-title-rest {
+  display: inline-block;
+  font-size: 42px;
+  color: #16264d;
 }
 
 .app-nav {
@@ -263,6 +290,125 @@ body {
   background: #f2f2f2;
 }
 
+.zone-show-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.zone-nav-toggle {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.zone-show-content {
+  min-width: 0;
+}
+
+.zone-workspace {
+  margin-bottom: 16px;
+}
+
+.zone-workspace:empty {
+  display: none;
+  margin: 0;
+}
+
+.zone-side-nav {
+  position: sticky;
+  top: 16px;
+}
+
+.zone-side-nav h3 {
+  margin-top: 0;
+}
+
+.zone-side-nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.zone-side-nav-link {
+  color: var(--ink);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fffaf2;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+  display: block;
+}
+
+.zone-side-nav-link:hover {
+  background: #f3ede2;
+}
+
+.zone-side-nav-action {
+  background: #fff;
+}
+
+.zone-show-layout #zone-nav-details:checked ~ .zone-side-nav label[for="zone-nav-details"],
+.zone-show-layout #zone-nav-history:checked ~ .zone-side-nav label[for="zone-nav-history"],
+.zone-show-layout #zone-nav-notifications:checked ~ .zone-side-nav label[for="zone-nav-notifications"],
+.zone-show-layout #zone-nav-faults:checked ~ .zone-side-nav label[for="zone-nav-faults"] {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.zone-section {
+  margin-bottom: 16px;
+}
+
+.zone-panel {
+  display: none;
+}
+
+.zone-show-layout #zone-nav-details:checked ~ .zone-show-content .zone-panel-details,
+.zone-show-layout #zone-nav-history:checked ~ .zone-show-content .zone-panel-history,
+.zone-show-layout #zone-nav-notifications:checked ~ .zone-show-content .zone-panel-notifications,
+.zone-show-layout #zone-nav-faults:checked ~ .zone-show-content .zone-panel-faults {
+  display: block;
+}
+
+.health-show-layout #health-nav-attention:checked ~ .zone-side-nav label[for="health-nav-attention"],
+.health-show-layout #health-nav-activity:checked ~ .zone-side-nav label[for="health-nav-activity"],
+.health-show-layout #health-nav-nodes:checked ~ .zone-side-nav label[for="health-nav-nodes"],
+.health-show-layout #health-nav-faults:checked ~ .zone-side-nav label[for="health-nav-faults"] {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.health-panel {
+  display: none;
+}
+
+.health-show-layout #health-nav-attention:checked ~ .zone-show-content .health-panel-attention,
+.health-show-layout #health-nav-activity:checked ~ .zone-show-content .health-panel-activity,
+.health-show-layout #health-nav-nodes:checked ~ .zone-show-content .health-panel-nodes,
+.health-show-layout #health-nav-faults:checked ~ .zone-show-content .health-panel-faults {
+  display: block;
+}
+
+.zone-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.zone-section {
+  scroll-margin-top: 16px;
+}
+
 @media (max-width: 960px) {
   .app-header,
   .page-header,
@@ -286,6 +432,24 @@ body {
     justify-content: flex-start;
   }
 
+  .zone-show-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .zone-side-nav {
+    position: static;
+  }
+
+  .zone-side-nav-links {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .zone-section-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
   .health-actions {
     min-width: 110px;
   }
@@ -294,6 +458,20 @@ body {
 @media (max-width: 720px) {
   .app-header {
     gap: 8px;
+  }
+
+  .app-title {
+    gap: 10px;
+    padding: 8px 12px 7px;
+  }
+
+  .app-title-initial {
+    font-size: 54px;
+    -webkit-text-stroke-width: 1.5px;
+  }
+
+  .app-title-rest {
+    font-size: 30px;
   }
 
   .app-nav {
@@ -554,6 +732,35 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px;
+}
+
+.attention-link {
+  display: block;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.attention-link:hover {
+  box-shadow: 0 0 0 1px rgba(47, 122, 85, 0.12);
+}
+
+.issue-guidance {
+  margin-top: 8px;
+}
+
+.issue-guidance summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.issue-guidance[open] summary {
+  margin-bottom: 6px;
+}
+
+.issue-guidance > div + div {
+  margin-top: 4px;
 }
 
 .attention-warn {

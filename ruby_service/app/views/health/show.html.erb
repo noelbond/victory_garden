@@ -18,12 +18,12 @@
   <div class="card metric-card <%= @summary[:stale_nodes] > 0 ? "metric-alert" : "metric-ok" %>">
     <div class="metric-label">Nodes Online</div>
     <div class="metric-value"><%= @summary[:nodes] - @summary[:stale_nodes] %> / <%= @summary[:nodes] %></div>
-    <div class="muted">seen within 5 minutes</div>
+    <div class="muted">seen in the expected interval</div>
   </div>
-  <div class="card metric-card <%= @summary[:fresh_readings] < @summary[:claimed_nodes] ? "metric-warn" : "metric-ok" %>">
+  <div class="card metric-card <%= @summary[:fresh_readings] < @summary[:claimed_zones] ? "metric-warn" : "metric-ok" %>">
     <div class="metric-label">Fresh Readings</div>
-    <div class="metric-value"><%= @summary[:fresh_readings] %> / <%= @summary[:claimed_nodes] %></div>
-    <div class="muted">recorded within 5 minutes</div>
+    <div class="metric-value"><%= @summary[:fresh_readings] %> / <%= @summary[:claimed_zones] %></div>
+    <div class="muted">zones with a reading in the expected interval</div>
   </div>
   <div class="card metric-card <%= @summary[:config_pending] > 0 ? "metric-warn" : "metric-ok" %>">
     <div class="metric-label">Config Pending</div>
@@ -42,168 +42,249 @@
   </div>
 </div>
 
-<% if @attention_items.any? %>
-  <div class="card" style="margin-bottom: 16px;">
-    <h3>Needs Attention</h3>
-    <div class="attention-list">
-      <% @attention_items.each do |item| %>
-        <div class="attention-item <%= item[:tone] == "warn" ? "metric-warn" : "metric-alert" %>">
-          <div class="attention-label"><%= item[:label] %></div>
-          <div><%= item[:detail] %></div>
-        </div>
-      <% end %>
-    </div>
-  </div>
-<% end %>
+<% active_health_tab = params[:health_tab].presence_in(%w[notifications recent-activity nodes recent-faults]) || "notifications" %>
 
-<div class="card" style="margin-bottom: 16px;">
-  <h3>Recent Activity</h3>
-  <% if @recent_activity.any? %>
-    <div class="activity-strip">
-      <% @recent_activity.each do |item| %>
-        <% activity_tone = case item[:label]
-                           when "Actuator" then "warn"
-                           when "Config Ack" then "ok"
-                           else "stale"
-                           end %>
-        <div class="activity-item">
-          <div class="health-pill <%= activity_tone %>"><%= item[:label] %></div>
-          <div><%= item[:detail] %></div>
-          <div class="muted"><%= time_ago_in_words(item[:at]) %> ago</div>
-        </div>
-      <% end %>
-    </div>
-  <% else %>
-    <p class="muted">No recent activity.</p>
-  <% end %>
-</div>
+<div class="zone-show-layout health-show-layout">
+  <input type="radio" name="health-section" id="health-nav-attention" class="zone-nav-toggle" <%= "checked" if active_health_tab == "notifications" %>>
+  <input type="radio" name="health-section" id="health-nav-activity" class="zone-nav-toggle" <%= "checked" if active_health_tab == "recent-activity" %>>
+  <input type="radio" name="health-section" id="health-nav-nodes" class="zone-nav-toggle" <%= "checked" if active_health_tab == "nodes" %>>
+  <input type="radio" name="health-section" id="health-nav-faults" class="zone-nav-toggle" <%= "checked" if active_health_tab == "recent-faults" %>>
 
-<div class="card">
-  <h3>Nodes</h3>
-  <% if @nodes.any? %>
-    <div class="health-table-wrap">
-      <table class="health-table">
-        <thead>
-          <tr>
-            <th>Node</th>
-            <th>Zone</th>
-            <th>Reported Zone</th>
-            <th>Last Seen</th>
-            <th>Latest Reading</th>
-            <th>Actuator</th>
-            <th>Health</th>
-            <th>Wi-Fi</th>
-            <th>Last Error</th>
-            <th>Config</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% @nodes.each do |node| %>
-            <% latest_reading = node.zone_id ? @latest_readings[node.zone_id] : nil %>
-            <% latest_status = node.zone_id ? @latest_actuator_statuses[node.zone_id] : nil %>
-            <% freshness_class = if node.last_seen_at > 5.minutes.ago
-                                   "ok"
-                                 elsif node.last_seen_at > 30.minutes.ago
-                                   "stale"
-                                 else
-                                   "offline"
-                                 end %>
-            <tr>
-              <td>
-                <%= link_to node.node_id, node_path(node) %>
-              </td>
-              <td><%= node.zone&.name.presence || node.zone&.zone_id || "Unassigned" %></td>
-              <td><%= node.reported_zone_id.presence || "—" %></td>
-              <td>
-                <div class="status-row">
-                  <span class="status-dot <%= freshness_class %>"></span>
-                  <span class="health-pill <%= freshness_class %>"><%= time_ago_in_words(node.last_seen_at) %> ago</span>
-                </div>
-              </td>
-              <td>
-                <% if latest_reading.present? %>
-                  <div><%= latest_reading.moisture_percent || "—" %>%</div>
-                  <div class="muted">
-                    <span class="health-pill <%= latest_reading.recorded_at > 5.minutes.ago ? "ok" : (latest_reading.recorded_at > 30.minutes.ago ? "stale" : "offline") %>">
-                      <%= time_ago_in_words(latest_reading.recorded_at) %> ago
-                    </span>
-                  </div>
-                <% else %>
-                  <span class="muted">No readings</span>
-                <% end %>
-              </td>
-              <td><%= latest_status&.state || "—" %></td>
-              <td>
-                <% if node.health.present? %>
-                  <span class="health-pill <%= node.health == "ok" ? "ok" : "warn" %>"><%= node.health %></span>
-                <% else %>
-                  —
-                <% end %>
-              </td>
-              <td><%= node.wifi_rssi || "—" %> dBm</td>
-              <td>
-                <% if node.last_error.present? && node.last_error != "none" %>
-                  <span class="health-warning"><%= node.last_error %></span>
-                <% else %>
-                  <span class="muted">none</span>
-                <% end %>
-              </td>
-              <td>
-                <% config_class = case node.config_status
-                                  when "applied" then "ok"
-                                  when "pending" then "stale"
-                                  when "error" then "offline"
-                                  else ""
-                                  end %>
-                <div>
-                  <% if node.config_status.present? %>
-                    <span class="health-pill <%= config_class %>"><%= node.config_status %></span>
-                  <% else %>
-                    —
-                  <% end %>
-                </div>
-                <% if node.config_acknowledged_at.present? %>
-                  <div class="muted">acked <%= time_ago_in_words(node.config_acknowledged_at) %> ago</div>
-                <% elsif node.config_published_at.present? %>
-                  <div class="muted">published <%= time_ago_in_words(node.config_published_at) %> ago</div>
-                <% end %>
-                <% if node.config_error.present? %>
-                  <div class="health-warning"><%= node.config_error %></div>
-                <% end %>
-              </td>
-              <td>
-                <div class="health-actions">
-                  <%= link_to "Node", node_path(node), class: "table-link" %>
-                  <% if node.zone.present? %>
-                    <%= link_to "Zone", zone_path(node.zone), class: "table-link" %>
-                  <% end %>
-                  <%= button_to "Republish", publish_config_node_path(node), method: :post, class: "table-action-btn" %>
-                </div>
-              </td>
-            </tr>
+  <aside class="card zone-side-nav">
+    <h3>Navigate</h3>
+    <nav class="zone-side-nav-links" aria-label="Health sections">
+      <label class="zone-side-nav-link" for="health-nav-attention">Notifications</label>
+      <label class="zone-side-nav-link" for="health-nav-activity">Recent Activity</label>
+      <label class="zone-side-nav-link" for="health-nav-nodes">Nodes</label>
+      <label class="zone-side-nav-link" for="health-nav-faults">Recent Faults</label>
+    </nav>
+  </aside>
+
+  <div class="zone-show-content">
+    <section class="card zone-section health-panel health-panel-attention">
+      <div class="zone-section-header">
+        <h3>Notifications</h3>
+        <div class="muted">Current system-wide warnings and failures that need review.</div>
+      </div>
+
+      <% if @attention_items.any? %>
+        <div class="attention-list">
+          <% @attention_items.each do |item| %>
+            <% guidance = health_notification_guidance(item) %>
+            <% attention_classes = "attention-item #{item[:tone] == "warn" ? "metric-warn" : "metric-alert"}" %>
+            <% if item[:label] == "Open Faults" %>
+              <label class="<%= "#{attention_classes} attention-link" %>" for="health-nav-faults">
+                <div class="attention-label"><%= item[:label] %></div>
+                <div><%= item[:detail] %></div>
+                <%= render "shared/issue_guidance",
+                           summary: "Description and fix",
+                           description_label: "Description",
+                           description: guidance[:description],
+                           fix_label: "Suggested fix",
+                           fix: guidance[:fix] %>
+              </label>
+            <% else %>
+              <div class="<%= attention_classes %>">
+                <div class="attention-label"><%= item[:label] %></div>
+                <div><%= item[:detail] %></div>
+                <%= render "shared/issue_guidance",
+                           summary: "Description and fix",
+                           description_label: "Description",
+                           description: guidance[:description],
+                           fix_label: "Suggested fix",
+                           fix: guidance[:fix] %>
+              </div>
+            <% end %>
           <% end %>
-        </tbody>
-      </table>
-    </div>
-  <% else %>
-    <p class="muted">No nodes discovered yet.</p>
-  <% end %>
-</div>
+        </div>
+      <% else %>
+        <p class="muted">No active system attention items.</p>
+      <% end %>
+    </section>
 
-<% if @recent_faults.any? %>
-  <div class="row" style="margin-top: 16px;">
-    <div class="col card">
-      <h3>Recent Faults</h3>
-      <ul class="list">
-        <% @recent_faults.each do |fault| %>
-          <li class="health-list-item">
-            <strong><%= fault.zone.name.presence || fault.zone.zone_id %></strong>
-            <span><%= fault.fault_code %></span>
-            <span class="muted"><%= time_ago_in_words(fault.recorded_at) %> ago</span>
-          </li>
-        <% end %>
-      </ul>
-    </div>
+    <section class="card zone-section health-panel health-panel-activity">
+      <div class="zone-section-header">
+        <h3>Recent Activity</h3>
+        <div class="muted">Latest readings, actuator updates, and config acknowledgements.</div>
+      </div>
+
+      <% if @recent_activity.any? %>
+        <div class="activity-strip">
+          <% @recent_activity.each do |item| %>
+            <% activity_tone = case item[:label]
+                               when "Actuator" then "warn"
+                               when "Config Ack" then "ok"
+                               else "stale"
+                               end %>
+            <div class="activity-item">
+              <div class="health-pill <%= activity_tone %>"><%= item[:label] %></div>
+              <div><%= item[:detail] %></div>
+              <div class="muted"><%= time_ago_in_words(item[:at]) %> ago</div>
+            </div>
+          <% end %>
+        </div>
+      <% else %>
+        <p class="muted">No recent activity.</p>
+      <% end %>
+    </section>
+
+    <section class="card zone-section health-panel health-panel-nodes">
+      <div class="zone-section-header">
+        <h3>Nodes</h3>
+        <div class="muted">Claimed state, freshness, config sync, and direct navigation to each node.</div>
+      </div>
+
+      <% if @nodes.any? %>
+        <div class="health-table-wrap">
+          <table class="health-table">
+            <thead>
+              <tr>
+                <th>Node</th>
+                <th>Zone</th>
+                <th>Reported Zone</th>
+                <th>Last Seen</th>
+                <th>Latest Reading</th>
+                <th>Actuator</th>
+                <th>Health</th>
+                <th>Wi-Fi</th>
+                <th>Last Error</th>
+                <th>Config</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% @nodes.each do |node| %>
+                <% latest_reading = node.zone_id ? @latest_readings[node.zone_id] : nil %>
+                <% latest_status = node.zone_id ? @latest_actuator_statuses[node.zone_id] : nil %>
+                <% runtime_guidance = node_runtime_error_guidance(node) %>
+                <% config_guidance = node_config_guidance(node) %>
+                <% freshness_class = node_seen_freshness_state(node) %>
+                <% reading_freshness_class = node.zone.present? ? reading_freshness_state_for(node.zone) : "offline" %>
+                <tr>
+                  <td><%= link_to node.node_id, node_path(node) %></td>
+                  <td><%= node.zone&.name.presence || node.zone&.zone_id || "Unassigned" %></td>
+                  <td><%= node.reported_zone_id.presence || "—" %></td>
+                  <td>
+                    <div class="status-row">
+                      <span class="status-dot <%= freshness_class %>"></span>
+                      <span class="health-pill <%= freshness_class %>"><%= time_ago_in_words(node.last_seen_at) %> ago</span>
+                    </div>
+                  </td>
+                  <td>
+                    <% if latest_reading.present? %>
+                      <div><%= latest_reading.moisture_percent || "—" %>%</div>
+                      <div class="muted">
+                        <span class="health-pill <%= reading_freshness_class %>">
+                          <%= time_ago_in_words(latest_reading.recorded_at) %> ago
+                        </span>
+                      </div>
+                    <% else %>
+                      <span class="muted">No readings</span>
+                    <% end %>
+                  </td>
+                  <td><%= latest_status&.state || "—" %></td>
+                  <td>
+                    <% if node.health.present? %>
+                      <span class="health-pill <%= node.health == "ok" ? "ok" : "warn" %>"><%= node.health %></span>
+                    <% else %>
+                      —
+                    <% end %>
+                  </td>
+                  <td><%= node.wifi_rssi || "—" %> dBm</td>
+                  <td>
+                    <% if node.last_error.present? && node.last_error != "none" %>
+                      <span class="health-warning"><%= node.last_error %></span>
+                      <%= render "shared/issue_guidance",
+                                 summary: "Meaning and fix",
+                                 description_label: "Meaning",
+                                 description: runtime_guidance[:description],
+                                 fix_label: "Fix",
+                                 fix: runtime_guidance[:fix] %>
+                    <% else %>
+                      <span class="muted">none</span>
+                    <% end %>
+                  </td>
+                  <td>
+                    <% config_class = case node.config_status
+                                      when "applied" then "ok"
+                                      when "pending" then "stale"
+                                      when "error" then "offline"
+                                      else ""
+                                      end %>
+                    <div>
+                      <% if node.config_status.present? %>
+                        <span class="health-pill <%= config_class %>"><%= node.config_status %></span>
+                      <% else %>
+                        —
+                      <% end %>
+                    </div>
+                    <% if node.config_acknowledged_at.present? %>
+                      <div class="muted">acked <%= time_ago_in_words(node.config_acknowledged_at) %> ago</div>
+                    <% elsif node.config_published_at.present? %>
+                      <div class="muted">published <%= time_ago_in_words(node.config_published_at) %> ago</div>
+                    <% end %>
+                    <% if node.config_error.present? %>
+                      <div class="health-warning"><%= node.config_error %></div>
+                    <% end %>
+                    <% if node.config_status == "error" || node.config_status == "pending" || node.config_error.present? %>
+                      <%= render "shared/issue_guidance",
+                                 summary: "Meaning and fix",
+                                 description_label: "Meaning",
+                                 description: config_guidance[:description],
+                                 fix_label: "Fix",
+                                 fix: config_guidance[:fix] %>
+                    <% end %>
+                  </td>
+                  <td>
+                    <div class="health-actions">
+                      <%= link_to "Node", node_path(node), class: "table-link" %>
+                      <% if node.zone.present? %>
+                        <%= link_to "Zone", zone_path(node.zone), class: "table-link" %>
+                      <% end %>
+                      <%= button_to "Request Reading", request_reading_node_path(node), method: :post, params: { return_to: health_path(health_tab: "nodes") }, class: "table-action-btn" if node.zone.present? %>
+                      <%= button_to "Reboot Node", reboot_node_path(node), method: :post, params: { return_to: health_path(health_tab: "nodes") }, class: "table-action-btn" if node.zone.present? %>
+                      <%= button_to "Republish Config", publish_config_node_path(node), method: :post, params: { return_to: health_path(health_tab: "nodes") }, class: "table-action-btn" %>
+                    </div>
+                  </td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      <% else %>
+        <p class="muted">No nodes discovered yet.</p>
+      <% end %>
+    </section>
+
+    <section class="card zone-section health-panel health-panel-faults">
+      <div class="zone-section-header">
+        <h3>Recent Faults</h3>
+        <div class="muted">Most recent unresolved or historical fault records across all zones.</div>
+      </div>
+
+      <% if @recent_faults.any? %>
+        <div class="attention-list">
+          <% @recent_faults.each do |fault| %>
+            <% guidance = fault_guidance(fault) %>
+            <div class="attention-item attention-warn">
+              <div class="attention-label">
+                <strong><%= fault.zone.name.presence || fault.zone.zone_id %></strong>
+                <span class="health-pill warn"><%= fault.fault_code %></span>
+                <span class="muted"><%= time_ago_in_words(fault.recorded_at) %> ago</span>
+              </div>
+              <div><%= fault.detail.presence || "No additional detail was provided." %></div>
+              <%= render "shared/issue_guidance",
+                         summary: "Description and fix",
+                         description_label: "Description",
+                         description: guidance[:description],
+                         fix_label: "Suggested fix",
+                         fix: guidance[:fix] %>
+            </div>
+          <% end %>
+        </div>
+      <% else %>
+        <p class="muted">No recent faults.</p>
+      <% end %>
+    </section>
   </div>
-<% end %>
+</div>

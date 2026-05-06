@@ -51,13 +51,18 @@ class ZoneShowStatusTest < ActionDispatch::IntegrationTest
     get zone_path(zone)
 
     assert_response :success
-    assert_includes response.body, "Needs Attention"
+    assert_includes response.body, "Notifications"
     assert_includes response.body, "Stale reading"
     assert_includes response.body, "Open faults"
     assert_includes response.body, "Watering active"
+    assert_includes response.body, "Suggested fix:"
+    assert_includes response.body, "The latest reading is too old to trust for current watering decisions."
+    assert_includes response.body, "Check that the sensor node is online and publishing on schedule, then request or wait for a fresh reading."
     assert_includes response.body, "RUNNING"
     assert_includes response.body, "sensor drift"
     assert_includes response.body, "STALE_SENSOR"
+    assert_includes response.body, "A sensor reading was considered too old to use safely for automatic decisions."
+    assert_includes response.body, "Bring the sensor node back online and confirm a fresh reading is ingested before trusting automation."
     assert_includes response.body, "Zone History"
     assert_includes response.body, "Last 24h"
     assert_includes response.body, "Last 7d"
@@ -117,5 +122,54 @@ class ZoneShowStatusTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Stale Nodes: sensor-c"
     assert_includes response.body, "Missing Nodes: sensor-d"
     assert_includes response.body, "Partial aggregate"
+  end
+
+  test "zone nodes page shows only nodes claimed to that zone" do
+    zone = create(:zone, name: "Zone With Nodes")
+    other_zone = create(:zone, name: "Other Zone")
+
+    Node.create!(
+      node_id: "zone-node-a",
+      zone: zone,
+      reported_zone_id: zone.zone_id,
+      last_seen_at: 2.minutes.ago,
+      provisioned: true,
+      health: "ok"
+    )
+    Node.create!(
+      node_id: "zone-node-b",
+      zone: zone,
+      reported_zone_id: zone.zone_id,
+      last_seen_at: 10.minutes.ago,
+      provisioned: true,
+      health: "degraded"
+    )
+    Node.create!(
+      node_id: "other-zone-node",
+      zone: other_zone,
+      reported_zone_id: other_zone.zone_id,
+      last_seen_at: 1.minute.ago,
+      provisioned: true,
+      health: "ok"
+    )
+
+    SensorReading.create!(
+      zone: zone,
+      node_id: "zone-node-a",
+      recorded_at: 1.minute.ago,
+      moisture_raw: 640,
+      moisture_percent: 52.0,
+      raw_payload: {}
+    )
+
+    get zone_nodes_path(zone)
+
+    assert_response :success
+    assert_includes response.body, "Zone With Nodes Nodes"
+    assert_includes response.body, "2 claimed nodes for this zone."
+    assert_includes response.body, "zone-node-a"
+    assert_includes response.body, "zone-node-b"
+    assert_includes response.body, "52.0%"
+    assert_not_includes response.body, "other-zone-node"
   end
 end

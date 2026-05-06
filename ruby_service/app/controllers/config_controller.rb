@@ -4,12 +4,19 @@ class ConfigController < ApplicationController
 
   def publish
     ConfigPublishJob.perform_later
-    render json: { status: "queued" }, status: :accepted
+
+    respond_to do |format|
+      format.html { redirect_back fallback_location: settings_path, notice: "Config publish queued." }
+      format.json { render json: { status: "queued" }, status: :accepted }
+      format.any { head :accepted }
+    end
   end
 
   private
 
   def require_admin_token
+    return if request.format.html? && verified_request?
+
     expected = ENV["ADMIN_API_TOKEN"].presence
     return render json: { error: "forbidden" }, status: :forbidden unless expected
 

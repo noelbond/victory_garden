@@ -15,7 +15,9 @@ class CropProfilesController < ApplicationController
     @crop_profile = CropProfile.new(crop_profile_params)
 
     if @crop_profile.save
-      redirect_to resolved_return_path(@crop_profile), notice: "Crop profile created."
+      applied_zone = apply_crop_profile_to_zone(@crop_profile)
+      notice = applied_zone ? "Crop profile created and applied to #{applied_zone.name.presence || applied_zone.zone_id}." : "Crop profile created."
+      redirect_to resolved_return_path(@crop_profile), notice: notice
     else
       render :new, status: :unprocessable_entity
     end
@@ -51,5 +53,15 @@ class CropProfilesController < ApplicationController
 
   def resolved_return_path(crop_profile)
     url_from(params[:return_to]).presence || crop_profile_path(crop_profile)
+  end
+
+  def apply_crop_profile_to_zone(crop_profile)
+    return nil if params[:apply_zone_id].blank?
+
+    zone = Zone.find_by(id: params[:apply_zone_id])
+    return nil if zone.blank?
+
+    zone.update!(crop_profile: crop_profile)
+    zone
   end
 end

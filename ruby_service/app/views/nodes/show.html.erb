@@ -13,6 +13,9 @@
   </div>
 </div>
 
+<% runtime_guidance = node_runtime_error_guidance(@node) %>
+<% config_guidance = node_config_guidance(@node) %>
+
 <div class="row">
   <div class="col card">
     <h3>Status</h3>
@@ -23,12 +26,32 @@
       <li>Health: <%= @node.health.presence || "—" %></li>
       <li>WiFi RSSI: <%= @node.wifi_rssi || "—" %> dBm</li>
       <li>Battery Voltage: <%= @node.battery_voltage || "—" %> V</li>
-      <li>Last Error: <%= @node.last_error.presence || "—" %></li>
+      <li>
+        Last Error: <%= @node.last_error.presence || "—" %>
+        <% if @node.last_error.present? && @node.last_error != "none" %>
+          <%= render "shared/issue_guidance",
+                     summary: "Meaning and fix",
+                     description_label: "Meaning",
+                     description: runtime_guidance[:description],
+                     fix_label: "Fix",
+                     fix: runtime_guidance[:fix] %>
+        <% end %>
+      </li>
       <li>Config Status: <%= @node.config_status.presence || "—" %></li>
       <li>Config Version: <%= @node.config_version.presence || "—" %></li>
       <li>Config Published: <%= @node.config_published_at || "—" %></li>
       <li>Config Acked: <%= @node.config_acknowledged_at || "—" %></li>
-      <li>Config Error: <%= @node.config_error.presence || "—" %></li>
+      <li>
+        Config Error: <%= @node.config_error.presence || "—" %>
+        <% if @node.config_status == "error" || @node.config_status == "pending" || @node.config_error.present? %>
+          <%= render "shared/issue_guidance",
+                     summary: "Meaning and fix",
+                     description_label: "Meaning",
+                     description: config_guidance[:description],
+                     fix_label: "Fix",
+                     fix: config_guidance[:fix] %>
+        <% end %>
+      </li>
     </ul>
   </div>
 
@@ -51,6 +74,8 @@
     <div style="margin-top: 16px;">
       <% if @node.claimed? %>
         <%= button_to "Unclaim", unclaim_node_path(@node), method: :patch, class: "btn light" %>
+        <%= button_to "Request Reading", request_reading_node_path(@node), method: :post, class: "btn light" %>
+        <%= button_to "Reboot Node", reboot_node_path(@node), method: :post, class: "btn light" %>
       <% end %>
       <%= button_to "Republish Config", publish_config_node_path(@node), method: :post, class: "btn light" %>
     </div>
@@ -59,13 +84,46 @@
 
 <div class="row" style="margin-top: 16px;">
   <div class="col card">
-    <h3>Crop Profile</h3>
-    <% if @node.zone.present? %>
+    <h3>Sensor Calibration</h3>
+    <p class="muted">Calibration belongs to this node and stays fixed until you deliberately replace it.</p>
+    <ul class="list">
+      <li>Dry Calibration Raw: <%= @node.moisture_raw_dry || "—" %></li>
+      <li>Wet Calibration Raw: <%= @node.moisture_raw_wet || "—" %></li>
+    </ul>
+
+    <%= form_with model: @node, url: update_calibration_node_path(@node), method: :patch do |f| %>
+      <div class="field">
+        <%= f.label :moisture_raw_dry, "Dry Calibration Raw" %>
+        <%= f.number_field :moisture_raw_dry, min: 0, placeholder: "552" %>
+      </div>
+      <div class="field">
+        <%= f.label :moisture_raw_wet, "Wet Calibration Raw" %>
+        <%= f.number_field :moisture_raw_wet, min: 0, placeholder: "943" %>
+      </div>
+      <div style="margin-top: 16px;">
+        <%= f.submit "Save Calibration", class: "btn" %>
+      </div>
+    <% end %>
+  </div>
+</div>
+
+<div class="row" style="margin-top: 16px;">
+  <% if @node.zone.present? %>
+    <div class="col card">
+      <h3>Current Crop Profile</h3>
       <p><strong>Zone:</strong> <%= @node.zone.name.presence || @node.zone.zone_id %></p>
       <p><strong>Current Profile:</strong> <%= @node.zone.crop_profile.crop_name %></p>
       <p><strong>Dry Threshold:</strong> <%= @node.zone.crop_profile.dry_threshold %>%</p>
       <p><strong>Max Pulse Runtime:</strong> <%= @node.zone.crop_profile.max_pulse_runtime_sec %> s</p>
       <p><strong>Daily Max Runtime:</strong> <%= @node.zone.crop_profile.daily_max_runtime_sec %> s</p>
+      <div style="margin-top: 16px;">
+        <%= link_to "Edit Current Profile", edit_crop_profile_path(@node.zone.crop_profile, return_to: node_path(@node)), class: "btn light" %>
+      </div>
+    </div>
+
+    <div class="col card">
+      <h3>Select Crop Profile</h3>
+      <p class="muted">Choose a profile for <%= @node.zone.name.presence || @node.zone.zone_id %> or create a new custom one.</p>
 
       <%= form_with url: crop_profile_node_path(@node), method: :patch do %>
         <div class="field">
@@ -78,14 +136,22 @@
       <% end %>
 
       <div style="margin-top: 16px;">
-        <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: node_path(@node)), class: "btn light" %>
-        <%= link_to "Edit Current Profile", edit_crop_profile_path(@node.zone.crop_profile, return_to: node_path(@node)), class: "btn light" %>
+        <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: node_path(@node), apply_zone_id: @node.zone_id), class: "btn light" %>
       </div>
-    <% else %>
-      <p class="muted">Claim this node first, then assign or create a crop profile for its zone.</p>
+    </div>
+  <% else %>
+    <div class="col card">
+      <h3>Current Crop Profile</h3>
+      <p class="muted">Claim this node first, then assign a crop profile to its zone.</p>
+    </div>
+
+    <div class="col card">
+      <h3>Select Crop Profile</h3>
+      <p class="muted">Create a custom profile now, then claim this node to a zone before applying it.</p>
       <div style="margin-top: 16px;">
         <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: node_path(@node)), class: "btn light" %>
       </div>
-    <% end %>
+    </div>
+  <% end %>
   </div>
 </div>

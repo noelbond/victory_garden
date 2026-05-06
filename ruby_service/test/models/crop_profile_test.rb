@@ -46,6 +46,18 @@ class CropProfileTest < ActiveSupport::TestCase
     assert_equal "custom-pepper-2", crop.crop_id
   end
 
+  test "rejects daily max runtime lower than max pulse runtime" do
+    crop = CropProfile.new(
+      crop_name: "Bad Profile",
+      dry_threshold: 30.0,
+      max_pulse_runtime_sec: 60,
+      daily_max_runtime_sec: 30
+    )
+
+    assert_not crop.valid?
+    assert_includes crop.errors[:daily_max_runtime_sec], "must be greater than or equal to max pulse runtime"
+  end
+
   test "enqueues node config publish when assigned crop profile changes" do
     crop = create(:crop_profile)
     zone = create(:zone, crop_profile: crop)

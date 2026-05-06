@@ -1,9 +1,17 @@
-<div class="page-header">
-  <h1 class="page-title">Edit Zone</h1>
-</div>
+<div class="zone-show-layout">
+  <%= render "side_nav_fallback", zone: @zone %>
 
-<%= render "form" %>
+  <div class="zone-show-content">
+    <%= turbo_frame_tag "zone_workspace" do %>
+      <div class="page-header">
+        <h1 class="page-title">Edit Zone</h1>
+      </div>
 
-<div style="margin-top: 16px;">
-  <%= button_to "Delete Zone", zone_path(@zone), method: :delete, class: "btn secondary", data: { turbo_confirm: "Delete this zone? This cannot be undone." } %>
+      <%= render "form" %>
+
+      <div style="margin-top: 16px;">
+        <%= button_to "Delete Zone", zone_path(@zone), method: :delete, class: "btn secondary", data: { turbo_confirm: "Delete this zone? This cannot be undone.", turbo_frame: "_top" } %>
+      </div>
+    <% end %>
+  </div>
 </div>

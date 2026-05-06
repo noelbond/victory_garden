@@ -1,19 +1,37 @@
-<div class="page-header">
-  <h1 class="page-title"><%= @crop_profile.crop_name %></h1>
-  <div>
-    <%= link_to "Edit", edit_crop_profile_path(@crop_profile), class: "btn" %>
-    <%= link_to "Back to Crops", crop_profiles_path, class: "btn light" %>
-  </div>
-</div>
+<%
+  zone_from_return_to = params[:return_to].to_s[%r{\A/zones/(\d+)\z}, 1]
+  zone = Zone.find_by(id: params[:zone_id]) ||
+         Zone.find_by(id: zone_from_return_to) ||
+         Zone.where(crop_profile_id: @crop_profile.id).order(:id).first
+%>
 
-<div class="card">
-  <ul class="list">
-    <li>Crop ID: <%= @crop_profile.crop_id %></li>
-    <li>Dry Threshold: <%= @crop_profile.dry_threshold %>%</li>
-    <li>Max Pulse Runtime: <%= @crop_profile.max_pulse_runtime_sec %> s</li>
-    <li>Daily Max Runtime: <%= @crop_profile.daily_max_runtime_sec %> s</li>
-    <li>Climate: <%= @crop_profile.climate_preference.presence || "—" %></li>
-    <li>Time to Harvest: <%= @crop_profile.time_to_harvest_days || "—" %> days</li>
-    <li>Notes: <%= @crop_profile.notes.presence || "—" %></li>
-  </ul>
+<div class="zone-show-layout">
+  <%= render "zones/side_nav_fallback", zone: zone if zone.present? %>
+
+  <div class="zone-show-content">
+    <%= turbo_frame_tag "zone_workspace" do %>
+      <div class="page-header">
+        <h1 class="page-title"><%= @crop_profile.crop_name %></h1>
+        <div>
+          <%= link_to "Edit", edit_crop_profile_path(@crop_profile, return_to: params[:return_to], zone_id: params[:zone_id]), class: "btn", data: { turbo_frame: "zone_workspace" } %>
+          <%= link_to(params[:return_to].present? ? "Back to Zone" : "Back to Crops",
+                      params[:return_to].presence || crop_profiles_path,
+                      class: "btn light",
+                      data: { turbo_frame: (params[:return_to].present? ? "zone_workspace" : "_top") }) %>
+        </div>
+      </div>
+
+      <div class="card">
+        <ul class="list">
+          <li>Crop ID: <%= @crop_profile.crop_id %></li>
+          <li>Dry Threshold: <%= @crop_profile.dry_threshold %>%</li>
+          <li>Max Pulse Runtime: <%= @crop_profile.max_pulse_runtime_sec %> s</li>
+          <li>Daily Max Runtime: <%= @crop_profile.daily_max_runtime_sec %> s</li>
+          <li>Climate: <%= @crop_profile.climate_preference.presence || "—" %></li>
+          <li>Time to Harvest: <%= @crop_profile.time_to_harvest_days || "—" %> days</li>
+          <li>Notes: <%= @crop_profile.notes.presence || "—" %></li>
+        </ul>
+      </div>
+    <% end %>
+  </div>
 </div>

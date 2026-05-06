@@ -9,5 +9,6 @@ module RubyService
     config.load_defaults 8.0
     config.autoload_lib(ignore: %w[assets tasks])
     config.autoload_paths << Rails.root.join("app/services")
+    config.assets.paths << Rails.root.join("app/assets/fonts")
   end
 end

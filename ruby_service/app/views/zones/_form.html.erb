@@ -1,12 +1,8 @@
-<%= form_with model: @zone do |f| %>
+<%= form_with model: @zone, data: { turbo_frame: "_top" } do |f| %>
   <div class="form-grid">
     <div class="field">
       <%= f.label :name, "Zone Name" %>
       <%= f.text_field :name, placeholder: "Greenhouse Zone 1" %>
-    </div>
-
-    <div class="field">
-      <%= f.label :crop_profile_id, "Crop Profile" %>
     </div>
 
     <div class="field">
@@ -15,39 +11,39 @@
     </div>
 
     <div class="field">
-      <%= f.label :irrigation_line, "Irrigation Line" %>
+      <%= f.label :irrigation_line, "Zone" %>
       <%= f.number_field :irrigation_line, min: 1, placeholder: "1" %>
     </div>
 
     <div class="field">
-      <%= label_tag :allowed_start_hour, "Allowed Start Hour (0-23)" %>
-      <%= number_field_tag "zone[allowed_start_hour]", @zone.allowed_hours&.dig("start_hour"), min: 0, max: 23 %>
+      <%= f.label :publish_interval_ms, "Reading Frequency" %>
+      <%= f.select :publish_interval_ms,
+                   options_for_select(@reading_frequency_options, @zone.publish_interval_ms || 3_600_000) %>
     </div>
 
-    <div class="field">
-      <%= label_tag :allowed_end_hour, "Allowed End Hour (0-23)" %>
-      <%= number_field_tag "zone[allowed_end_hour]", @zone.allowed_hours&.dig("end_hour"), min: 0, max: 23 %>
-    </div>
   </div>
 
   <div style="margin-top: 16px;">
     <%= f.submit class: "btn" %>
-    <%= link_to "Cancel", zones_path, class: "btn light" %>
-    <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: request.fullpath), class: "btn light" %>
+    <%= link_to "Cancel", (@zone.persisted? ? zone_path(@zone) : zones_path), class: "btn light", data: { turbo_frame: (@zone.persisted? ? "zone_workspace" : "_top") } %>
   </div>
   <p class="muted" style="margin-top: 12px;">
-    One irrigation line maps to one zone. Assign the line number that physically feeds this zone on the shared splitter.
+    Each physical watering output maps to one zone. Use the zone number that matches the hardware output for this plant.
   </p>
   <div class="section-header">
     <h2>Pick a Crop Profile</h2>
     <p class="muted">Select any existing profile or create your own custom profile for this zone.</p>
+    <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: request.fullpath), class: "btn light" %>
   </div>
 
   <div class="crop-section">
     <div class="crop-grid">
       <% @crop_profiles.each do |crop| %>
         <div class="crop-option">
-          <%= radio_button_tag "zone[crop_profile_id]", crop.id, @zone.crop_profile_id == crop.id, id: "crop_#{crop.id}" %>
+          <%= radio_button_tag "zone[crop_profile_id]",
+                               crop.id,
+                               @zone.crop_profile_id == crop.id,
+                               id: "crop_#{crop.id}" %>
           <%= label_tag "crop_#{crop.id}", class: "card crop-card" do %>
             <h3><%= crop.crop_name %></h3>
             <p>Dry Threshold: <%= crop.dry_threshold %>%</p>

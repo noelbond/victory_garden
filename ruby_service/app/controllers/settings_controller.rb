@@ -8,7 +8,7 @@ class SettingsController < ApplicationController
     if @setting.update(setting_params)
       redirect_to settings_path, notice: "Connection settings updated."
     else
-      render :index, status: :unprocessable_entity
+      render :show, status: :unprocessable_entity
     end
   end
 
