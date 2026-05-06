@@ -128,6 +128,12 @@ static bool extract_json_int(const char *payload, const char *key, int *out) {
         return false;
     }
     start += strlen(pattern);
+    while (*start == ' ' || *start == '\n' || *start == '\r' || *start == '\t') {
+        start++;
+    }
+    if ((*start < '0' || *start > '9') && *start != '-') {
+        return false;
+    }
     *out = (int)strtol(start, NULL, 10);
     return true;
 }
@@ -263,6 +269,11 @@ bool node_config_apply_json(
         float dry_threshold = 0.0f;
         int max_pulse = 0;
         int daily_max = 0;
+        int publish_interval_ms = 0;
+        int moisture_raw_dry = 0;
+        int moisture_raw_wet = 0;
+        bool has_moisture_raw_dry = false;
+        bool has_moisture_raw_wet = false;
 
         if (!extract_json_string(payload, "zone_id", zone_id, sizeof(zone_id)) ||
             !extract_json_string(payload, "crop_id", crop_id, sizeof(crop_id)) ||
@@ -286,6 +297,28 @@ bool node_config_apply_json(
         updated.dry_threshold = dry_threshold;
         updated.max_pulse_runtime_sec = (uint16_t)max_pulse;
         updated.daily_max_runtime_sec = (uint16_t)daily_max;
+
+        if (extract_json_int(payload, "publish_interval_ms", &publish_interval_ms) && publish_interval_ms > 0) {
+            updated.publish_interval_ms = (uint32_t)publish_interval_ms;
+        }
+
+        has_moisture_raw_dry = extract_json_int(payload, "moisture_raw_dry", &moisture_raw_dry);
+        has_moisture_raw_wet = extract_json_int(payload, "moisture_raw_wet", &moisture_raw_wet);
+
+        if (has_moisture_raw_dry != has_moisture_raw_wet) {
+            set_error(error, error_size, "incomplete moisture calibration");
+            return false;
+        }
+
+        if (has_moisture_raw_dry && has_moisture_raw_wet) {
+            if (moisture_raw_dry < 0 || moisture_raw_wet < 0 || moisture_raw_dry == moisture_raw_wet) {
+                set_error(error, error_size, "invalid moisture calibration");
+                return false;
+            }
+
+            updated.moisture_raw_dry = (uint16_t)moisture_raw_dry;
+            updated.moisture_raw_wet = (uint16_t)moisture_raw_wet;
+        }
     }
 
     *config = updated;

@@ -1,4 +1,10 @@
 class Zone < ApplicationRecord
+  DEFAULT_ALLOWED_HOURS = {
+    "start_hour" => 6,
+    "end_hour" => 20
+  }.freeze
+  DEFAULT_PUBLISH_INTERVAL_MS = 3_600_000
+
   belongs_to :crop_profile
   has_many :nodes, dependent: :nullify
   has_many :sensor_readings, dependent: :destroy
@@ -7,10 +13,13 @@ class Zone < ApplicationRecord
   has_many :faults, dependent: :destroy
 
   before_validation :ensure_ids
+  before_validation :apply_default_allowed_hours
+  before_validation :apply_default_publish_interval
   before_validation :normalize_allowed_hours
   before_validation :normalize_irrigation_line
   validate :allowed_hours_are_valid
   validate :irrigation_line_is_valid
+  validates :publish_interval_ms, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
   after_commit :enqueue_config_publish, on: :create
   after_commit :enqueue_config_publish_if_relevant_update, on: :update
   after_commit :enqueue_node_config_publish_if_relevant_update, on: :update
@@ -21,10 +30,24 @@ class Zone < ApplicationRecord
   validates :irrigation_line, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
   validates :irrigation_line, uniqueness: true, allow_nil: true
 
+  def reading_frequency_hours
+    return nil if publish_interval_ms.blank?
+
+    publish_interval_ms / 3_600_000
+  end
+
   private
 
   def ensure_ids
     self.zone_id = "zone-#{SecureRandom.hex(3)}" if zone_id.blank?
+  end
+
+  def apply_default_allowed_hours
+    self.allowed_hours = DEFAULT_ALLOWED_HOURS if allowed_hours.nil?
+  end
+
+  def apply_default_publish_interval
+    self.publish_interval_ms = DEFAULT_PUBLISH_INTERVAL_MS if publish_interval_ms.nil?
   end
 
   def normalize_allowed_hours
@@ -107,6 +130,7 @@ class Zone < ApplicationRecord
     return unless saved_change_to_zone_id? ||
                   saved_change_to_crop_profile_id? ||
                   saved_change_to_active? ||
+                  saved_change_to_publish_interval_ms? ||
                   saved_change_to_allowed_hours? ||
                   saved_change_to_irrigation_line?
 
@@ -117,6 +141,7 @@ class Zone < ApplicationRecord
     return unless saved_change_to_zone_id? ||
                   saved_change_to_crop_profile_id? ||
                   saved_change_to_active? ||
+                  saved_change_to_publish_interval_ms? ||
                   saved_change_to_allowed_hours? ||
                   saved_change_to_irrigation_line?
 

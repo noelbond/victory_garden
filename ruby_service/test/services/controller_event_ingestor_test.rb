@@ -104,6 +104,21 @@ class ControllerEventIngestorTest < ActiveSupport::TestCase
     assert_match "Unknown zone_id", error.message
   end
 
+  test "blank reason defaults to below_dry_threshold" do
+    payload = {
+      "zone_id" => "zone1",
+      "timestamp" => "2026-03-31T20:00:00Z",
+      "action" => "water",
+      "runtime_seconds" => 45,
+      "idempotency_key" => "zone1-20260331T200000Z-reason-default",
+      "reason" => nil
+    }
+
+    event = ControllerEventIngestor.new(payload).call
+
+    assert_equal "below_dry_threshold", event.reason
+  end
+
   test "rejects non-integer runtime_seconds values" do
     payload = {
       "zone_id" => "zone1",

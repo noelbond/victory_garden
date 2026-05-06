@@ -52,6 +52,36 @@ module PayloadContracts
 
       assert_match("unknown keys", error.message)
     end
+
+    test "rejects payload missing required keys" do
+      PayloadContracts::NodeState::REQUIRED_KEYS.each do |key|
+        payload = load_fixture("node-state-v1.json").except(key)
+
+        error = assert_raises(ArgumentError) { NodeState.normalize!(payload) }
+
+        assert_match("missing required key: #{key}", error.message)
+      end
+    end
+
+    test "rejects unsupported schema_version" do
+      payload = load_fixture("node-state-v1.json").merge("schema_version" => "node-state/v99")
+
+      error = assert_raises(ArgumentError) { NodeState.normalize!(payload) }
+
+      assert_match("unsupported schema_version", error.message)
+    end
+
+    test "rejects invalid iso8601 timestamp" do
+      payload = load_fixture("node-state-v1.json").merge("timestamp" => "not-a-date")
+
+      assert_raises(ArgumentError) { NodeState.normalize!(payload) }
+    end
+
+    test "rejects non-hash payload" do
+      error = assert_raises(ArgumentError) { NodeState.normalize!([1, 2, 3]) }
+
+      assert_match("payload must be a JSON object", error.message)
+    end
   end
 end
 

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_04_22_190000) do
+ActiveRecord::Schema[8.0].define(version: 2026_05_06_143000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -93,6 +93,8 @@ ActiveRecord::Schema[8.0].define(version: 2026_04_22_190000) do
     t.datetime "config_published_at"
     t.datetime "config_acknowledged_at"
     t.text "config_error"
+    t.integer "moisture_raw_dry"
+    t.integer "moisture_raw_wet"
     t.index ["node_id"], name: "index_nodes_on_node_id", unique: true
     t.index ["zone_id"], name: "index_nodes_on_zone_id"
   end
@@ -146,6 +148,9 @@ ActiveRecord::Schema[8.0].define(version: 2026_04_22_190000) do
     t.datetime "updated_at", null: false
     t.string "name"
     t.integer "irrigation_line"
+    t.integer "publish_interval_ms", default: 3600000, null: false
+    t.integer "moisture_raw_dry"
+    t.integer "moisture_raw_wet"
     t.index ["crop_profile_id"], name: "index_zones_on_crop_profile_id"
     t.index ["irrigation_line"], name: "index_zones_on_irrigation_line", unique: true, where: "(irrigation_line IS NOT NULL)"
     t.index ["zone_id"], name: "index_zones_on_zone_id", unique: true

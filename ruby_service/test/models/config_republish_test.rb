@@ -18,7 +18,15 @@ class ConfigRepublishTest < ActiveSupport::TestCase
     zone = create(:zone)
 
     assert_enqueued_with(job: ConfigPublishJob) do
-      zone.update!(allowed_hours: { "start_hour" => "6", "end_hour" => "20" })
+      zone.update!(allowed_hours: { "start_hour" => "7", "end_hour" => "19" })
+    end
+  end
+
+  test "zone update enqueues config republish for reading frequency changes" do
+    zone = create(:zone)
+
+    assert_enqueued_with(job: ConfigPublishJob) do
+      zone.update!(publish_interval_ms: 300_000)
     end
   end
 

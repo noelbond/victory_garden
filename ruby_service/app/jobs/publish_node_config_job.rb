@@ -27,6 +27,10 @@ class PublishNodeConfigJob < ApplicationJob
 
     if node.zone.present?
       crop = node.zone.crop_profile
+      sensor_payload = {}
+      sensor_payload[:moisture_raw_dry] = node.moisture_raw_dry if node.moisture_raw_dry.present?
+      sensor_payload[:moisture_raw_wet] = node.moisture_raw_wet if node.moisture_raw_wet.present?
+
       {
         schema_version: "node-config/v1",
         config_version: issued_at,
@@ -36,7 +40,8 @@ class PublishNodeConfigJob < ApplicationJob
         zone: {
           zone_id: node.zone.zone_id,
           active: node.zone.active,
-          allowed_hours: node.zone.allowed_hours
+          allowed_hours: node.zone.allowed_hours,
+          publish_interval_ms: node.zone.publish_interval_ms
         },
         crop: {
           crop_id: crop.crop_id,
@@ -46,7 +51,8 @@ class PublishNodeConfigJob < ApplicationJob
           daily_max_runtime_sec: crop.daily_max_runtime_sec,
           climate_preference: crop.climate_preference,
           time_to_harvest_days: crop.time_to_harvest_days
-        }
+        },
+        sensor: sensor_payload
       }
     else
       {

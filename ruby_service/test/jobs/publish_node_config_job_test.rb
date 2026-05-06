@@ -10,8 +10,19 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
   end
 
   test "publishes assigned node config and marks node pending" do
-    zone = create(:zone, zone_id: "zone1", allowed_hours: { "start_hour" => 6, "end_hour" => 20 })
-    node = Node.create!(node_id: "pico-zone1", zone: zone, last_seen_at: Time.current)
+    zone = create(
+      :zone,
+      zone_id: "zone1",
+      allowed_hours: { "start_hour" => 6, "end_hour" => 20 },
+      publish_interval_ms: 300_000
+    )
+    node = Node.create!(
+      node_id: "pico-zone1",
+      zone: zone,
+      last_seen_at: Time.current,
+      moisture_raw_dry: 552,
+      moisture_raw_wet: 943
+    )
     published = []
 
     freeze_time do
@@ -26,7 +37,10 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
     assert_equal true, payload[:assigned]
     assert_equal zone.zone_id, payload.dig(:zone, :zone_id)
     assert_equal zone.allowed_hours, payload.dig(:zone, :allowed_hours)
+    assert_equal zone.publish_interval_ms, payload.dig(:zone, :publish_interval_ms)
     assert_equal zone.crop_profile.crop_id, payload.dig(:crop, :crop_id)
+    assert_equal 552, payload.dig(:sensor, :moisture_raw_dry)
+    assert_equal 943, payload.dig(:sensor, :moisture_raw_wet)
     assert_equal "pending", node.config_status
     assert_equal payload[:config_version], node.config_version
     assert_equal payload.deep_stringify_keys, node.desired_config

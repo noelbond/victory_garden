@@ -62,6 +62,40 @@ class MqttConsumerTest < ActiveSupport::TestCase
     assert_equal "node-1", enqueued.first["node_id"]
   end
 
+  test "actuator status topic is routed to actuator status ingest job" do
+    consumer = MqttConsumer.new
+    payload = { zone_id: "zone1", state: "COMPLETED", timestamp: "2026-04-06T18:00:00Z" }.to_json
+    enqueued = []
+    original = ActuatorStatusIngestJob.method(:perform_later)
+
+    ActuatorStatusIngestJob.define_singleton_method(:perform_later, ->(data) { enqueued << data })
+    begin
+      consumer.send(:handle_message, "greenhouse/zones/zone1/actuator/status", payload)
+    ensure
+      ActuatorStatusIngestJob.define_singleton_method(:perform_later, &original)
+    end
+
+    assert_equal 1, enqueued.length
+    assert_equal "COMPLETED", enqueued.first["state"]
+  end
+
+  test "node config ack topic is routed to node config ack ingest job" do
+    consumer = MqttConsumer.new
+    payload = { node_id: "pico-w-zone1", status: "applied", config_version: "abc123" }.to_json
+    enqueued = []
+    original = NodeConfigAckIngestJob.method(:perform_later)
+
+    NodeConfigAckIngestJob.define_singleton_method(:perform_later, ->(data) { enqueued << data })
+    begin
+      consumer.send(:handle_message, "greenhouse/nodes/pico-w-zone1/config_ack", payload)
+    ensure
+      NodeConfigAckIngestJob.define_singleton_method(:perform_later, &original)
+    end
+
+    assert_equal 1, enqueued.length
+    assert_equal "pico-w-zone1", enqueued.first["node_id"]
+  end
+
   test "controller events are deduped by payload within the dedupe window" do
     now = 100.0
     consumer = MqttConsumer.new(dedupe_window_seconds: 60, monotonic_clock: -> { now })

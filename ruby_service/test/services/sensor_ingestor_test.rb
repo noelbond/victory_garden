@@ -136,6 +136,28 @@ class SensorIngestorTest < ActiveSupport::TestCase
     assert node.last_seen_at > reading.recorded_at
   end
 
+  test "uses DB-assigned zone even when node reports a different zone_id in payload" do
+    other_zone = create(:zone, zone_id: "zone2", name: "Zone 2")
+    Node.create!(
+      node_id: "mkr1010-zone1",
+      zone: @zone,
+      last_seen_at: 1.hour.ago,
+      config_status: "applied"
+    )
+
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => "mkr1010-zone1",
+      "zone_id" => other_zone.zone_id,
+      "timestamp" => Time.current.utc.iso8601
+    )
+
+    SensorIngestor.new(payload).call
+
+    reading = SensorReading.order(:created_at).last
+    assert_equal @zone, reading.zone, "reading should be filed under the DB-assigned zone, not the payload zone_id"
+    assert_equal other_zone.zone_id, Node.find_by!(node_id: "mkr1010-zone1").reported_zone_id
+  end
+
   test "does not move node last_seen_at backwards when an older reading arrives" do
     recent_seen_at = 2.minutes.ago.utc
     Node.create!(
