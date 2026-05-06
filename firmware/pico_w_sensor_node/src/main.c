@@ -1,6 +1,7 @@
 #include <stdio.h>
 
 #include "config.h"
+#include "hardware/watchdog.h"
 #include "mqtt_node.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
@@ -120,6 +121,13 @@ int main(void) {
             next_publish_attempt_at = get_absolute_time();
             canary_published = false;
             initial_synced_publish_pending = true;
+        }
+
+        if (mqtt_node_take_reboot_request(&node)) {
+            printf("[main] reboot requested\n");
+            stdio_flush();
+            sleep_ms(100);
+            watchdog_reboot(0, 0, 100);
         }
 
         if (mqtt_node_is_connected(&node) && !canary_published) {

@@ -51,6 +51,31 @@ class ActuatorCommandTimeoutJobTest < ActiveSupport::TestCase
     assert_equal "completed", event.reload.status
   end
 
+  test "does nothing for other terminal statuses" do
+    zone = create(:zone)
+
+    %w[fault stopped timeout].each do |terminal_status|
+      event = WateringEvent.create!(
+        zone: zone,
+        command: "start_watering",
+        runtime_seconds: 45,
+        reason: "manual_trigger",
+        issued_at: Time.current,
+        idempotency_key: "zone1-timeout-terminal-#{terminal_status}",
+        status: terminal_status
+      )
+
+      assert_no_difference -> { Fault.count } do
+        ActuatorCommandTimeoutJob.perform_now(
+          idempotency_key: event.idempotency_key,
+          timeout_seconds: 75
+        )
+      end
+
+      assert_equal terminal_status, event.reload.status
+    end
+  end
+
   test "does nothing when the watering event cannot be found" do
     assert_no_difference -> { Fault.count } do
       ActuatorCommandTimeoutJob.perform_now(

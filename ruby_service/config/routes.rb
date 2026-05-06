@@ -4,6 +4,7 @@ Rails.application.routes.draw do
   root "zones#index"
   resource :health, only: [:show], controller: :health
   resource :onboarding, only: [:show], controller: :onboarding
+  get "zones/:id/nodes", to: "zones#nodes", as: :zone_nodes
 
   resources :zones do
     member do
@@ -19,7 +20,10 @@ Rails.application.routes.draw do
       patch :claim
       patch :unclaim
       post :publish_config
+      post :request_reading
+      post :reboot
       patch :crop_profile
+      patch :update_calibration
     end
   end
   resource :settings, only: [:show, :update]

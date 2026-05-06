@@ -56,6 +56,7 @@ typedef struct {
     bool pending_publish_request;
     bool publish_request_needs_command_clear;
     bool pending_config_apply;
+    bool pending_reboot;
 } mqtt_runtime_t;
 
 static mqtt_runtime_t g_runtime;
@@ -554,10 +555,16 @@ static void mqtt_state_publish_cb(void *arg, err_t err) {
 static void handle_command_message(mqtt_node_t *node, const char *payload) {
     char command[32] = {0};
     char command_id[64] = {0};
+    char target_node_id[VG_MAX_NODE_ID_LEN] = {0};
+    bool targeted = extract_json_string(payload, "node_id", target_node_id, sizeof(target_node_id));
 
     if (!extract_json_string(payload, "command", command, sizeof(command)) ||
         !extract_json_string(payload, "command_id", command_id, sizeof(command_id))) {
         set_error(node, "invalid command payload");
+        return;
+    }
+
+    if (targeted && target_node_id[0] != '\0' && strcmp(target_node_id, node->config->node_id) != 0) {
         return;
     }
 
@@ -568,6 +575,13 @@ static void handle_command_message(mqtt_node_t *node, const char *payload) {
         g_runtime.pending_command_ack = true;
         g_runtime.pending_publish_request = true;
         g_runtime.publish_request_needs_command_clear = true;
+        set_error(node, "none");
+    } else if (strcmp(command, "reboot") == 0) {
+        snprintf(g_runtime.pending_command, sizeof(g_runtime.pending_command), "%s", command);
+        snprintf(g_runtime.pending_command_id, sizeof(g_runtime.pending_command_id), "%s", command_id);
+        snprintf(g_runtime.pending_command_status, sizeof(g_runtime.pending_command_status), "%s", "acknowledged");
+        g_runtime.pending_command_ack = true;
+        g_runtime.pending_reboot = true;
         set_error(node, "none");
     } else {
         snprintf(g_runtime.pending_command, sizeof(g_runtime.pending_command), "%s", command);
@@ -791,6 +805,11 @@ static void mqtt_flush_deferred_actions(mqtt_node_t *node) {
         node->publish_requested = true;
         g_runtime.pending_publish_request = false;
     }
+
+    if (g_runtime.pending_reboot && !g_runtime.pending_command_ack) {
+        node->reboot_requested = true;
+        g_runtime.pending_reboot = false;
+    }
 }
 
 void mqtt_node_poll(mqtt_node_t *node) {
@@ -910,6 +929,12 @@ bool mqtt_node_take_publish_request(mqtt_node_t *node) {
 bool mqtt_node_take_reconnect_request(mqtt_node_t *node) {
     bool requested = node->config_changed_requires_reconnect;
     node->config_changed_requires_reconnect = false;
+    return requested;
+}
+
+bool mqtt_node_take_reboot_request(mqtt_node_t *node) {
+    bool requested = node->reboot_requested;
+    node->reboot_requested = false;
     return requested;
 }
 

@@ -10,15 +10,23 @@ module MqttClient
     publish(actuator_command_topic(zone_id), command)
   end
 
-  def request_reading(zone_id:, command_id:)
-    publish(
-      "greenhouse/zones/#{zone_id}/command",
-      {
-        schema_version: "node-command/v1",
-        command: "request_reading",
-        command_id: command_id
-      },
+  def request_reading(zone_id:, command_id:, node_id: nil)
+    publish_node_command(
+      zone_id: zone_id,
+      command: "request_reading",
+      command_id: command_id,
+      node_id: node_id,
       retain: true
+    )
+  end
+
+  def reboot_node(zone_id:, command_id:, node_id:)
+    publish_node_command(
+      zone_id: zone_id,
+      command: "reboot",
+      command_id: command_id,
+      node_id: node_id,
+      retain: false
     )
   end
 
@@ -38,6 +46,17 @@ module MqttClient
     MQTT::Client.connect(mqtt_options) do |c|
       c.publish(topic, payload.to_json, retain)
     end
+  end
+
+  def publish_node_command(zone_id:, command:, command_id:, node_id: nil, retain: false)
+    payload = {
+      schema_version: "node-command/v1",
+      command: command,
+      command_id: command_id
+    }
+    payload[:node_id] = node_id if node_id.present?
+
+    publish("greenhouse/zones/#{zone_id}/command", payload, retain: retain)
   end
 
   def mqtt_options
