@@ -138,6 +138,8 @@ typedef struct {
 void node_config_load(node_config_t *config);
 bool node_config_save(const node_config_t *config, char *error, size_t error_size);
 void node_config_reset_defaults(node_config_t *config);
+bool node_config_requires_provisioning(const node_config_t *config);
+bool node_config_apply_provision_json(node_config_t *config, const char *payload, char *error, size_t error_size);
 bool node_config_apply_json(
     node_config_t *config,
     const char *payload,

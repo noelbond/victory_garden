@@ -1,28 +1,235 @@
+<%
+  base_params = request.query_parameters.deep_symbolize_keys.except(:format)
+  persistent_context = base_params.slice(:zone_id, :columns, :per_page)
+  sort_params_for = lambda do |column|
+    base_params.merge(sort: column, direction: next_sort_direction_for(column)).except(:page)
+  end
+  page_params_for = lambda do |page|
+    base_params.merge(page: page)
+  end
+  preset_params_for = lambda do |preset|
+    persistent_context.merge(preset[:params])
+  end
+  export_csv_params = base_params.merge(format: :csv)
+  table_column_widths = {
+    "issued_at" => "210px",
+    "zone" => "190px",
+    "command" => "180px",
+    "runtime_seconds" => "130px",
+    "reason" => "200px",
+    "status" => "140px"
+  }
+  column_value_for = lambda do |event, column|
+    case column
+    when "issued_at"
+      event.issued_at.utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    when "zone"
+      event.zone&.name.presence || event.zone&.zone_id || "—"
+    when "command"
+      event.command
+    when "runtime_seconds"
+      event.runtime_seconds || "—"
+    when "reason"
+      event.reason.presence || "—"
+    when "status"
+      event.status || "—"
+    else
+      "—"
+    end
+  end
+%>
+
 <div class="page-header">
-  <h1 class="page-title">Watering Events</h1>
+  <div>
+    <h1 class="page-title">Watering Events</h1>
+    <div class="muted">
+      <%= @total_events %> event<%= "s" unless @total_events == 1 %>
+      • <%= @from.utc.strftime("%Y-%m-%d %H:%M UTC") %> to <%= @to.utc.strftime("%Y-%m-%d %H:%M UTC") %>
+      • <%= @active_filter_count %> active filter<%= "s" unless @active_filter_count == 1 %>
+    </div>
+  </div>
+  <div class="dashboard-actions">
+    <%= link_to "Clear Filters", watering_events_path, class: "btn light" %>
+  </div>
 </div>
 
-<table class="table">
-  <thead>
-    <tr>
-      <th>Zone</th>
-      <th>Command</th>
-      <th>Runtime (s)</th>
-      <th>Reason</th>
-      <th>Status</th>
-      <th>Issued At</th>
-    </tr>
-  </thead>
-  <tbody>
-    <% @watering_events.each do |event| %>
-      <tr>
-        <td><%= event.zone.zone_id %></td>
-        <td><%= event.command %></td>
-        <td><%= event.runtime_seconds || "—" %></td>
-        <td><%= event.reason || "—" %></td>
-        <td><%= event.status || "—" %></td>
-        <td><%= event.issued_at %></td>
-      </tr>
-    <% end %>
-  </tbody>
-</table>
+<div class="reading-history-layout">
+  <details class="card reading-sidebar reading-sidebar-shell" data-reading-history-filters-shell open>
+    <summary class="reading-sidebar-toggle">Filters</summary>
+    <div class="reading-sidebar-inner">
+      <div class="reading-sidebar-header">
+        <h3>Filters</h3>
+        <div class="muted">Filter watering history by zone, runtime, status, and reason.</div>
+      </div>
+
+      <div class="reading-preset-strip">
+        <% @filter_presets.each do |preset| %>
+          <%= link_to preset[:label], watering_events_path(preset_params_for.call(preset)), class: "reading-preset-chip" %>
+        <% end %>
+      </div>
+
+      <%= form_with url: watering_events_path, method: :get, local: true do %>
+        <div class="field">
+          <label for="timeframe">Timeframe</label>
+          <%= select_tag :timeframe,
+            options_for_select(WateringEventsController::TIMEFRAME_OPTIONS.map { |value, label| [label, value] }, @timeframe),
+            data: { reading_history_timeframe: true } %>
+        </div>
+
+        <div class="form-grid" data-reading-history-custom-range <%= "hidden" unless @timeframe == "custom" %>>
+          <div class="field">
+            <label for="from">From</label>
+            <%= date_field_tag :from, @from.to_date.iso8601 %>
+          </div>
+          <div class="field">
+            <label for="to">To</label>
+            <%= date_field_tag :to, @to.to_date.iso8601 %>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="zone_id">Zone</label>
+          <%= select_tag :zone_id,
+            options_for_select([["All Zones", nil]] + @zones.map { |zone| [zone.name.presence || zone.zone_id, zone.id] }, @selected_zone&.id),
+            data: { reading_history_auto_submit: true } %>
+        </div>
+
+        <div class="field">
+          <label for="status">Status</label>
+          <%= select_tag :status, options_for_select([["Any Status", nil]] + @status_options.map { |value| [value.titleize, value] }, params[:status]) %>
+        </div>
+
+        <div class="field">
+          <label for="command">Command</label>
+          <%= select_tag :command, options_for_select([["Any Command", nil]] + @command_options.map { |value| [value.titleize, value] }, params[:command]) %>
+        </div>
+
+        <div class="field">
+          <label for="reason">Watering Reason</label>
+          <%= select_tag :reason, options_for_select([["Any Watering Reason", nil]] + @reason_options.map { |value| [value, value] }, params[:reason]) %>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label for="runtime_min">Min Runtime (s)</label>
+            <%= number_field_tag :runtime_min, params[:runtime_min], step: 1, min: 0 %>
+          </div>
+          <div class="field">
+            <label for="runtime_max">Max Runtime (s)</label>
+            <%= number_field_tag :runtime_max, params[:runtime_max], step: 1, min: 0 %>
+          </div>
+        </div>
+
+        <details class="reading-columns-picker">
+          <summary>Columns</summary>
+          <div class="reading-columns-grid">
+            <% WateringEventsController::TABLE_COLUMNS.each do |column, label| %>
+              <label class="reading-column-option">
+                <%= check_box_tag "columns[]", column, @selected_columns.include?(column) %>
+                <span><%= label %></span>
+              </label>
+            <% end %>
+          </div>
+        </details>
+
+        <div class="field">
+          <label for="per_page">Results Per Page</label>
+          <%= select_tag :per_page, options_for_select(WateringEventsController::PER_PAGE_OPTIONS.map { |value| ["#{value} per page", value] }, @per_page) %>
+        </div>
+
+        <div class="reading-sidebar-actions">
+          <%= submit_tag "Apply Filters", class: "btn" %>
+          <%= link_to "Reset", watering_events_path, class: "btn light" %>
+        </div>
+      <% end %>
+    </div>
+  </details>
+
+  <div class="reading-history-content">
+    <div class="health-metrics">
+      <div class="card metric-card metric-ok">
+        <div class="metric-label">Visible Events</div>
+        <div class="metric-value"><%= @total_events %></div>
+        <div class="muted">after current filters</div>
+      </div>
+      <div class="card metric-card <%= @completed_count.positive? ? 'metric-ok' : 'metric-warn' %>">
+        <div class="metric-label">Completed Events</div>
+        <div class="metric-value"><%= @completed_count %></div>
+        <div class="muted">completed watering runs</div>
+      </div>
+      <div class="card metric-card <%= @fault_count.positive? ? 'metric-alert' : 'metric-ok' %>">
+        <div class="metric-label">Fault Events</div>
+        <div class="metric-value"><%= @fault_count %></div>
+        <div class="muted">faulted watering runs</div>
+      </div>
+      <div class="card metric-card metric-ok">
+        <div class="metric-label">Selected Zone</div>
+        <div class="metric-value"><%= @selected_zone&.name.presence || @selected_zone&.zone_id || "All" %></div>
+        <div class="muted"><%= @page %> / <%= @total_pages %> pages</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="zone-section-header">
+        <div>
+          <h3>Watering Results</h3>
+          <div class="muted">Click a column header to sort ascending, then descending on the next click.</div>
+        </div>
+        <div class="reading-results-actions">
+          <%= link_to "Export CSV", watering_events_path(export_csv_params), class: "btn light" %>
+        </div>
+      </div>
+
+      <% if @watering_events.any? %>
+        <div class="health-table-wrap">
+          <table class="health-table reading-results-table">
+            <colgroup>
+              <% table_columns.each do |column, _label| %>
+                <col style="width: <%= table_column_widths.fetch(column, '160px') %>;">
+              <% end %>
+            </colgroup>
+            <thead>
+              <tr>
+                <% table_columns.each do |column, label| %>
+                  <th>
+                    <%= link_to watering_events_path(sort_params_for.call(column)), class: "table-sort-link" do %>
+                      <span><%= label %></span>
+                      <% if sort_column == column %>
+                        <span class="table-sort-indicator"><%= sort_direction == "asc" ? "↑" : "↓" %></span>
+                      <% end %>
+                    <% end %>
+                  </th>
+                <% end %>
+              </tr>
+            </thead>
+            <tbody>
+              <% @watering_events.each do |event| %>
+                <tr>
+                  <% table_columns.each do |column, _label| %>
+                    <td><%= column_value_for.call(event, column) %></td>
+                  <% end %>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="reading-pagination">
+          <div class="muted">
+            Showing <%= ((@page - 1) * @per_page) + 1 %> to <%= [@page * @per_page, @total_events].min %> of <%= @total_events %>
+          </div>
+          <div class="reading-pagination-actions">
+            <% if @page > 1 %>
+              <%= link_to "Previous", watering_events_path(page_params_for.call(@page - 1)), class: "btn light" %>
+            <% end %>
+            <% if @page < @total_pages %>
+              <%= link_to "Next", watering_events_path(page_params_for.call(@page + 1)), class: "btn light" %>
+            <% end %>
+          </div>
+        </div>
+      <% else %>
+        <p class="muted">No watering events matched the current filter set.</p>
+      <% end %>
+    </div>
+  </div>
+</div>

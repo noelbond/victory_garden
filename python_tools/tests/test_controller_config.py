@@ -571,7 +571,6 @@ def test_system_config_update_subscribes_new_zone_topics():
         ),
     )
 
-    assert "greenhouse/zones/zone1/state" in client.subscriptions
     assert "greenhouse/zones/zone1/nodes/+/state" in client.subscriptions
 
 

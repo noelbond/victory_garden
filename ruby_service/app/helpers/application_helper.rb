@@ -2,15 +2,15 @@ module ApplicationHelper
   ZONE_NOTIFICATION_GUIDANCE = {
     "No fresh aggregate" => {
       description: "The zone does not have enough recent sensor data to compute a trustworthy moisture average.",
-      fix: "Check that each claimed node is powered on, assigned to this zone, and publishing recent readings."
+      fix: "Check that each assigned node is powered on, assigned to this zone, and publishing recent readings."
     },
     "Partial aggregate" => {
-      description: "Some sensor data is recent, but one or more claimed nodes are missing, stale, or not reporting moisture.",
+      description: "Some sensor data is recent, but one or more assigned nodes are missing, stale, or not reporting moisture.",
       fix: "Open Nodes for this zone, identify the missing or stale node, then restore power, connectivity, or sensor placement for that node."
     },
     "No readings" => {
       description: "This zone has not persisted any sensor reading yet, so the controller has nothing to evaluate.",
-      fix: "Confirm the sensor node is claimed to this zone and publish a fresh reading before relying on automatic watering."
+      fix: "Confirm the sensor node is assigned to this zone and publish a fresh reading before relying on automatic watering."
     },
     "Stale reading" => {
       description: "The latest reading is too old to trust for current watering decisions.",
@@ -31,8 +31,8 @@ module ApplicationHelper
       description: "One or more nodes have not checked in recently, so the system cannot trust their current online state.",
       fix: "Check power, Wi-Fi connectivity, and recent node activity, then request a fresh reading or reboot the affected node."
     },
-    "Stale Readings" => {
-      description: "One or more claimed zones do not have a recent sensor reading available for current automation decisions.",
+    "Stale Zone Readings" => {
+      description: "One or more assigned zones do not have a recent sensor reading available for current automation decisions.",
       fix: "Open the affected node or zone, confirm the sensor is still publishing, and request a fresh reading if needed."
     },
     "Config Errors" => {
@@ -144,7 +144,7 @@ module ApplicationHelper
     else
       {
         description: "No config status has been recorded for this node yet.",
-        fix: "Republish config after the node is claimed and online."
+        fix: "Republish config after the node is assigned and online."
       }
     end
   end
@@ -159,11 +159,9 @@ module ApplicationHelper
         fix: "No action needed."
       }
     else
-      issue_guidance_for(kind: :runtime_error, key: last_error, detail: last_error).merge(
-        fix: issue_guidance_for(kind: :runtime_error, key: last_error, detail: last_error)[:fix] == DEFAULT_GUIDANCE[:fix] ?
-          "Inspect the node details, confirm power and connectivity, then request a fresh reading or reboot the node if the error persists." :
-          issue_guidance_for(kind: :runtime_error, key: last_error, detail: last_error)[:fix]
-      )
+      guidance = issue_guidance_for(kind: :runtime_error, key: last_error, detail: last_error)
+      generic_fix = guidance[:fix] == DEFAULT_GUIDANCE[:fix]
+      guidance.merge(fix: generic_fix ? "Inspect the node details, confirm power and connectivity, then request a fresh reading or reboot the node if the error persists." : guidance[:fix])
     end
   end
 
@@ -171,11 +169,9 @@ module ApplicationHelper
     last_error = reading&.last_error.to_s
     return { description: "The reading does not report an error.", fix: "No action needed." } if last_error.blank? || last_error == "none"
 
-    issue_guidance_for(kind: :runtime_error, key: last_error, detail: last_error).merge(
-      fix: issue_guidance_for(kind: :runtime_error, key: last_error, detail: last_error)[:fix] == DEFAULT_GUIDANCE[:fix] ?
-        "Check the node that produced this reading, then compare the next fresh reading against the expected moisture condition." :
-        issue_guidance_for(kind: :runtime_error, key: last_error, detail: last_error)[:fix]
-    )
+    guidance = issue_guidance_for(kind: :runtime_error, key: last_error, detail: last_error)
+    generic_fix = guidance[:fix] == DEFAULT_GUIDANCE[:fix]
+    guidance.merge(fix: generic_fix ? "Check the node that produced this reading, then compare the next fresh reading against the expected moisture condition." : guidance[:fix])
   end
 
   def actuator_fault_guidance(status)
@@ -183,5 +179,15 @@ module ApplicationHelper
     return { description: "The actuator status does not report a fault code.", fix: "No action needed." } if fault_code.blank?
 
     issue_guidance_for(kind: :fault_code, key: fault_code, detail: status&.fault_detail)
+  end
+
+  def freshness_label(state)
+    case state.to_s
+    when "ok" then "Fresh"
+    when "stale" then "Stale"
+    when "offline" then "Offline"
+    else
+      state.to_s.humanize
+    end
   end
 end

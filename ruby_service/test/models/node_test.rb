@@ -116,33 +116,33 @@ class NodeTest < ActiveSupport::TestCase
     assert_includes node.errors[:base], "moisture calibration dry and wet raw values cannot be the same"
   end
 
-  test "unclaimed scope returns nodes without a zone" do
+  test "unassigned scope returns nodes without a zone" do
     zone = create(:zone)
-    claimed = Node.create!(valid_attrs.merge(node_id: "claimed-node", zone: zone))
-    unclaimed = Node.create!(valid_attrs.merge(node_id: "unclaimed-node"))
+    assigned = Node.create!(valid_attrs.merge(node_id: "assigned-node", zone: zone))
+    unassigned = Node.create!(valid_attrs.merge(node_id: "unassigned-node"))
 
-    assert_includes Node.unclaimed, unclaimed
-    assert_not_includes Node.unclaimed, claimed
+    assert_includes Node.unassigned, unassigned
+    assert_not_includes Node.unassigned, assigned
   end
 
-  test "claimed scope returns nodes with a zone" do
+  test "assigned scope returns nodes with a zone" do
     zone = create(:zone)
-    claimed = Node.create!(valid_attrs.merge(node_id: "claimed-node", zone: zone))
-    unclaimed = Node.create!(valid_attrs.merge(node_id: "unclaimed-node"))
+    assigned = Node.create!(valid_attrs.merge(node_id: "assigned-node", zone: zone))
+    unassigned = Node.create!(valid_attrs.merge(node_id: "unassigned-node"))
 
-    assert_includes Node.claimed, claimed
-    assert_not_includes Node.claimed, unclaimed
+    assert_includes Node.assigned, assigned
+    assert_not_includes Node.assigned, unassigned
   end
 
-  test "claimed? returns true when zone is assigned" do
+  test "assigned? returns true when zone is assigned" do
     zone = create(:zone)
     node = Node.create!(valid_attrs.merge(zone: zone))
-    assert node.claimed?
+    assert node.assigned?
   end
 
-  test "claimed? returns false when no zone is assigned" do
+  test "assigned? returns false when no zone is assigned" do
     node = Node.create!(valid_attrs)
-    assert_not node.claimed?
+    assert_not node.assigned?
   end
 
   test "enqueues config publish when zone assignment changes" do
@@ -154,7 +154,7 @@ class NodeTest < ActiveSupport::TestCase
     end
   end
 
-  test "enqueues node config publish when claimed node calibration changes" do
+  test "enqueues node config publish when assigned node calibration changes" do
     zone = create(:zone)
     node = Node.create!(valid_attrs.merge(zone: zone))
 
@@ -163,7 +163,7 @@ class NodeTest < ActiveSupport::TestCase
     end
   end
 
-  test "does not enqueue node config publish when unclaimed node calibration changes" do
+  test "does not enqueue node config publish when unassigned node calibration changes" do
     node = Node.create!(valid_attrs)
 
     assert_no_enqueued_jobs only: PublishNodeConfigJob do
@@ -171,7 +171,7 @@ class NodeTest < ActiveSupport::TestCase
     end
   end
 
-  test "enqueues config publish when a claimed node is destroyed" do
+  test "enqueues config publish when an assigned node is destroyed" do
     zone = create(:zone)
     node = Node.create!(valid_attrs.merge(zone: zone))
 
@@ -180,7 +180,7 @@ class NodeTest < ActiveSupport::TestCase
     end
   end
 
-  test "does not enqueue config publish when an unclaimed node is destroyed" do
+  test "does not enqueue config publish when an unassigned node is destroyed" do
     node = Node.create!(valid_attrs)
 
     assert_no_enqueued_jobs only: ConfigPublishJob do

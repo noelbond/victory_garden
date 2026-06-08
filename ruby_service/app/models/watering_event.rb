@@ -1,5 +1,8 @@
 class WateringEvent < ApplicationRecord
   STATUSES = %w[queued command_sent acknowledged running completed stopped fault timeout unknown].freeze
+  TERMINAL_STATUSES = %w[completed stopped fault timeout unknown].freeze
+  ACTIVE_START_STATUSES = %w[queued command_sent acknowledged running].freeze
+  ACTIVE_GUARD_LOOKBACK = 15.minutes
 
   belongs_to :zone
 
@@ -10,6 +13,11 @@ class WateringEvent < ApplicationRecord
   validates :runtime_seconds, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true
 
   validate :runtime_consistency
+
+  scope :active_start_commands, -> { where(command: "start_watering", status: ACTIVE_START_STATUSES) }
+  scope :blocking_start_commands, -> {
+    active_start_commands.where("issued_at >= ?", ACTIVE_GUARD_LOOKBACK.ago)
+  }
 
   private
 

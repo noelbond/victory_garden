@@ -2,7 +2,8 @@ require "test_helper"
 
 class ZonesDashboardTest < ActionDispatch::IntegrationTest
   test "root dashboard shows zone overview metrics and cards" do
-    zone = create(:zone, name: "Greenhouse Zone 1", active: true)
+    ConnectionSetting.create!(mqtt_host: "broker.local", mqtt_port: 1883, mqtt_username: "victory_garden", mqtt_password: "secret123", irrigation_line_count: 2)
+    zone = create(:zone, name: "Greenhouse Zone 1", active: true, irrigation_line: 1)
     Node.create!(
       node_id: "pico-w-zone1",
       zone: zone,
@@ -39,7 +40,7 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
       reason: "manual_trigger",
       issued_at: 1.minute.ago,
       idempotency_key: "zone1-1",
-      status: "running"
+      status: "completed"
     )
     Fault.create!(
       zone: zone,
@@ -52,7 +53,7 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_includes response.body, "Garden Dashboard"
-    assert_includes response.body, "Fresh Sensors"
+    assert_includes response.body, "Fresh Nodes"
     assert_includes response.body, "Watering Now"
     assert_includes response.body, "Open Fault Zones"
     assert_includes response.body, "Greenhouse Zone 1"
@@ -62,8 +63,9 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
   end
 
   test "root dashboard shows zone aggregate moisture and sensor coverage" do
+    ConnectionSetting.create!(mqtt_host: "broker.local", mqtt_port: 1883, mqtt_username: "victory_garden", mqtt_password: "secret123", irrigation_line_count: 2)
     crop = create(:crop_profile, dry_threshold: 35.0)
-    zone = create(:zone, name: "Aggregated Zone", crop_profile: crop)
+    zone = create(:zone, name: "Aggregated Zone", crop_profile: crop, irrigation_line: 1)
 
     %w[sensor-a sensor-b sensor-c sensor-d].each do |node_id|
       Node.create!(
@@ -99,11 +101,20 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
       moisture_percent: 90.0,
       raw_payload: {}
     )
+    WateringEvent.create!(
+      zone: zone,
+      command: "start_watering",
+      runtime_seconds: 30,
+      reason: "manual_trigger",
+      issued_at: 10.minutes.ago,
+      idempotency_key: "aggregated-zone-1",
+      status: "completed"
+    )
 
     get root_path
 
     assert_response :success
-    assert_includes response.body, "Fresh Sensors"
+    assert_includes response.body, "Fresh Nodes"
     assert_includes response.body, "Aggregated Zone"
     assert_includes response.body, "Zone Average"
     assert_includes response.body, "30.0%"

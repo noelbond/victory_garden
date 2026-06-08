@@ -2,7 +2,7 @@
 
 Victory Garden is an open-source automated watering platform for small gardens and greenhouse zones. The project combines:
 
-- Sensor node firmware for Arduino MKR WiFi 1010 and native Pico W hardware
+- Sensor node firmware for native Pico W hardware
 - A Python automatic controller and dedicated actuator-node firmware
 - A Rails control plane and UI for configuration, history, telemetry, and reporting
 
@@ -10,8 +10,8 @@ Victory Garden is an open-source automated watering platform for small gardens a
 
 Victory Garden uses one canonical node payload contract.
 
-- Contract reference: [`contracts/README.md`](/Users/noel/coding/python/victory_garden/contracts/README.md)
-- Shared example payloads: [`contracts/examples/`](/Users/noel/coding/python/victory_garden/contracts/examples)
+- Contract reference: [`contracts/README.md`](contracts/README.md)
+- Shared example payloads: [`contracts/examples/`](contracts/examples)
 
 The firmware, Python controller, tests, and docs should all be updated from the same contract fixtures instead of maintaining separate examples by hand.
 
@@ -31,23 +31,19 @@ The firmware, Python controller, tests, and docs should all be updated from the 
 
 ## Repository Layout
 
-- [`firmware/arduino/mkr1010_sensor_node/`](/Users/noel/coding/python/victory_garden/firmware/arduino/mkr1010_sensor_node)
-  Sensor node firmware and local config template
-- [`firmware/pico_w_sensor_node/`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node)
+- [`firmware/pico_w_sensor_node/`](firmware/pico_w_sensor_node)
   Native Pico W sensor node firmware
-- [`python_tools/`](/Users/noel/coding/python/victory_garden/python_tools)
+- [`python_tools/`](python_tools)
   Python controller, shared policy logic, tests, and simulation tools
-- [`ruby_service/`](/Users/noel/coding/python/victory_garden/ruby_service)
+- [`ruby_service/`](ruby_service)
   Rails UI, MQTT consumer, configuration publishing, and historical reporting
-- [`docs/`](/Users/noel/coding/python/victory_garden/docs)
+- [`docs/`](docs)
   Architecture, MQTT contract, diagrams, and planning notes
 
 ## Canonical MQTT Topics
 
 - `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
   Canonical retained node state payload with required control fields and optional nullable telemetry fields
-- `greenhouse/zones/{zone_id}/state`
-  Legacy retained node state payload accepted for compatibility
 - `greenhouse/zones/{zone_id}/command`
   Retained node command payload, including `request_reading`
 - `greenhouse/zones/{zone_id}/command_ack`
@@ -65,13 +61,13 @@ The firmware, Python controller, tests, and docs should all be updated from the 
 
 ## Authority Boundaries
 
-- PostgreSQL in Rails is the source of truth for crop profiles, zone definitions, node claims, watering history, and config sync status.
+- PostgreSQL in Rails is the source of truth for crop profiles, zone definitions, node assignments, watering history, and config sync status.
 - MQTT retained node state is the live transport and working state for nodes and the Python controller, not the long-term source of truth.
 - The actuator path is zone-scoped. Rails publishes to `greenhouse/zones/{zone_id}/actuator/command`, and the dedicated actuator Pico publishes results to `greenhouse/zones/{zone_id}/actuator/status`.
 - Python is the authoritative automatic actuator-command publisher in the deployed stack.
 - Rails remains the manual actuator-command publisher, persistence layer, and config authority.
 - The deployed Pi stack expects MQTT username/password auth on the local broker.
-- A node's DB claim is authoritative for routing. A node's reported `zone_id` is diagnostic only.
+- A node's DB assignment is authoritative for routing. A node's reported `zone_id` is diagnostic only.
 
 ## Implemented Crop Profiles
 
@@ -106,18 +102,18 @@ They are informed by crop care guidance, then tuned into normalized sensor perce
 
 ## Start Here
 
-- Architecture overview: [`docs/architecture.md`](/Users/noel/coding/python/victory_garden/docs/architecture.md)
-- Setup guide: [`docs/setup.md`](/Users/noel/coding/python/victory_garden/docs/setup.md)
-- Configuration reference: [`docs/configuration.md`](/Users/noel/coding/python/victory_garden/docs/configuration.md)
-- Calibration guide: [`docs/calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
-- Wiring guide: [`docs/wiring.md`](/Users/noel/coding/python/victory_garden/docs/wiring.md)
-- One-zone quick start: [`docs/quickstart.md`](/Users/noel/coding/python/victory_garden/docs/quickstart.md)
-- Seed data: [`docs/seed-data.md`](/Users/noel/coding/python/victory_garden/docs/seed-data.md)
-- Firmware setup: [`firmware/arduino/mkr1010_sensor_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/arduino/mkr1010_sensor_node/README.md)
-- Pico firmware setup: [`firmware/pico_w_sensor_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/README.md)
-- Python controller: [`python_tools/README.md`](/Users/noel/coding/python/victory_garden/python_tools/README.md)
-- Rails control plane: [`ruby_service/README.md`](/Users/noel/coding/python/victory_garden/ruby_service/README.md)
-- Pi deployment: [`deploy/README.md`](/Users/noel/coding/python/victory_garden/deploy/README.md)
+- Architecture overview: [`docs/architecture.md`](docs/architecture.md)
+- Setup guide: [`docs/setup.md`](docs/setup.md)
+- Logging guide: [`docs/logging.md`](docs/logging.md)
+- Configuration reference: [`docs/configuration.md`](docs/configuration.md)
+- Calibration guide: [`docs/calibration.md`](docs/calibration.md)
+- Wiring guide: [`docs/wiring.md`](docs/wiring.md)
+- One-zone quick start: [`docs/quickstart.md`](docs/quickstart.md)
+- Seed data: [`docs/seed-data.md`](docs/seed-data.md)
+- Pico firmware setup: [`firmware/pico_w_sensor_node/README.md`](firmware/pico_w_sensor_node/README.md)
+- Python controller: [`python_tools/README.md`](python_tools/README.md)
+- Rails control plane: [`ruby_service/README.md`](ruby_service/README.md)
+- Pi deployment: [`deploy/README.md`](deploy/README.md)
 
 ## Single-Pi Install
 

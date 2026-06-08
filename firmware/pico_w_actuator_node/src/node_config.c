@@ -37,6 +37,10 @@ static void set_error(char *error, size_t error_size, const char *message) {
     }
 }
 
+static bool string_is_placeholder(const char *value) {
+    return value && strncmp(value, "CHANGE_ME_", 10) == 0;
+}
+
 static bool decode_json_string(const char *start, char *out, size_t out_size, const char **end_out) {
     size_t out_len = 0;
     const char *cursor = start;
@@ -205,6 +209,74 @@ bool node_config_save(const node_config_t *config, char *error, size_t error_siz
         set_error(error, error_size, "flash verify failed");
         return false;
     }
+    return true;
+}
+
+bool node_config_requires_provisioning(const node_config_t *config) {
+    if (!config) {
+        return true;
+    }
+
+    return config->wifi_ssid[0] == '\0' ||
+           config->wifi_password[0] == '\0' ||
+           config->mqtt_host[0] == '\0' ||
+           config->node_id[0] == '\0' ||
+           config->zone_id[0] == '\0' ||
+           string_is_placeholder(config->wifi_ssid) ||
+           string_is_placeholder(config->wifi_password);
+}
+
+bool node_config_apply_provision_json(node_config_t *config, const char *payload, char *error, size_t error_size) {
+    if (!config || !payload) {
+        set_error(error, error_size, "missing provisioning payload");
+        return false;
+    }
+
+    node_config_t updated = *config;
+    char wifi_ssid[VG_MAX_SSID_LEN] = {0};
+    char wifi_password[VG_MAX_PASSWORD_LEN] = {0};
+    char mqtt_host[VG_MAX_HOST_LEN] = {0};
+    char mqtt_username[VG_MAX_MQTT_USERNAME_LEN] = {0};
+    char mqtt_password[VG_MAX_MQTT_PASSWORD_LEN] = {0};
+    char node_id[VG_MAX_NODE_ID_LEN] = {0};
+    char zone_id[VG_MAX_ZONE_ID_LEN] = {0};
+    int mqtt_port = 0;
+
+    if (!extract_json_string(payload, "wifi_ssid", wifi_ssid, sizeof(wifi_ssid)) ||
+        !extract_json_string(payload, "wifi_password", wifi_password, sizeof(wifi_password)) ||
+        !extract_json_string(payload, "mqtt_host", mqtt_host, sizeof(mqtt_host)) ||
+        !extract_json_string(payload, "node_id", node_id, sizeof(node_id)) ||
+        !extract_json_string(payload, "zone_id", zone_id, sizeof(zone_id)) ||
+        !extract_json_int(payload, "mqtt_port", &mqtt_port)) {
+        set_error(error, error_size, "required provisioning fields missing");
+        return false;
+    }
+
+    extract_json_string(payload, "mqtt_username", mqtt_username, sizeof(mqtt_username));
+    extract_json_string(payload, "mqtt_password", mqtt_password, sizeof(mqtt_password));
+
+    if (wifi_ssid[0] == '\0' || wifi_password[0] == '\0' || mqtt_host[0] == '\0' ||
+        node_id[0] == '\0' || zone_id[0] == '\0') {
+        set_error(error, error_size, "provisioning fields cannot be blank");
+        return false;
+    }
+
+    if (mqtt_port <= 0 || mqtt_port > 65535) {
+        set_error(error, error_size, "invalid mqtt_port");
+        return false;
+    }
+
+    safe_copy(updated.wifi_ssid, sizeof(updated.wifi_ssid), wifi_ssid);
+    safe_copy(updated.wifi_password, sizeof(updated.wifi_password), wifi_password);
+    safe_copy(updated.mqtt_host, sizeof(updated.mqtt_host), mqtt_host);
+    safe_copy(updated.mqtt_username, sizeof(updated.mqtt_username), mqtt_username);
+    safe_copy(updated.mqtt_password, sizeof(updated.mqtt_password), mqtt_password);
+    safe_copy(updated.node_id, sizeof(updated.node_id), node_id);
+    safe_copy(updated.zone_id, sizeof(updated.zone_id), zone_id);
+    updated.mqtt_port = (uint16_t)mqtt_port;
+    updated.assigned = true;
+
+    *config = updated;
     return true;
 }
 

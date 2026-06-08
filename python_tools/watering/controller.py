@@ -3,11 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import argparse
-import json
-import os
-import sys
-import threading
 import time
 from typing import Any
 
@@ -17,37 +12,57 @@ from watering.config import (
     SystemZoneConfig,
     ZoneConfig,
     load_crops,
-    load_system_config_payload,
     load_zones,
     validate_zone_crop_refs,
+)
+from watering.controller_cli import build_parser
+from watering.controller_mqtt import (
+    SYSTEM_CONFIG_TOPIC,
+    configure_mqtt_auth,
+    effective_zone_configs,
+    mqtt_reason_code_value,
+    on_message,
+    parse_sensor_message,
+    profile_for_zone,
+    publish_actuator_command,
+    publish_event,
+    publish_skip,
+    set_subscriber_context,
+    sync_zone_state_subscriptions,
+    update_system_config,
+)
+from watering.controller_runtime import (
+    CANONICAL_NODE_STATE_TOPIC,
+    CONTROLLER_HEALTH,
+    CONTROLLER_RUNTIME,
+    LIVE_CROPS,
+    LIVE_ZONES,
+    LATEST_STATE,
+    LATEST_ZONE_READINGS,
+    SUBSCRIBED_STATE_TOPICS,
+    ControllerRuntime,
+    controller_health_snapshot,
+    have_latest_state_for_any,
+    iso_now,
+    latest_reading,
+    latest_readings_for_zone,
+    live_config_snapshot,
+    load_controller_runtime,
+    new_controller_health,
+    new_zone_runtime,
+    save_controller_runtime,
+    serialize_controller_health,
+    serialize_controller_runtime,
+    store_latest_reading,
+    update_controller_health,
+    write_text_if_changed,
 )
 from watering.decision import decide_watering
 from watering.profiles import CropProfile
 from watering.schemas import SensorReading
 from watering.state import ZoneState
-from watering.state_store import (
-    atomic_write_text,
-    load_state_store_resilient,
-    quarantine_invalid_json_file,
-    serialize_state_store,
-)
+from watering.state_store import load_state_store_resilient, serialize_state_store
 from watering.structured_logging import log_event
-
-
-LATEST_STATE: dict[str, SensorReading] = {}
-LATEST_ZONE_READINGS: dict[str, dict[str, SensorReading]] = {}
-LIVE_CROPS: dict[str, CropProfile] = {}
-LIVE_ZONES: dict[str, SystemZoneConfig] = {}
-SYSTEM_CONFIG_TOPIC = "greenhouse/system/config/current"
-LIVE_CONFIG_LOCK = threading.RLock()
-LATEST_STATE_LOCK = threading.RLock()
-SUBSCRIPTION_LOCK = threading.RLock()
-SUBSCRIBED_STATE_TOPICS: set[str] = set()
-SUBSCRIBER_CLIENT: mqtt.Client | None = None
-SUBSCRIPTION_FALLBACK_ZONES: dict[str, ZoneConfig] = {}
-SUBSCRIPTION_ZONE_FILTER: set[str] | None = None
-CONTROLLER_HEALTH_LOCK = threading.RLock()
-CONTROLLER_HEALTH: dict[str, Any] = {}
 
 
 @dataclass(frozen=True)
@@ -60,250 +75,6 @@ class ZoneMoistureSnapshot:
     missing_node_ids: list[str]
     stale_node_ids: list[str]
     null_moisture_node_ids: list[str]
-
-
-def mqtt_reason_code_value(reason_code) -> int | str:
-    value = getattr(reason_code, "value", reason_code)
-    if isinstance(value, (int, float)):
-        return int(value)
-    return str(reason_code)
-
-
-def new_zone_runtime() -> dict[str, Any]:
-    return {
-        "last_processed_signature": None,
-        "last_watering_signature": None,
-        "last_watering_at": None,
-        "last_skip_signature": None,
-        "last_skip_reason": None,
-    }
-
-
-def iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def new_controller_health() -> dict[str, Any]:
-    return {
-        "component": "controller",
-        "status": "starting",
-        "updated_at": iso_now(),
-        "publisher_connected": False,
-        "subscriber_connected": False,
-        "startup_complete": False,
-        "last_sensor_message_at": None,
-        "last_sensor_zone_id": None,
-        "last_system_config_at": None,
-        "last_decision_at": None,
-        "last_decision_zone_id": None,
-        "last_decision_action": None,
-        "last_loop_at": None,
-        "last_error": None,
-    }
-
-
-def update_controller_health(**fields: Any) -> None:
-    with CONTROLLER_HEALTH_LOCK:
-        if not CONTROLLER_HEALTH:
-            CONTROLLER_HEALTH.update(new_controller_health())
-        CONTROLLER_HEALTH.update(fields)
-        CONTROLLER_HEALTH["updated_at"] = iso_now()
-
-
-def controller_health_snapshot() -> dict[str, Any]:
-    with CONTROLLER_HEALTH_LOCK:
-        if not CONTROLLER_HEALTH:
-            CONTROLLER_HEALTH.update(new_controller_health())
-        return dict(CONTROLLER_HEALTH)
-
-
-def serialize_controller_health(data: dict[str, Any]) -> str:
-    return json.dumps(data, indent=2, sort_keys=True)
-
-
-def serialize_controller_runtime(data: dict[str, Any]) -> str:
-    return json.dumps(data, indent=2, sort_keys=True)
-
-
-def write_text_if_changed(path: Path, text: str, previous: str | None) -> str:
-    if text == previous:
-        return previous if previous is not None else text
-    atomic_write_text(path, text)
-    return text
-
-
-def live_config_snapshot() -> tuple[dict[str, CropProfile], dict[str, SystemZoneConfig]]:
-    with LIVE_CONFIG_LOCK:
-        return dict(LIVE_CROPS), dict(LIVE_ZONES)
-
-
-def latest_reading(zone_id: str) -> SensorReading | None:
-    with LATEST_STATE_LOCK:
-        return LATEST_STATE.get(zone_id)
-
-
-def store_latest_reading(reading: SensorReading) -> None:
-    with LATEST_STATE_LOCK:
-        LATEST_STATE[reading.zone_id] = reading
-        LATEST_ZONE_READINGS.setdefault(reading.zone_id, {})[reading.node_id] = reading
-
-
-def latest_readings_for_zone(zone_id: str) -> dict[str, SensorReading]:
-    with LATEST_STATE_LOCK:
-        readings = dict(LATEST_ZONE_READINGS.get(zone_id, {}))
-        legacy_reading = LATEST_STATE.get(zone_id)
-        if legacy_reading is not None:
-            readings.setdefault(legacy_reading.node_id, legacy_reading)
-        return readings
-
-
-def have_latest_state_for_any(zone_ids: list[str]) -> bool:
-    with LATEST_STATE_LOCK:
-        return any(zone_id in LATEST_STATE or zone_id in LATEST_ZONE_READINGS for zone_id in zone_ids)
-
-
-def set_subscriber_context(
-    client: mqtt.Client,
-    fallback_zones: dict[str, ZoneConfig],
-    zone_filter: set[str] | None,
-) -> None:
-    global SUBSCRIBER_CLIENT, SUBSCRIPTION_FALLBACK_ZONES, SUBSCRIPTION_ZONE_FILTER
-    with SUBSCRIPTION_LOCK:
-        SUBSCRIBER_CLIENT = client
-        SUBSCRIPTION_FALLBACK_ZONES = dict(fallback_zones)
-        SUBSCRIPTION_ZONE_FILTER = set(zone_filter) if zone_filter is not None else None
-
-
-def sync_zone_state_subscriptions(reset: bool = False) -> tuple[list[str], list[str]]:
-    with SUBSCRIPTION_LOCK:
-        client = SUBSCRIBER_CLIENT
-        fallback_zones = dict(SUBSCRIPTION_FALLBACK_ZONES)
-        zone_filter = set(SUBSCRIPTION_ZONE_FILTER) if SUBSCRIPTION_ZONE_FILTER is not None else None
-
-        if client is None:
-            return [], []
-
-        desired_topics = {
-            topic
-            for zone_id in effective_zone_configs(fallback_zones, zone_filter)
-            for topic in (
-                f"greenhouse/zones/{zone_id}/state",
-                f"greenhouse/zones/{zone_id}/nodes/+/state",
-            )
-        }
-
-        if reset:
-            SUBSCRIBED_STATE_TOPICS.clear()
-
-        new_topics = sorted(desired_topics - SUBSCRIBED_STATE_TOPICS)
-        removed_topics = sorted(SUBSCRIBED_STATE_TOPICS - desired_topics)
-
-        for topic in new_topics:
-            client.subscribe(topic)
-        for topic in removed_topics:
-            client.unsubscribe(topic)
-
-        SUBSCRIBED_STATE_TOPICS.difference_update(removed_topics)
-        SUBSCRIBED_STATE_TOPICS.update(new_topics)
-        return new_topics, removed_topics
-
-
-def parse_sensor_message(topic: str, payload_bytes: bytes) -> SensorReading | None:
-    try:
-        if not payload_bytes:
-            log_event(
-                "controller",
-                "mqtt_message_ignored",
-                level="info",
-                topic=topic,
-                reason="empty_payload",
-            )
-            return None
-        payload = json.loads(payload_bytes.decode("utf-8"))
-        if not isinstance(payload, dict):
-            log_event(
-                "controller",
-                "mqtt_message_invalid",
-                level="warning",
-                topic=topic,
-                reason="expected_json_object",
-            )
-            return None
-        return SensorReading.model_validate(payload)
-    except Exception as exc:
-        log_event(
-            "controller",
-            "mqtt_message_invalid",
-            level="warning",
-            topic=topic,
-            error=str(exc),
-        )
-        return None
-
-
-def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
-    if msg.topic == SYSTEM_CONFIG_TOPIC:
-        update_system_config(msg.topic, msg.payload)
-        return
-
-    reading = parse_sensor_message(msg.topic, msg.payload)
-    if reading is not None:
-        store_latest_reading(reading)
-        update_controller_health(
-            last_sensor_message_at=iso_now(),
-            last_sensor_zone_id=reading.zone_id,
-            last_error=None,
-        )
-
-
-def update_system_config(topic: str, payload_bytes: bytes) -> bool:
-    try:
-        if not payload_bytes:
-            return False
-        payload = json.loads(payload_bytes.decode("utf-8"))
-        if not isinstance(payload, dict):
-            log_event(
-                "controller",
-                "system_config_invalid",
-                level="warning",
-                topic=topic,
-                reason="expected_json_object",
-            )
-            return False
-
-        crops, zones = load_system_config_payload(payload)
-    except Exception as exc:
-        log_event(
-            "controller",
-            "system_config_invalid",
-            level="warning",
-            topic=topic,
-            error=str(exc),
-        )
-        return False
-
-    with LIVE_CONFIG_LOCK:
-        LIVE_CROPS.clear()
-        LIVE_CROPS.update(crops)
-        LIVE_ZONES.clear()
-        LIVE_ZONES.update(zones)
-
-    added_topics, removed_topics = sync_zone_state_subscriptions()
-
-    log_event(
-        "controller",
-        "system_config_updated",
-        crop_count=len(crops),
-        zone_count=len(zones),
-        subscribed_topics=added_topics,
-        unsubscribed_topics=removed_topics,
-        topic=topic,
-    )
-    update_controller_health(
-        last_system_config_at=iso_now(),
-        last_error=None,
-    )
-    return True
 
 
 def reading_signature(reading: SensorReading) -> dict[str, Any]:
@@ -351,62 +122,6 @@ def clear_skip_memory(zone_runtime: dict[str, Any]) -> None:
     zone_runtime["last_skip_reason"] = None
 
 
-def load_controller_runtime(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, dict):
-            raise ValueError("Controller runtime JSON must be an object mapping zone_id to runtime state.")
-        return data
-    except (json.JSONDecodeError, ValueError) as exc:
-        quarantined = quarantine_invalid_json_file(path)
-        log_event(
-            "controller",
-            "controller_runtime_invalid",
-            level="warning",
-            path=str(path),
-            quarantined_path=str(quarantined),
-            error=str(exc),
-        )
-        return {}
-
-
-def save_controller_runtime(path: Path, data: dict[str, Any]) -> None:
-    atomic_write_text(path, serialize_controller_runtime(data))
-
-
-def configure_mqtt_auth(client: mqtt.Client, username: str | None, password: str | None) -> None:
-    if username:
-        client.username_pw_set(username, password or None)
-
-
-def effective_zone_configs(
-    fallback_zones: dict[str, ZoneConfig],
-    zone_filter: set[str] | None = None,
-) -> dict[str, ZoneConfig | SystemZoneConfig]:
-    live_crops, live_zones = live_config_snapshot()
-    if live_zones and live_crops:
-        zones = {zone_id: zone for zone_id, zone in live_zones.items() if zone.active}
-    else:
-        zones = dict(fallback_zones)
-
-    if zone_filter is not None:
-        zones = {zone_id: zone for zone_id, zone in zones.items() if zone_id in zone_filter}
-
-    return zones
-
-
-def profile_for_zone(
-    zone: ZoneConfig | SystemZoneConfig,
-    fallback_crops: dict[str, CropProfile],
-) -> CropProfile:
-    live_crops, _ = live_config_snapshot()
-    if isinstance(zone, SystemZoneConfig) and zone.crop_id in live_crops:
-        return live_crops[zone.crop_id]
-    return fallback_crops[zone.crop_id]
-
-
 def allowed_now(
     zone: ZoneConfig | SystemZoneConfig,
     now: datetime,
@@ -427,87 +142,8 @@ def allowed_now(
     return hour >= start_hour or hour < end_hour
 
 
-def publish_event(
-    client: mqtt.Client,
-    zone_id: str,
-    now: datetime,
-    moisture: float,
-    action: str,
-    runtime_seconds: int,
-    total_today: int,
-    idempotency_key: str | None = None,
-    reason: str | None = None,
-    valid_sensor_count: int | None = None,
-    expected_sensor_count: int | None = None,
-    valid_node_ids: list[str] | None = None,
-) -> None:
-    payload = {
-        "zone_id": zone_id,
-        "timestamp": now.isoformat(),
-        "moisture_percent": moisture,
-        "action": action,
-        "runtime_seconds": runtime_seconds,
-        "runtime_seconds_today": total_today,
-        "idempotency_key": idempotency_key,
-        "reason": reason,
-    }
-    if valid_sensor_count is not None:
-        payload["valid_sensor_count"] = valid_sensor_count
-    if expected_sensor_count is not None:
-        payload["expected_sensor_count"] = expected_sensor_count
-    if valid_node_ids is not None:
-        payload["valid_node_ids"] = valid_node_ids
-    client.publish(f"greenhouse/zones/{zone_id}/controller/event", json.dumps(payload))
-    client.publish(f"greenhouse/zones/{zone_id}/controller/moisture_percent", str(moisture))
-    client.publish(f"greenhouse/zones/{zone_id}/controller/action", action)
-    client.publish(f"greenhouse/zones/{zone_id}/controller/runtime_seconds_today", str(total_today))
-
-
-def publish_skip(
-    client: mqtt.Client,
-    zone_id: str,
-    now: datetime,
-    reason: str,
-) -> None:
-    payload = {
-        "zone_id": zone_id,
-        "timestamp": now.isoformat(),
-        "reason": reason,
-    }
-    client.publish(f"greenhouse/zones/{zone_id}/controller/skip", json.dumps(payload))
-    client.publish(f"greenhouse/zones/{zone_id}/controller/skip_reason", reason)
-
-
 def reading_age_seconds(reading: SensorReading, now: datetime) -> float:
     return max(0.0, (now - reading.timestamp).total_seconds())
-
-
-def publish_actuator_command(
-    client: mqtt.Client,
-    zone_id: str,
-    runtime_seconds: int,
-    reason: str,
-    idempotency_key: str,
-) -> None:
-    payload = {
-        "command": "start_watering",
-        "zone_id": zone_id,
-        "runtime_seconds": runtime_seconds,
-        "reason": reason,
-        "idempotency_key": idempotency_key,
-    }
-    client.publish(
-        f"greenhouse/zones/{zone_id}/actuator/command",
-        json.dumps(payload, separators=(",", ":")),
-    )
-    log_event(
-        "controller",
-        "actuator_command_published",
-        zone_id=zone_id,
-        runtime_seconds=runtime_seconds,
-        reason=reason,
-        idempotency_key=idempotency_key,
-    )
 
 
 def reading_ready_for_control(
@@ -598,11 +234,10 @@ def process_zone_tick(
     zone_runtime: dict[str, Any],
     states: dict[str, ZoneState],
     now: datetime,
-    args: argparse.Namespace,
+    args,
     controller: mqtt.Client,
     local_tz=None,
 ) -> tuple[dict[str, Any], dict[str, ZoneState]]:
-    """Run one control-loop tick for a single zone. Returns updated (zone_runtime, states)."""
     snapshot = zone_moisture_snapshot(
         zone,
         now=now,
@@ -793,8 +428,13 @@ def process_zone_tick(
             idempotency_key=cmd.idempotency_key,
         )
         publish_event(
-            controller, zone.zone_id, now, moisture, "water",
-            cmd.runtime_seconds, state.runtime_seconds_today,
+            controller,
+            zone.zone_id,
+            now,
+            moisture,
+            "water",
+            cmd.runtime_seconds,
+            state.runtime_seconds_today,
             idempotency_key=cmd.idempotency_key,
             reason=cmd.reason,
             valid_sensor_count=snapshot.valid_sensor_count,
@@ -815,108 +455,102 @@ def process_zone_tick(
     return zone_runtime, states
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run watering control loop from live MQTT state."
-    )
-    parser.add_argument(
-        "--zone-id",
-        help="Zone to run (default: all configured zones).",
-    )
-    parser.add_argument("--mqtt-host", default="127.0.0.1")
-    parser.add_argument("--mqtt-port", type=int, default=1883)
-    parser.add_argument("--mqtt-username", default=os.environ.get("MQTT_USERNAME"))
-    parser.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
-    parser.add_argument(
-        "--poll-seconds",
-        type=float,
-        default=1.0,
-        help="How often to check whether a new MQTT reading arrived.",
-    )
-    parser.add_argument(
-        "--min-seconds-between-watering",
-        type=int,
-        default=10800,
-        help="Cooldown between watering actions per zone in seconds (default: 3 hours).",
-    )
-    parser.add_argument(
-        "--max-reading-age-seconds",
-        type=int,
-        default=900,
-        help="Maximum age of a sensor reading before the controller refuses to act on it (default: 15 minutes).",
-    )
-    parser.add_argument(
-        "--min-zone-sensor-readings",
-        type=int,
-        default=1,
-        help="Minimum fresh sensor readings required before a zone watering decision is allowed (default: 1).",
-    )
-    parser.add_argument(
-        "--startup-timeout-seconds",
-        type=int,
-        default=120,
-        help="Seconds to wait for the first MQTT reading before giving up (default: 120).",
-    )
-    return parser
+class ControllerApp:
+    def __init__(self, args, runtime: ControllerRuntime | None = None) -> None:
+        self.args = args
+        self.runtime = runtime or CONTROLLER_RUNTIME
+        self.root = Path(__file__).resolve().parents[1]
 
+        self.fallback_crops = load_crops(self.root / "config" / "crops.yaml")
+        self.fallback_zones = load_zones(self.root / "config" / "zones.yaml")
+        validate_zone_crop_refs(self.fallback_crops, self.fallback_zones)
 
-def main(argv: list[str] | None = None) -> None:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    if args.min_zone_sensor_readings < 1:
-        print("ERROR: --min-zone-sensor-readings must be at least 1.", flush=True)
-        sys.exit(1)
+        self.zone_filter = self._resolve_zone_filter()
+        self.state_path = self.root / "state.json"
+        self.states, self.quarantined_state_path, self.state_store_error = load_state_store_resilient(self.state_path)
 
-    root = Path(__file__).resolve().parents[1]
+        self.controller_runtime_path = self.root / "controller_runtime.json"
+        self.controller_runtime_data = load_controller_runtime(self.controller_runtime_path)
+        self.controller_health_path = self.root / "controller_health.json"
+        self.persisted_states = serialize_state_store(self.states)
+        self.persisted_runtime = serialize_controller_runtime(self.controller_runtime_data)
 
-    fallback_crops = load_crops(root / "config" / "crops.yaml")
-    fallback_zones = load_zones(root / "config" / "zones.yaml")
-    validate_zone_crop_refs(fallback_crops, fallback_zones)
+        update_controller_health(status="starting")
+        self.persisted_health = serialize_controller_health(controller_health_snapshot())
 
-    if args.zone_id:
-        if args.zone_id not in fallback_zones:
-            print(
-                f"ERROR: Unknown zone_id '{args.zone_id}'. "
-                f"Configured zones: {', '.join(fallback_zones)}",
-                flush=True,
+        self.publisher_client: mqtt.Client | None = None
+        self.subscriber_client: mqtt.Client | None = None
+
+    def _resolve_zone_filter(self) -> set[str] | None:
+        if not self.args.zone_id:
+            return None
+        if self.args.zone_id not in self.fallback_zones:
+            raise ValueError(
+                f"Unknown zone_id '{self.args.zone_id}'. Configured zones: {', '.join(self.fallback_zones)}"
             )
-            sys.exit(1)
-        zone_filter = {args.zone_id}
-    else:
-        zone_filter = None
+        return {self.args.zone_id}
 
-    state_path = root / "state.json"
-    states, quarantined_state_path, state_store_error = load_state_store_resilient(state_path)
+    def _persist_health(self) -> None:
+        self.persisted_health = write_text_if_changed(
+            self.controller_health_path,
+            serialize_controller_health(controller_health_snapshot()),
+            self.persisted_health,
+        )
 
-    controller_runtime_path = root / "controller_runtime.json"
-    controller_runtime = load_controller_runtime(controller_runtime_path)
-    controller_health_path = root / "controller_health.json"
-    update_controller_health(status="starting")
-    persisted_health = serialize_controller_health(controller_health_snapshot())
+    def _persist_runtime_files(self) -> None:
+        self.persisted_states = write_text_if_changed(
+            self.state_path,
+            serialize_state_store(self.states),
+            self.persisted_states,
+        )
+        self.persisted_runtime = write_text_if_changed(
+            self.controller_runtime_path,
+            serialize_controller_runtime(self.controller_runtime_data),
+            self.persisted_runtime,
+        )
 
-    if quarantined_state_path is not None:
+    def _handle_quarantined_state(self) -> None:
+        if self.quarantined_state_path is None:
+            return
         log_event(
             "controller",
             "state_store_quarantined",
             level="warning",
-            path=str(state_path),
-            quarantined_path=str(quarantined_state_path),
-            error=state_store_error,
+            path=str(self.state_path),
+            quarantined_path=str(self.quarantined_state_path),
+            error=self.state_store_error,
         )
         update_controller_health(
             status="degraded",
             last_error="state_store_quarantined",
         )
 
-    initial_zones = effective_zone_configs(fallback_zones, zone_filter)
-    for zone_id in initial_zones:
-        controller_runtime.setdefault(zone_id, new_zone_runtime())
-    persisted_states = serialize_state_store(states)
-    persisted_runtime = serialize_controller_runtime(controller_runtime)
+    def _initialize_zone_runtime(self) -> None:
+        initial_zones = effective_zone_configs(self.fallback_zones, self.zone_filter)
+        for zone_id in initial_zones:
+            self.controller_runtime_data.setdefault(zone_id, new_zone_runtime())
 
-    controller = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    configure_mqtt_auth(controller, args.mqtt_username, args.mqtt_password)
-    def on_controller_connect(_client: mqtt.Client, _userdata, _flags, reason_code, _properties=None) -> None:
+    def _build_publisher(self) -> mqtt.Client:
+        controller = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        configure_mqtt_auth(controller, self.args.mqtt_username, self.args.mqtt_password)
+        controller.on_connect = self._on_controller_connect
+        controller.on_disconnect = self._on_controller_disconnect
+        controller.connect(self.args.mqtt_host, self.args.mqtt_port, 60)
+        controller.loop_start()
+        return controller
+
+    def _build_subscriber(self) -> mqtt.Client:
+        subscriber = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        configure_mqtt_auth(subscriber, self.args.mqtt_username, self.args.mqtt_password)
+        subscriber.on_message = on_message
+        subscriber.on_connect = self._on_subscriber_connect
+        subscriber.on_disconnect = self._on_subscriber_disconnect
+        set_subscriber_context(subscriber, self.fallback_zones, self.zone_filter)
+        subscriber.connect(self.args.mqtt_host, self.args.mqtt_port, 60)
+        subscriber.loop_start()
+        return subscriber
+
+    def _on_controller_connect(self, _client: mqtt.Client, _userdata, _flags, reason_code, _properties=None) -> None:
         update_controller_health(
             publisher_connected=True,
             status="starting",
@@ -926,12 +560,19 @@ def main(argv: list[str] | None = None) -> None:
             "controller",
             "mqtt_connected",
             role="publisher",
-            mqtt_host=args.mqtt_host,
-            mqtt_port=args.mqtt_port,
+            mqtt_host=self.args.mqtt_host,
+            mqtt_port=self.args.mqtt_port,
             reason_code=mqtt_reason_code_value(reason_code),
         )
 
-    def on_controller_disconnect(_client: mqtt.Client, _userdata, disconnect_flags, reason_code, _properties=None) -> None:
+    def _on_controller_disconnect(
+        self,
+        _client: mqtt.Client,
+        _userdata,
+        disconnect_flags,
+        reason_code,
+        _properties=None,
+    ) -> None:
         update_controller_health(
             publisher_connected=False,
             status="degraded",
@@ -942,23 +583,14 @@ def main(argv: list[str] | None = None) -> None:
             "mqtt_disconnected",
             level="warning",
             role="publisher",
-            mqtt_host=args.mqtt_host,
-            mqtt_port=args.mqtt_port,
+            mqtt_host=self.args.mqtt_host,
+            mqtt_port=self.args.mqtt_port,
             reason_code=mqtt_reason_code_value(reason_code),
             disconnect_flags=str(disconnect_flags),
         )
 
-    controller.on_connect = on_controller_connect
-    controller.on_disconnect = on_controller_disconnect
-    controller.connect(args.mqtt_host, args.mqtt_port, 60)
-    controller.loop_start()
-
-    subscriber = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    configure_mqtt_auth(subscriber, args.mqtt_username, args.mqtt_password)
-    subscriber.on_message = on_message
-    set_subscriber_context(subscriber, fallback_zones, zone_filter)
-    def on_subscriber_connect(client: mqtt.Client, _userdata, _flags, reason_code, _properties=None) -> None:
-        set_subscriber_context(client, fallback_zones, zone_filter)
+    def _on_subscriber_connect(self, client: mqtt.Client, _userdata, _flags, reason_code, _properties=None) -> None:
+        set_subscriber_context(client, self.fallback_zones, self.zone_filter)
         subscribed = []
         client.subscribe(SYSTEM_CONFIG_TOPIC)
         subscribed.append(SYSTEM_CONFIG_TOPIC)
@@ -973,14 +605,21 @@ def main(argv: list[str] | None = None) -> None:
             "controller",
             "mqtt_connected",
             role="subscriber",
-            mqtt_host=args.mqtt_host,
-            mqtt_port=args.mqtt_port,
+            mqtt_host=self.args.mqtt_host,
+            mqtt_port=self.args.mqtt_port,
             reason_code=mqtt_reason_code_value(reason_code),
             subscribed_topics=subscribed,
             unsubscribed_topics=removed_topics,
         )
 
-    def on_subscriber_disconnect(_client: mqtt.Client, _userdata, disconnect_flags, reason_code, _properties=None) -> None:
+    def _on_subscriber_disconnect(
+        self,
+        _client: mqtt.Client,
+        _userdata,
+        disconnect_flags,
+        reason_code,
+        _properties=None,
+    ) -> None:
         update_controller_health(
             subscriber_connected=False,
             status="degraded",
@@ -991,34 +630,26 @@ def main(argv: list[str] | None = None) -> None:
             "mqtt_disconnected",
             level="warning",
             role="subscriber",
-            mqtt_host=args.mqtt_host,
-            mqtt_port=args.mqtt_port,
+            mqtt_host=self.args.mqtt_host,
+            mqtt_port=self.args.mqtt_port,
             reason_code=mqtt_reason_code_value(reason_code),
             disconnect_flags=str(disconnect_flags),
         )
 
-    subscriber.on_connect = on_subscriber_connect
-    subscriber.on_disconnect = on_subscriber_disconnect
-    subscriber.connect(args.mqtt_host, args.mqtt_port, 60)
-    subscriber.loop_start()
+    def _wait_for_startup_state(self) -> None:
+        startup_zone_ids = list(effective_zone_configs(self.fallback_zones, self.zone_filter))
+        log_event(
+            "controller",
+            "startup_waiting_for_state",
+            zone_ids=startup_zone_ids,
+            startup_timeout_seconds=self.args.startup_timeout_seconds,
+        )
+        update_controller_health(status="waiting_for_state")
 
-    log_event(
-        "controller",
-        "startup_waiting_for_state",
-        zone_ids=list(initial_zones),
-        startup_timeout_seconds=args.startup_timeout_seconds,
-    )
-    update_controller_health(status="waiting_for_state")
-
-    try:
-        startup_deadline = time.monotonic() + args.startup_timeout_seconds
+        startup_deadline = time.monotonic() + self.args.startup_timeout_seconds
         while True:
-            startup_zone_ids = list(effective_zone_configs(fallback_zones, zone_filter))
-            persisted_health = write_text_if_changed(
-                controller_health_path,
-                serialize_controller_health(controller_health_snapshot()),
-                persisted_health,
-            )
+            startup_zone_ids = list(effective_zone_configs(self.fallback_zones, self.zone_filter))
+            self._persist_health()
             if have_latest_state_for_any(startup_zone_ids):
                 break
             if time.monotonic() > startup_deadline:
@@ -1026,22 +657,18 @@ def main(argv: list[str] | None = None) -> None:
                     status="error",
                     last_error="startup_timeout",
                 )
-                persisted_health = write_text_if_changed(
-                    controller_health_path,
-                    serialize_controller_health(controller_health_snapshot()),
-                    persisted_health,
-                )
+                self._persist_health()
                 log_event(
                     "controller",
                     "startup_timeout",
                     level="error",
                     zone_ids=startup_zone_ids,
-                    startup_timeout_seconds=args.startup_timeout_seconds,
-                    mqtt_host=args.mqtt_host,
-                    mqtt_port=args.mqtt_port,
+                    startup_timeout_seconds=self.args.startup_timeout_seconds,
+                    mqtt_host=self.args.mqtt_host,
+                    mqtt_port=self.args.mqtt_port,
                 )
-                sys.exit(1)
-            time.sleep(args.poll_seconds)
+                raise SystemExit(1)
+            time.sleep(self.args.poll_seconds)
 
         update_controller_health(
             startup_complete=True,
@@ -1049,60 +676,149 @@ def main(argv: list[str] | None = None) -> None:
             last_error=None,
         )
 
+    def _run_loop(self) -> None:
         while True:
             now = datetime.now(timezone.utc)
 
-            active_zones = effective_zone_configs(fallback_zones, zone_filter)
+            active_zones = effective_zone_configs(self.fallback_zones, self.zone_filter)
             for zone_id in active_zones:
-                controller_runtime.setdefault(zone_id, new_zone_runtime())
+                self.controller_runtime_data.setdefault(zone_id, new_zone_runtime())
 
+            assert self.publisher_client is not None
             for zone_id, zone in active_zones.items():
-                profile = profile_for_zone(zone, fallback_crops)
-                zone_runtime = controller_runtime.setdefault(zone_id, new_zone_runtime())
+                profile = profile_for_zone(zone, self.fallback_crops)
+                zone_runtime = self.controller_runtime_data.setdefault(zone_id, new_zone_runtime())
 
-                updated_runtime, states = process_zone_tick(
-                    zone, profile, zone_runtime, states, now, args, controller
+                updated_runtime, self.states = process_zone_tick(
+                    zone,
+                    profile,
+                    zone_runtime,
+                    self.states,
+                    now,
+                    self.args,
+                    self.publisher_client,
                 )
-                controller_runtime[zone_id] = updated_runtime
+                self.controller_runtime_data[zone_id] = updated_runtime
 
-            persisted_states = write_text_if_changed(
-                state_path,
-                serialize_state_store(states),
-                persisted_states,
-            )
-            persisted_runtime = write_text_if_changed(
-                controller_runtime_path,
-                serialize_controller_runtime(controller_runtime),
-                persisted_runtime,
-            )
+            self._persist_runtime_files()
             health = controller_health_snapshot()
             update_controller_health(
                 last_loop_at=iso_now(),
                 status="ready" if health.get("publisher_connected") and health.get("subscriber_connected") else "degraded",
             )
-            persisted_health = write_text_if_changed(
-                controller_health_path,
-                serialize_controller_health(controller_health_snapshot()),
-                persisted_health,
-            )
+            self._persist_health()
+            time.sleep(self.args.poll_seconds)
 
-            time.sleep(args.poll_seconds)
+    def run(self) -> None:
+        self._handle_quarantined_state()
+        self._initialize_zone_runtime()
+        self.publisher_client = self._build_publisher()
+        self.subscriber_client = self._build_subscriber()
 
-    finally:
-        update_controller_health(status="shutdown")
         try:
-            write_text_if_changed(
-                controller_health_path,
-                serialize_controller_health(controller_health_snapshot()),
-                persisted_health,
-            )
-        except Exception:
-            pass
-        log_event("controller", "shutdown")
-        subscriber.loop_stop()
-        subscriber.disconnect()
-        controller.loop_stop()
-        controller.disconnect()
+            self._wait_for_startup_state()
+            self._run_loop()
+        finally:
+            update_controller_health(status="shutdown")
+            try:
+                self._persist_health()
+            except Exception:
+                pass
+            log_event("controller", "shutdown")
+            if self.subscriber_client is not None:
+                self.subscriber_client.loop_stop()
+                self.subscriber_client.disconnect()
+            if self.publisher_client is not None:
+                self.publisher_client.loop_stop()
+                self.publisher_client.disconnect()
+
+
+def validate_controller_args(args) -> None:
+    if args.min_zone_sensor_readings < 1:
+        raise ValueError("--min-zone-sensor-readings must be at least 1.")
+    if args.poll_seconds <= 0:
+        raise ValueError("--poll-seconds must be greater than 0.")
+    if args.startup_timeout_seconds <= 0:
+        raise ValueError("--startup-timeout-seconds must be greater than 0.")
+    if args.max_reading_age_seconds <= 0:
+        raise ValueError("--max-reading-age-seconds must be greater than 0.")
+    if args.min_seconds_between_watering < 0:
+        raise ValueError("--min-seconds-between-watering must be 0 or greater.")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        validate_controller_args(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", flush=True)
+        raise SystemExit(1)
+
+    try:
+        app = ControllerApp(args=args, runtime=CONTROLLER_RUNTIME)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", flush=True)
+        raise SystemExit(1) from exc
+
+    app.run()
+
+
+__all__ = [
+    "CANONICAL_NODE_STATE_TOPIC",
+    "CONTROLLER_HEALTH",
+    "CONTROLLER_RUNTIME",
+    "ControllerApp",
+    "ControllerRuntime",
+    "LATEST_STATE",
+    "LATEST_ZONE_READINGS",
+    "LIVE_CROPS",
+    "LIVE_ZONES",
+    "SYSTEM_CONFIG_TOPIC",
+    "SUBSCRIBED_STATE_TOPICS",
+    "ZoneMoistureSnapshot",
+    "aggregate_signature",
+    "allowed_now",
+    "build_parser",
+    "clear_skip_memory",
+    "configure_mqtt_auth",
+    "controller_health_snapshot",
+    "effective_zone_configs",
+    "expected_node_ids_for_zone",
+    "have_latest_state_for_any",
+    "iso_now",
+    "latest_reading",
+    "latest_readings_for_zone",
+    "live_config_snapshot",
+    "load_controller_runtime",
+    "main",
+    "mqtt_reason_code_value",
+    "new_controller_health",
+    "new_zone_runtime",
+    "on_message",
+    "parse_sensor_message",
+    "profile_for_zone",
+    "publish_actuator_command",
+    "publish_event",
+    "publish_skip",
+    "process_zone_tick",
+    "reading_age_seconds",
+    "reading_signature",
+    "reading_ready_for_control",
+    "remember_skip",
+    "save_controller_runtime",
+    "serialize_controller_health",
+    "serialize_controller_runtime",
+    "signatures_equal",
+    "set_subscriber_context",
+    "store_latest_reading",
+    "sync_zone_state_subscriptions",
+    "update_system_config",
+    "update_controller_health",
+    "validate_controller_args",
+    "write_text_if_changed",
+    "zone_moisture_snapshot",
+]
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from watering.controller import (
     mqtt_reason_code_value,
     serialize_controller_health,
     update_controller_health,
+    validate_controller_args,
 )
 
 
@@ -166,3 +167,33 @@ def test_health_updated_at_advances_on_each_update():
 
     # updated_at is an ISO string — later update should be >= first
     assert t2 >= t1
+
+
+def test_validate_controller_args_accepts_positive_values():
+    args = SimpleNamespace(
+        min_zone_sensor_readings=1,
+        poll_seconds=1.0,
+        startup_timeout_seconds=120,
+        max_reading_age_seconds=900,
+        min_seconds_between_watering=0,
+    )
+
+    validate_controller_args(args)
+
+
+def test_validate_controller_args_rejects_invalid_numeric_ranges():
+    invalid_sets = [
+        {"min_zone_sensor_readings": 0, "poll_seconds": 1.0, "startup_timeout_seconds": 120, "max_reading_age_seconds": 900, "min_seconds_between_watering": 0},
+        {"min_zone_sensor_readings": 1, "poll_seconds": 0, "startup_timeout_seconds": 120, "max_reading_age_seconds": 900, "min_seconds_between_watering": 0},
+        {"min_zone_sensor_readings": 1, "poll_seconds": 1.0, "startup_timeout_seconds": 0, "max_reading_age_seconds": 900, "min_seconds_between_watering": 0},
+        {"min_zone_sensor_readings": 1, "poll_seconds": 1.0, "startup_timeout_seconds": 120, "max_reading_age_seconds": -1, "min_seconds_between_watering": 0},
+        {"min_zone_sensor_readings": 1, "poll_seconds": 1.0, "startup_timeout_seconds": 120, "max_reading_age_seconds": 900, "min_seconds_between_watering": -1},
+    ]
+
+    for invalid in invalid_sets:
+        try:
+            validate_controller_args(SimpleNamespace(**invalid))
+            raised = False
+        except ValueError:
+            raised = True
+        assert raised, invalid

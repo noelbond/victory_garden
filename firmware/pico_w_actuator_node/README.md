@@ -37,15 +37,15 @@ Suggested environment:
 
 ```bash
 export PICO_SDK_PATH="$PWD/firmware/pico-sdk"
-cmake -S firmware/pico_w_sensor_node -B firmware/pico_w_sensor_node/build -G Ninja -DPICO_BOARD=pico_w
-cmake --build firmware/pico_w_sensor_node/build --target pico_w_actuator_node
+cmake -S firmware/pico_w_actuator_node -B firmware/pico_w_actuator_node/build -G Ninja -DPICO_BOARD=pico_w
+cmake --build firmware/pico_w_actuator_node/build
 ```
 
 Make sure `arm-none-eabi-gcc` is already on your `PATH` before running the build.
 
 The build produces:
-- `firmware/pico_w_sensor_node/build/pico_w_actuator_node.uf2`
-- `firmware/pico_w_sensor_node/build/pico_w_actuator_node.elf`
+- `firmware/pico_w_actuator_node/build/pico_w_actuator_node.uf2`
+- `firmware/pico_w_actuator_node/build/pico_w_actuator_node.elf`
 
 Runtime logging:
 - `pico_w_actuator_node` is configured for USB CDC logging

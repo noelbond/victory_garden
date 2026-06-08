@@ -65,7 +65,7 @@ class SensorIngestor
   def resolve_zone_for(node)
     # The DB assignment (node.zone) is the authoritative zone for a node.
     # reported_zone_id in the payload is advisory/diagnostic only — a node
-    # must be explicitly claimed in the UI before it can trigger decisions.
+    # must be explicitly assigned in the UI before it can trigger decisions.
     node.zone
   end
 end

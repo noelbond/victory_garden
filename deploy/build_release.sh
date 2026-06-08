@@ -12,9 +12,9 @@ Builds a target-specific Victory Garden release tarball containing:
 - Rails vendor/bundle
 - Rails vendor/cache
 
-The release build also verifies that both Pico firmware targets compile:
-- pico_w_sensor_node
-- pico_w_actuator_node
+The release build also verifies and bundles UF2 firmware for:
+- Pico W sensor + actuator
+- Pico 2 W sensor + actuator
 EOF
 }
 
@@ -72,6 +72,7 @@ REQUIRED_SOURCE_FILES=(
   "python_tools/requirements-controller.txt"
   "deploy/install_pi.sh"
   "deploy/build_release.sh"
+  "deploy/build_firmware_bundles.sh"
   "ruby_service/Gemfile"
   "ruby_service/Gemfile.lock"
 )
@@ -184,7 +185,6 @@ copy_repo_source() {
       cd "$REPO_ROOT"
       tar \
         --exclude='deploy/releases' \
-        --exclude='firmware/arduino/mkr1010_sensor_node/node_config.h' \
         --exclude='python_tools/.venv' \
         --exclude='python_tools/__pycache__' \
         --exclude='python_tools/controller_runtime.json' \
@@ -207,19 +207,19 @@ copy_repo_source() {
 verify_staged_firmware_builds() {
   ensure_firmware_build_toolchain
 
-  local verify_build_dir
-  verify_build_dir="$BUILD_ROOT/firmware-build-verify"
+  "$STAGE_DIR/deploy/build_firmware_bundles.sh" \
+    --repo-root "$STAGE_DIR" \
+    --output-dir "$STAGE_DIR/firmware-bundles" \
+    --build-root "$BUILD_ROOT/firmware-build-bundles"
 
-  cmake \
-    -S "$STAGE_DIR/firmware/pico_w_sensor_node" \
-    -B "$verify_build_dir" \
-    -G Ninja \
-    -DPICO_BOARD=pico_w
-
-  cmake --build "$verify_build_dir" --target pico_w_sensor_node pico_w_actuator_node
-
-  [[ -f "$verify_build_dir/pico_w_sensor_node.uf2" ]] || fail "Firmware verification build did not produce pico_w_sensor_node.uf2"
-  [[ -f "$verify_build_dir/pico_w_actuator_node.uf2" ]] || fail "Firmware verification build did not produce pico_w_actuator_node.uf2"
+  local expected_bundle
+  for expected_bundle in \
+    "pico_w_sensor_node.uf2" \
+    "pico2_w_sensor_node.uf2" \
+    "pico_w_actuator_node.uf2" \
+    "pico2_w_actuator_node.uf2"; do
+    [[ -f "$STAGE_DIR/firmware-bundles/$expected_bundle" ]] || fail "Firmware verification build did not produce $expected_bundle"
+  done
 }
 
 build_python_wheelhouse() {
@@ -305,10 +305,20 @@ manifest = {
     "firmware": {
         "status": "passed",
         "build_system": "cmake+ninja",
-        "source_dir": "firmware/pico_w_sensor_node",
+        "bundle_dir": "firmware-bundles",
+        "boards": [
+            "pico_w",
+            "pico2_w",
+        ],
         "targets": [
             "pico_w_sensor_node",
             "pico_w_actuator_node",
+        ],
+        "bundles": [
+            "pico_w_sensor_node.uf2",
+            "pico2_w_sensor_node.uf2",
+            "pico_w_actuator_node.uf2",
+            "pico2_w_actuator_node.uf2",
         ],
     },
     "contents": [

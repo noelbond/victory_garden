@@ -5,11 +5,11 @@
 <div id="setup" class="card" style="margin-bottom: 16px;">
   <h3>Setup</h3>
   <p class="muted">
-    Connection settings live here. The guided onboarding checklist is still available when you need to create zones,
-    claim nodes, or verify initial setup progress.
+    Connection settings live here. The setup wizard is still available when you need to create zones,
+    assign nodes, or verify initial setup progress.
   </p>
   <div style="margin-top: 16px;">
-    <%= link_to "Open Onboarding Checklist", onboarding_path, class: "btn light" %>
+    <%= link_to "Open Setup Wizard", onboarding_path, class: "btn light" %>
   </div>
 </div>
 
@@ -34,12 +34,12 @@
         <%= f.password_field :mqtt_password, placeholder: "Broker password" %>
       </div>
       <div class="field">
-        <%= f.label :irrigation_line_count, "Installed Zones" %>
+        <%= f.label :irrigation_line_count, "Installed Water Zones" %>
         <%= f.number_field :irrigation_line_count, min: 1, placeholder: "1" %>
       </div>
       <div class="field">
         <%= f.label :readings_topic, "Readings Topic" %>
-        <%= f.text_field :readings_topic, placeholder: "greenhouse/zones/+/state" %>
+        <%= f.text_field :readings_topic, placeholder: "greenhouse/zones/+/nodes/+/state" %>
       </div>
       <div class="field">
         <%= f.label :actuators_topic, "Actuators Topic" %>
@@ -66,13 +66,19 @@
     <div style="margin-top: 16px;">
       <%= f.submit "Save", class: "btn" %>
     </div>
+    <p class="muted" style="margin-top: 10px;">
+      Save stores these connection settings in the app database. It does not push anything to MQTT devices on its own.
+    </p>
     <p class="muted" style="margin-top: 12px;">
-      Installed zones define how many valve-controlled outputs exist on the watering system.
-      Each active zone is assigned to one matching zone number.
+      Installed water zones define how many valve-controlled outputs exist on the watering system.
+      Each active zone is assigned to one matching water zone number.
     </p>
   <% end %>
 
   <div style="margin-top: 16px;">
     <%= button_to "Publish Config", admin_publish_config_path, method: :post, class: "btn light" %>
   </div>
+  <p class="muted" style="margin-top: 10px;">
+    Publish Config sends the current saved system configuration to MQTT so the controller and nodes can pick up the latest settings immediately.
+  </p>
 </div>

@@ -30,7 +30,7 @@ class ConfigRepublishTest < ActiveSupport::TestCase
     end
   end
 
-  test "node claim change enqueues config republish" do
+  test "node assignment change enqueues config republish" do
     zone = create(:zone)
     node = Node.create!(node_id: "sensor-zone1", last_seen_at: Time.current)
 

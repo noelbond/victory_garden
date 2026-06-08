@@ -1,12 +1,31 @@
+<%
+  active_target =
+    case [controller_name, action_name]
+    when ["zones", "edit"]
+      "edit-zone"
+    when ["zones", "nodes"]
+      "nodes"
+    when ["crop_profiles", "show"], ["crop_profiles", "edit"], ["crop_profiles", "new"]
+      "crop-profile"
+    else
+      nil
+    end
+  zone_side_nav_class = lambda do |target|
+    classes = ["zone-side-nav-link", "zone-side-nav-action"]
+    classes << "active" if active_target == target
+    classes.join(" ")
+  end
+%>
+
 <aside class="card zone-side-nav">
   <h3>Navigate</h3>
   <nav class="zone-side-nav-links" aria-label="Zone sections">
-    <%= link_to "Notifications", zone_path(zone, zone_tab: "notifications"), class: "zone-side-nav-link zone-side-nav-action" %>
-    <%= link_to "Zone Details", zone_path(zone, zone_tab: "zone-details"), class: "zone-side-nav-link zone-side-nav-action" %>
-    <%= link_to "Zone History", zone_path(zone, zone_tab: "zone-history"), class: "zone-side-nav-link zone-side-nav-action" %>
-    <%= link_to "Recent Faults", zone_path(zone, zone_tab: "recent-faults"), class: "zone-side-nav-link zone-side-nav-action" %>
-    <%= link_to "Edit Zone", edit_zone_path(zone), class: "zone-side-nav-link zone-side-nav-action" %>
-    <%= link_to "Crop Profile", crop_profile_path(zone.crop_profile, return_to: zone_path(zone), zone_id: zone.id), class: "zone-side-nav-link zone-side-nav-action" %>
-    <%= link_to "Nodes", zone_nodes_path(zone), class: "zone-side-nav-link zone-side-nav-action" %>
+    <%= link_to "Notifications", zone_path(zone, zone_tab: "notifications"), class: zone_side_nav_class.call(nil) %>
+    <%= link_to "Zone Details", zone_path(zone, zone_tab: "zone-details"), class: zone_side_nav_class.call(nil) %>
+    <%= link_to "Zone History", zone_path(zone, zone_tab: "zone-history"), class: zone_side_nav_class.call(nil) %>
+    <%= link_to "Recent Faults", zone_path(zone, zone_tab: "recent-faults"), class: zone_side_nav_class.call(nil) %>
+    <%= link_to "Edit Zone", edit_zone_path(zone), class: zone_side_nav_class.call("edit-zone") %>
+    <%= link_to "Crop Profile", crop_profile_path(zone.crop_profile, return_to: zone_path(zone), zone_id: zone.id), class: zone_side_nav_class.call("crop-profile") %>
+    <%= link_to "Nodes", zone_nodes_path(zone), class: zone_side_nav_class.call("nodes") %>
   </nav>
 </aside>

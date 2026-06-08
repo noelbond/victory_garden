@@ -13,6 +13,84 @@ static const uint32_t VG_PUBLISH_RETRY_MS = 5000u;
 static const uint32_t VG_TIME_SYNC_RETRY_MS = 1000u;
 static const uint32_t VG_WIFI_STABILIZE_MS = 5000u;
 static const uint32_t VG_WIFI_IP_WAIT_MS = 30000u;
+static const uint32_t VG_PROVISIONING_ANNOUNCE_MS = 2000u;
+static const uint32_t VG_REPROVISION_WINDOW_MS = 8000u;
+
+static void provisioning_announce(const node_config_t *config, bool requires_provisioning) {
+    printf("VG_READY {\"role\":\"sensor\",\"node_id\":\"%s\",\"zone_id\":\"%s\",\"requires_provisioning\":%s}\n",
+        config->node_id,
+        config->zone_id,
+        requires_provisioning ? "true" : "false");
+    stdio_flush();
+}
+
+static void wait_for_usb_provisioning(node_config_t *config) {
+    bool requires_provisioning = node_config_requires_provisioning(config);
+    if (!requires_provisioning && !stdio_usb_connected()) {
+        return;
+    }
+
+    char line[768];
+    size_t line_len = 0;
+    absolute_time_t next_announce_at = get_absolute_time();
+    absolute_time_t reprovision_deadline = make_timeout_time_ms(VG_REPROVISION_WINDOW_MS);
+    char error[128] = {0};
+
+    while (true) {
+        if (!requires_provisioning && absolute_time_diff_us(get_absolute_time(), reprovision_deadline) <= 0) {
+            return;
+        }
+
+        if (absolute_time_diff_us(get_absolute_time(), next_announce_at) <= 0) {
+            provisioning_announce(config, requires_provisioning);
+            next_announce_at = make_timeout_time_ms(VG_PROVISIONING_ANNOUNCE_MS);
+        }
+
+        int ch = getchar_timeout_us(10 * 1000);
+        if (ch == PICO_ERROR_TIMEOUT) {
+            tight_loop_contents();
+            continue;
+        }
+
+        if (ch == '\r') {
+            continue;
+        }
+
+        if (ch != '\n' && line_len + 1 < sizeof(line)) {
+            line[line_len++] = (char)ch;
+            continue;
+        }
+
+        line[line_len] = '\0';
+        line_len = 0;
+
+        if (strncmp(line, "VG_PROVISION ", 13) != 0) {
+            if (strcmp(line, "VG_IDENTIFY") == 0) {
+                provisioning_announce(config, requires_provisioning);
+            }
+            continue;
+        }
+
+        if (!node_config_apply_provision_json(config, line + 13, error, sizeof(error))) {
+            printf("VG_PROVISION_ERROR %s\n", error);
+            stdio_flush();
+            continue;
+        }
+
+        if (!node_config_save(config, error, sizeof(error))) {
+            printf("VG_PROVISION_ERROR %s\n", error);
+            stdio_flush();
+            continue;
+        }
+
+        printf("VG_PROVISION_OK {\"node_id\":\"%s\",\"zone_id\":\"%s\",\"rebooting\":true}\n",
+            config->node_id,
+            config->zone_id);
+        stdio_flush();
+        sleep_ms(200);
+        watchdog_reboot(0, 0, 100);
+    }
+}
 
 static bool wifi_link_needs_reconnect(int link_status, absolute_time_t reconnect_allowed_at,
                                       absolute_time_t ip_wait_started_at) {
@@ -58,6 +136,7 @@ int main(void) {
     char wifi_error[128] = {0};
 
     node_config_load(&config);
+    wait_for_usb_provisioning(&config);
     printf("[main] config: node=%s zone=%s broker=%s:%d\n",
         config.node_id, config.zone_id, config.mqtt_host, config.mqtt_port);
     printf("[main] seesaw: sda=GP%u scl=GP%u addr=0x%02X channel=%u dry=%u wet=%u\n",

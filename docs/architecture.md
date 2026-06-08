@@ -10,7 +10,6 @@ The current deployment model is one Raspberry Pi running the broker, control pla
 
 Supported node implementations in this repo:
 
-- Arduino MKR WiFi 1010 firmware
 - native Raspberry Pi Pico W firmware
 
 Node responsibilities:
@@ -55,13 +54,13 @@ Rails is the configuration authority, persistence layer, and operator UI.
 It is responsible for:
 
 - crop profiles and zone configuration
-- node claiming and node config publication
+- node assignment and node config publication
 - historical persistence in PostgreSQL
 - MQTT ingest for node state, actuator status, and node config acknowledgements
 - MQTT ingest for Python controller events so automatic watering history is persisted
 - manual watering and stop commands
 - delayed reread scheduling after completed watering
-- operator UI, including onboarding and health pages
+- operator UI, including the Setup Checklist, Reading History, Health, and Watering Events pages
 
 Important routing rule:
 
@@ -119,7 +118,7 @@ Rails is no longer the automatic actuator-command publisher.
 
 - crop profiles
 - zones
-- claimed node-to-zone mapping
+- assigned node-to-zone mapping
 - config sync state
 - persisted sensor readings
 - watering events
@@ -170,10 +169,10 @@ Useful endpoints:
 
 ## Related Docs
 
-- MQTT contract: [`mqtt.md`](/Users/noel/coding/python/victory_garden/docs/mqtt.md)
-- payload fixtures: [`../contracts/README.md`](/Users/noel/coding/python/victory_garden/contracts/README.md)
-- Pi deployment: [`../deploy/README.md`](/Users/noel/coding/python/victory_garden/deploy/README.md)
-- Rails control plane: [`../ruby_service/README.md`](/Users/noel/coding/python/victory_garden/ruby_service/README.md)
-- Python tools: [`../python_tools/README.md`](/Users/noel/coding/python/victory_garden/python_tools/README.md)
-- Pico firmware: [`../firmware/pico_w_sensor_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/README.md)
-- Pico actuator firmware: [`../firmware/pico_w_actuator_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/README.md)
+- MQTT contract: [mqtt.md](mqtt.md)
+- payload fixtures: [contracts/README.md](../contracts/README.md)
+- Pi deployment: [deploy/README.md](../deploy/README.md)
+- Rails control plane: [ruby_service/README.md](../ruby_service/README.md)
+- Python tools: [python_tools/README.md](../python_tools/README.md)
+- Pico firmware: [firmware/pico_w_sensor_node/README.md](../firmware/pico_w_sensor_node/README.md)
+- Pico actuator firmware: [firmware/pico_w_actuator_node/README.md](../firmware/pico_w_actuator_node/README.md)

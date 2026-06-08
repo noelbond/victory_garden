@@ -15,6 +15,11 @@ class ZonesController < ApplicationController
   before_action :set_zone, only: %i[show nodes edit update destroy water_now stop_watering toggle_active]
 
   def index
+    if onboarding_incomplete?
+      redirect_to onboarding_path
+      return
+    end
+
     @zones = Zone.includes(:crop_profile, :nodes).order(:zone_id)
     @latest_readings = latest_readings_for(@zones)
     @zone_moisture_snapshots = zone_moisture_snapshots_for(@zones)
@@ -22,7 +27,7 @@ class ZonesController < ApplicationController
     @latest_statuses = latest_statuses_for(@zones)
     @latest_watering_events = latest_watering_events_for(@zones)
     @open_fault_counts = open_fault_counts_for(@zones)
-    @unclaimed_node_count = Node.unclaimed.count
+    @unassigned_node_count = Node.unassigned.count
     @summary = {
       zones: @zones.count,
       active_zones: @zones.count(&:active?),
@@ -34,7 +39,7 @@ class ZonesController < ApplicationController
   end
 
   def show
-    @claimed_nodes = @zone.nodes.order(:node_id)
+    @assigned_nodes = @zone.nodes.order(:node_id)
     @recent_readings = @zone.sensor_readings.order(recorded_at: :desc).limit(10)
     @latest_reading = @recent_readings.first
     @zone_moisture_snapshot = zone_moisture_snapshots_for([@zone]).fetch(@zone.id)
@@ -59,7 +64,7 @@ class ZonesController < ApplicationController
   end
 
   def nodes
-    @claimed_nodes = @zone.nodes.order(:node_id)
+    @assigned_nodes = @zone.nodes.order(:node_id)
     @latest_readings_by_node_id = latest_node_readings_for_zone(@zone)
   end
 
@@ -75,6 +80,7 @@ class ZonesController < ApplicationController
   def create
     @zone = Zone.new(zone_params)
     if @zone.save
+      sync_zone_nodes!(@zone)
       redirect_to zones_path, notice: "Zone created."
     else
       load_crop_profiles
@@ -84,6 +90,7 @@ class ZonesController < ApplicationController
 
   def update
     if @zone.update(zone_params)
+      sync_zone_nodes!(@zone)
       redirect_to @zone, notice: "Zone updated."
     else
       load_crop_profiles
@@ -97,6 +104,11 @@ class ZonesController < ApplicationController
   end
 
   def water_now
+    if @zone.watering_events.blocking_start_commands.exists?
+      redirect_to @zone, alert: "Watering already active for this zone."
+      return
+    end
+
     command = {
       command: "start_watering",
       zone_id: @zone.zone_id,
@@ -155,7 +167,9 @@ class ZonesController < ApplicationController
 
   def load_crop_profiles
     @crop_profiles = CropProfile.order(:crop_name)
+    @zone.crop_profile ||= @crop_profiles.first if @zone.crop_profile.blank?
     @reading_frequency_options = READING_FREQUENCY_OPTIONS
+    @assignable_nodes = assignable_nodes_for(@zone)
   end
 
   def zone_params
@@ -166,6 +180,36 @@ class ZonesController < ApplicationController
       :irrigation_line,
       :publish_interval_ms
     )
+  end
+
+  def selected_node_ids
+    Array(params[:node_ids]).reject(&:blank?).map(&:to_i)
+  end
+
+  def assignable_nodes_for(zone)
+    scope = Node.order(:last_seen_at, :node_id)
+    if zone.persisted?
+      scope.where(zone_id: nil).or(scope.where(zone_id: zone.id))
+    else
+      scope.where(zone_id: nil)
+    end
+  end
+
+  def sync_zone_nodes!(zone)
+    desired_ids = selected_node_ids
+    assignable = assignable_nodes_for(zone)
+
+    assignable.where(zone_id: zone.id).where.not(id: desired_ids).find_each do |node|
+      node.update!(zone: nil)
+      PublishNodeConfigJob.perform_later(node.id)
+    end
+
+    assignable.where(id: desired_ids).find_each do |node|
+      next if node.zone_id == zone.id
+
+      node.update!(zone: zone)
+      PublishNodeConfigJob.perform_later(node.id)
+    end
   end
 
   def water_usage_series(zone, range)
@@ -238,7 +282,7 @@ class ZonesController < ApplicationController
       avg_moisture: values.any? ? (values.sum / values.size).round(1) : nil,
       min_moisture: values.any? ? values.min.round(1) : nil,
       watering_events: watering.count,
-      watering_seconds: watering.sum(:runtime_seconds) || 0
+      watering_seconds: watering.sum(:runtime_seconds)
     }
   end
 
@@ -256,7 +300,7 @@ class ZonesController < ApplicationController
   def latest_node_readings_for_zone(zone)
     rows = SensorReading
       .select("DISTINCT ON (node_id) *")
-      .where(zone_id: zone.id, node_id: @zone.nodes.select(:node_id))
+      .where(zone_id: zone.id, node_id: zone.nodes.select(:node_id))
       .order("node_id, recorded_at DESC")
 
     rows.index_by(&:node_id)

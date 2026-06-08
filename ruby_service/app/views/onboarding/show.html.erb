@@ -1,7 +1,7 @@
 <div class="page-header">
   <div>
-    <h1 class="page-title">Get Started</h1>
-    <div class="muted">Finish the minimum setup so the garden can ingest readings and drive watering decisions.</div>
+    <h1 class="page-title">Setup Wizard</h1>
+    <div class="muted">Walk the install forward from first boot to the first verified watering cycle.</div>
   </div>
   <div>
     <span class="env-pill"><%= Rails.env.production? ? "Production" : Rails.env.titleize %></span>
@@ -10,38 +10,93 @@
 </div>
 
 <div class="card" style="margin-bottom: 16px;">
-  <h3>Progress</h3>
+  <h3>Required Progress</h3>
   <div class="metric-value"><%= onboarding_completed_count %> / <%= onboarding_steps.length %></div>
   <div class="muted">required setup steps complete</div>
 </div>
 
-<div class="health-metrics">
-  <% onboarding_steps.each do |step| %>
-    <div class="card metric-card <%= step[:done] ? "metric-ok" : "metric-warn" %>">
-      <div class="metric-label"><%= step[:title] %></div>
-      <div style="margin: 10px 0;">
-        <span class="health-pill <%= step[:done] ? "ok" : "stale" %>"><%= step[:done] ? "Done" : "Needs Setup" %></span>
-      </div>
-      <p class="muted"><%= step[:description] %></p>
-      <%= link_to(step[:done] ? "Review" : "Complete Step", step[:path], class: "btn light") %>
+<% if firstboot_status.failed? || firstboot_status.running? %>
+  <div class="card <%= firstboot_status.failed? ? "metric-alert" : "metric-warn" %>" style="margin-bottom: 16px;">
+    <h3>Image Provisioning Status</h3>
+    <div class="metric-value"><%= firstboot_status.status.humanize %></div>
+    <div class="muted"><%= firstboot_status.summary %></div>
+    <% if firstboot_status.last_lines.any? %>
+      <pre class="wizard-log-snippet"><%= firstboot_status.last_lines.join("\n") %></pre>
+    <% end %>
+    <div class="dashboard-actions" style="margin-top: 16px;">
+      <% if firstboot_status.available_log? %>
+        <%= link_to "Download First-Boot Log", onboarding_firstboot_log_path, class: "btn light" %>
+      <% end %>
+      <%= link_to "Open Health", health_path, class: "btn light" %>
+      <%= link_to "Refresh Wizard", onboarding_step_path(onboarding_current_step[:key]), class: "btn" %>
     </div>
-  <% end %>
-</div>
-
-<div class="card" style="margin-top: 16px;">
-  <h3>What Happens Next</h3>
-  <ul class="list">
-    <li>Once a node is claimed, its readings can be persisted and shown in the health page.</li>
-    <li>Config sync only becomes meaningful after a node is assigned to a zone.</li>
-    <li>The health page is the best place to verify that the live system is operating correctly.</li>
-  </ul>
-</div>
-
-<div class="card" style="margin-top: 16px;">
-  <h3>Custom Crop Profiles</h3>
-  <p class="muted">If the built-in presets do not match your plant, create a custom crop profile before you assign a zone.</p>
-  <div style="margin-top: 16px;">
-    <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: onboarding_path), class: "btn" %>
-    <%= link_to "Browse Profiles", crop_profiles_path, class: "btn light" %>
   </div>
+<% end %>
+
+<div class="wizard-layout">
+  <aside class="wizard-sidebar">
+    <div class="card" <% if wizard_auto_refresh_interval_ms.present? %>data-wizard-poll-url="<%= wizard_auto_refresh_url %>" data-wizard-poll-interval-ms="<%= wizard_auto_refresh_interval_ms %>"<% end %>>
+      <h3>Wizard Steps</h3>
+      <div class="wizard-step-list">
+        <% onboarding_wizard_steps.each_with_index do |step, index| %>
+          <% active = onboarding_current_step[:key] == step[:key] %>
+          <% tone_class = step[:done] ? "ok" : (step[:required] ? "stale" : "warn") %>
+          <%= link_to onboarding_step_path(step[:key]), class: "wizard-step #{'active' if active}" do %>
+            <div class="wizard-step-index"><%= index + 1 %></div>
+            <div class="wizard-step-copy">
+              <div class="wizard-step-title"><%= step[:title] %></div>
+              <div class="wizard-step-meta">
+                <span class="health-pill <%= tone_class %>">
+                  <%= step[:done] ? "Done" : (step[:required] ? "Required" : "Recommended") %>
+                </span>
+              </div>
+            </div>
+          <% end %>
+        <% end %>
+      </div>
+    </div>
+  </aside>
+
+  <section class="wizard-content">
+    <div class="card wizard-step-shell" <% if wizard_auto_refresh_interval_ms.present? %>data-wizard-poll-url="<%= wizard_auto_refresh_url %>" data-wizard-poll-interval-ms="<%= wizard_auto_refresh_interval_ms %>"<% end %>>
+      <div class="wizard-step-header">
+        <div>
+          <div class="metric-label">Current Step</div>
+          <h2><%= onboarding_current_step[:title] %></h2>
+        </div>
+        <span class="health-pill <%= onboarding_current_step[:done] ? "ok" : (onboarding_current_step[:required] ? "stale" : "warn") %>">
+          <%= onboarding_current_step[:done] ? "Done" : (onboarding_current_step[:required] ? "Needs Setup" : "Recommended") %>
+        </span>
+      </div>
+
+      <p class="muted"><%= onboarding_current_step[:description] %></p>
+      <% if wizard_auto_refresh_interval_ms.present? %>
+        <div class="wizard-auto-refresh-note">
+          This step is checking for progress automatically every <%= wizard_auto_refresh_interval_ms / 1000 %> seconds.
+        </div>
+      <% end %>
+
+      <%= render "step_content" %>
+    </div>
+
+    <% if onboarding_current_step[:key] != "done" %>
+      <% allow_next = onboarding_current_step[:done] || !onboarding_current_step[:required] || onboarding_current_step[:key] == "welcome" %>
+      <div class="card wizard-nav-card">
+        <div class="wizard-nav-actions">
+          <% if onboarding_previous_step.present? %>
+            <%= link_to "Back", onboarding_step_path(onboarding_previous_step[:key]), class: "btn light" %>
+          <% else %>
+            <span></span>
+          <% end %>
+
+          <div class="dashboard-actions">
+            <%= link_to "Cancel", health_path, class: "btn light" %>
+            <% if allow_next && onboarding_next_step.present? %>
+              <%= link_to "Next", onboarding_step_path(onboarding_next_step[:key]), class: "btn" %>
+            <% end %>
+          </div>
+        </div>
+      </div>
+    <% end %>
+  </section>
 </div>

@@ -1,6 +1,6 @@
 class ControllerEventIngestor
   def initialize(payload)
-    @payload = payload
+    @payload = PayloadContracts::ControllerEvent.normalize!(payload)
   end
 
   def call

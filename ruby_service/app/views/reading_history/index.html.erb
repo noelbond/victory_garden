@@ -1,0 +1,368 @@
+<%
+  base_params = request.query_parameters.deep_symbolize_keys.except(:format)
+  persistent_context = base_params.slice(:zone_id, :node_id, :columns, :per_page)
+  sort_params_for = lambda do |column|
+    base_params.merge(sort: column, direction: next_sort_direction_for(column)).except(:page)
+  end
+  page_params_for = lambda do |page|
+    base_params.merge(page: page)
+  end
+  node_tab_params_for = lambda do |node|
+    params_for_tab = base_params.merge(zone_id: @selected_zone&.id, page: nil)
+    node ? params_for_tab.merge(node_id: node.id) : params_for_tab.except(:node_id)
+  end
+  section_params_for = lambda do |section|
+    base_params.merge(section: section, page: nil)
+  end
+  preset_params_for = lambda do |preset|
+    persistent_context.merge(preset[:params])
+  end
+  export_csv_params = base_params.merge(format: :csv)
+  table_column_widths = {
+    "recorded_at" => "210px",
+    "zone" => "190px",
+    "node" => "180px",
+    "moisture_percent" => "130px",
+    "moisture_raw" => "130px",
+    "soil_temp_c" => "130px",
+    "battery_percent" => "130px",
+    "health" => "120px",
+    "last_error" => "240px",
+    "publish_reason" => "170px"
+  }
+  column_value_for = lambda do |reading, column|
+    case column
+    when "recorded_at"
+      reading.recorded_at.utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    when "zone"
+      reading.zone&.name.presence || reading.zone&.zone_id || "—"
+    when "node"
+      reading.node_id
+    when "moisture_percent"
+      reading.moisture_percent.present? ? "#{reading.moisture_percent}%" : "—"
+    when "moisture_raw"
+      reading.moisture_raw || "—"
+    when "soil_temp_c"
+      reading.soil_temp_c || "—"
+    when "battery_percent"
+      reading.battery_percent.present? ? "#{reading.battery_percent}%" : "—"
+    when "health"
+      reading.health || "—"
+    when "last_error"
+      reading.last_error.presence || "none"
+    when "publish_reason"
+      reading.publish_reason || "—"
+    else
+      "—"
+    end
+  end
+%>
+
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Reading History</h1>
+    <div class="muted">
+      <%= @total_readings %> reading<%= "s" unless @total_readings == 1 %>
+      • <%= @from.utc.strftime("%Y-%m-%d %H:%M UTC") %> to <%= @to.utc.strftime("%Y-%m-%d %H:%M UTC") %>
+      • <%= @active_filter_count %> active filter<%= "s" unless @active_filter_count == 1 %>
+    </div>
+  </div>
+  <div class="dashboard-actions">
+    <%= link_to "Clear Filters", reading_history_path, class: "btn light" %>
+  </div>
+</div>
+
+<div class="reading-history-layout">
+  <details class="card reading-sidebar reading-sidebar-shell" data-reading-history-filters-shell open>
+    <summary class="reading-sidebar-toggle">Filters</summary>
+    <div class="reading-sidebar-inner">
+      <div class="reading-sidebar-header">
+        <h3>Filters</h3>
+        <div class="muted">Inbox-style reading search across every node.</div>
+      </div>
+
+      <div class="reading-preset-strip">
+        <% @filter_presets.each do |preset| %>
+          <%= link_to preset[:label], reading_history_path(preset_params_for.call(preset)), class: "reading-preset-chip" %>
+        <% end %>
+      </div>
+
+      <%= form_with url: reading_history_path, method: :get, local: true do %>
+        <%= hidden_field_tag :section, @section %>
+
+        <div class="field">
+          <label for="timeframe">Timeframe</label>
+          <%= select_tag :timeframe,
+            options_for_select(ReadingHistoryController::TIMEFRAME_OPTIONS.map { |value, label| [label, value] }, @timeframe),
+            data: { reading_history_timeframe: true } %>
+        </div>
+
+        <div class="form-grid" data-reading-history-custom-range <%= "hidden" unless @timeframe == "custom" %>>
+          <div class="field">
+            <label for="from">From</label>
+            <%= date_field_tag :from, @from.to_date.iso8601 %>
+          </div>
+          <div class="field">
+            <label for="to">To</label>
+            <%= date_field_tag :to, @to.to_date.iso8601 %>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="zone_id">Zone</label>
+          <%= select_tag :zone_id,
+            options_for_select([["All Zones", nil]] + @zones.map { |zone| [zone.name.presence || zone.zone_id, zone.id] }, @selected_zone&.id),
+            data: { reading_history_auto_submit: true } %>
+        </div>
+
+        <div class="field">
+          <label for="health">Health</label>
+          <%= select_tag :health, options_for_select([["Any Health", nil]] + @health_options.map { |value| [value.titleize, value] }, params[:health]) %>
+        </div>
+
+        <div class="field">
+          <label for="freshness">Freshness</label>
+          <%= select_tag :freshness, options_for_select(@freshness_options, params[:freshness].to_s) %>
+        </div>
+
+        <div class="field">
+          <label for="publish_reason">Publish Reason</label>
+          <%= select_tag :publish_reason, options_for_select([["Any Publish Reason", nil]] + @publish_reason_options.map { |value| [value, value] }, params[:publish_reason]) %>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label for="moisture_min">Min Moisture %</label>
+            <%= number_field_tag :moisture_min, params[:moisture_min], step: 0.1, min: 0, max: 100 %>
+          </div>
+          <div class="field">
+            <label for="moisture_max">Max Moisture %</label>
+            <%= number_field_tag :moisture_max, params[:moisture_max], step: 0.1, min: 0, max: 100 %>
+          </div>
+        </div>
+
+        <div class="field checkbox-field">
+          <label>
+            <%= check_box_tag :errors_only, "1", params[:errors_only] == "1" %>
+            Show only readings with errors
+          </label>
+        </div>
+
+        <details class="reading-columns-picker">
+          <summary>Columns</summary>
+          <div class="reading-columns-grid">
+            <% ReadingHistoryController::TABLE_COLUMNS.each do |column, label| %>
+              <label class="reading-column-option">
+                <%= check_box_tag "columns[]", column, @selected_columns.include?(column) %>
+                <span><%= label %></span>
+              </label>
+            <% end %>
+          </div>
+        </details>
+
+        <div class="field">
+          <label for="per_page">Results Per Page</label>
+          <%= select_tag :per_page, options_for_select(ReadingHistoryController::PER_PAGE_OPTIONS.map { |value| ["#{value} per page", value] }, @per_page) %>
+        </div>
+
+        <div class="reading-sidebar-actions">
+          <%= submit_tag "Apply Filters", class: "btn" %>
+          <%= link_to "Reset", reading_history_path, class: "btn light" %>
+        </div>
+      <% end %>
+    </div>
+  </details>
+
+  <div class="reading-history-content">
+    <% if @selected_zone %>
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="zone-section-header">
+          <h3>Node Tabs</h3>
+          <div class="muted">Default view shows all nodes in the selected zone. Pick a tab to isolate one node.</div>
+        </div>
+        <% if @node_tabs.any? %>
+          <div class="reading-tabs">
+            <%= link_to "All Nodes", reading_history_path(node_tab_params_for.call(nil)), class: "reading-tab #{'active' if @selected_node.blank?}" %>
+            <% @node_tabs.each do |node| %>
+              <%= link_to node.node_id, reading_history_path(node_tab_params_for.call(node)), class: "reading-tab #{'active' if @selected_node == node}" %>
+            <% end %>
+          </div>
+        <% else %>
+          <p class="muted">No assigned nodes are currently attached to this zone.</p>
+        <% end %>
+      </div>
+    <% end %>
+
+    <div class="health-metrics">
+      <div class="card metric-card metric-ok">
+        <div class="metric-label">Visible Readings</div>
+        <div class="metric-value"><%= @total_readings %></div>
+        <div class="muted">after current filters</div>
+      </div>
+      <div class="card metric-card <%= @error_reading_count.positive? ? 'metric-warn' : 'metric-ok' %>">
+        <div class="metric-label">Readings With Errors</div>
+        <div class="metric-value"><%= @error_reading_count %></div>
+        <div class="muted">readings with a reported error</div>
+      </div>
+      <div class="card metric-card metric-ok">
+        <div class="metric-label">Selected Zone</div>
+        <div class="metric-value"><%= @selected_zone&.name.presence || @selected_zone&.zone_id || "All" %></div>
+        <div class="muted"><%= @selected_node&.node_id || "all matching nodes" %></div>
+      </div>
+      <div class="card metric-card metric-ok">
+        <div class="metric-label">Page</div>
+        <div class="metric-value"><%= @page %> / <%= @total_pages %></div>
+        <div class="muted"><%= @per_page %> rows per page</div>
+      </div>
+    </div>
+
+    <div class="card reading-view-tabs-card" style="margin-bottom: 16px;">
+      <div class="reading-tabs">
+        <% ReadingHistoryController::SECTION_OPTIONS.each do |section, label| %>
+          <%= link_to label, reading_history_path(section_params_for.call(section)), class: "reading-tab #{'active' if @section == section}" %>
+        <% end %>
+      </div>
+    </div>
+
+    <% if @section == "readings" %>
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="zone-section-header">
+          <div>
+            <h3>Reading Results</h3>
+            <div class="muted">Click a column header to sort ascending, then descending on the next click.</div>
+          </div>
+          <div class="reading-results-actions">
+            <%= link_to "Export CSV", reading_history_path(export_csv_params), class: "btn light" %>
+          </div>
+        </div>
+
+        <% if @readings.any? %>
+          <div class="health-table-wrap">
+            <table class="health-table reading-results-table">
+              <colgroup>
+                <% table_columns.each do |column, _label| %>
+                  <col style="width: <%= table_column_widths.fetch(column, '160px') %>;">
+                <% end %>
+              </colgroup>
+              <thead>
+                <tr>
+                  <% table_columns.each do |column, label| %>
+                    <th>
+                      <%= link_to reading_history_path(sort_params_for.call(column)), class: "table-sort-link" do %>
+                        <span><%= label %></span>
+                        <% if sort_column == column %>
+                          <span class="table-sort-indicator"><%= sort_direction == "asc" ? "↑" : "↓" %></span>
+                        <% end %>
+                      <% end %>
+                    </th>
+                  <% end %>
+                </tr>
+              </thead>
+              <tbody>
+                <% @readings.each do |reading| %>
+                  <tr>
+                    <% table_columns.each do |column, _label| %>
+                      <td><%= column_value_for.call(reading, column) %></td>
+                    <% end %>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="reading-pagination">
+            <div class="muted">
+              Showing <%= ((@page - 1) * @per_page) + 1 %> to <%= [@page * @per_page, @total_readings].min %> of <%= @total_readings %>
+            </div>
+            <div class="reading-pagination-actions">
+              <% if @page > 1 %>
+                <%= link_to "Previous", reading_history_path(page_params_for.call(@page - 1)), class: "btn light" %>
+              <% end %>
+              <% if @page < @total_pages %>
+                <%= link_to "Next", reading_history_path(page_params_for.call(@page + 1)), class: "btn light" %>
+              <% end %>
+            </div>
+          </div>
+        <% else %>
+          <p class="muted">No readings matched the current filter set.</p>
+        <% end %>
+      </div>
+    <% else %>
+      <div class="card">
+        <div class="zone-section-header">
+          <h3>Trends</h3>
+        </div>
+
+        <div class="chart-summary-grid" style="margin-bottom: 16px;">
+          <div class="chart-summary-card">
+            <div class="zone-metric-label">Completed Waterings</div>
+            <div class="metric-value"><%= @waterings_total_series.values.sum %></div>
+            <div class="muted">manual and automatic combined</div>
+          </div>
+          <div class="chart-summary-card">
+            <div class="zone-metric-label">Zones With Waterings</div>
+            <div class="metric-value"><%= @waterings_by_zone.keys.reject { |label| label == "No completed waterings" }.count %></div>
+            <div class="muted">in the current filtered range</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="col card chart-panel">
+            <% if @selected_zone %>
+              <h3><%= "#{@selected_zone.name.presence || @selected_zone.zone_id} Moisture Over Time" %></h3>
+              <% if @zone_moisture_aggregate_series.present? && @zone_moisture_aggregate_series.any? %>
+                <%= line_chart @zone_moisture_aggregate_series, height: "260px", xtitle: "Time", ytitle: "Average Moisture %" %>
+              <% else %>
+                <p class="muted">No moisture readings in this range.</p>
+              <% end %>
+            <% else %>
+              <h3>Waterings Per Zone</h3>
+              <%= pie_chart @waterings_by_zone, height: "260px" %>
+            <% end %>
+          </div>
+
+          <div class="col card chart-panel">
+            <h3>Total Waterings Over Time</h3>
+            <% if @waterings_total_series.any? %>
+              <%= line_chart @waterings_total_series, height: "260px", xtitle: "Time", ytitle: "Completed Waterings" %>
+            <% else %>
+              <p class="muted">No completed watering totals in this range.</p>
+            <% end %>
+          </div>
+        </div>
+
+        <div class="zone-trend-grid" style="margin-top: 16px;">
+          <% if @selected_zone %>
+            <% if @node_moisture_charts.any? %>
+              <% @node_moisture_charts.each do |node_chart| %>
+                <div class="card chart-panel">
+                  <h3><%= "#{node_chart[:label]} Moisture %" %></h3>
+                  <%= line_chart node_chart[:data], height: "260px", xtitle: "Time", ytitle: "Moisture %" %>
+                </div>
+              <% end %>
+            <% else %>
+              <div class="card chart-panel">
+                <h3>Node Moisture Trends</h3>
+                <p class="muted">No node moisture readings in this range.</p>
+              </div>
+            <% end %>
+          <% else %>
+            <% if @waterings_per_zone_charts.any? %>
+              <% @waterings_per_zone_charts.each do |zone_chart| %>
+                <div class="card chart-panel">
+                  <h3><%= "#{zone_chart[:label]} Waterings Over Time" %></h3>
+                  <%= line_chart zone_chart[:data], height: "260px", xtitle: "Time", ytitle: "Completed Waterings" %>
+                </div>
+              <% end %>
+            <% else %>
+              <div class="card chart-panel">
+                <h3>Waterings By Zone Over Time</h3>
+                <p class="muted">No completed watering events in this range.</p>
+              </div>
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
+  </div>
+</div>

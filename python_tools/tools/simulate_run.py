@@ -40,7 +40,7 @@ def publish_event(
     client.publish(f"greenhouse/zones/{zone_id}/simulate/action", action)
     client.publish(f"greenhouse/zones/{zone_id}/simulate/runtime_seconds_today", str(total_today))
     client.publish(
-        f"greenhouse/zones/{zone_id}/state",
+        f"greenhouse/zones/{zone_id}/nodes/sim-{zone_id}/state",
         json.dumps(
             {
                 "schema_version": NODE_STATE_SCHEMA_VERSION,

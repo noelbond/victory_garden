@@ -179,6 +179,43 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     assert_equal "completed", event.reload.status
   end
 
+  test "daily runtime cap ignores non-completed events" do
+    WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: @zone.crop_profile.daily_max_runtime_sec,
+      reason: "earlier_run",
+      issued_at: Time.current.beginning_of_day + 1.hour,
+      idempotency_key: "zone1-run-cap-fault",
+      status: "fault"
+    )
+
+    event = WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "below_dry_threshold",
+      issued_at: Time.current,
+      idempotency_key: "zone1-run-cap-after-fault",
+      status: "running"
+    )
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "COMPLETED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => event.idempotency_key
+    }
+
+    freeze_time do
+      assert_enqueued_with(job: RequestReadingJob) do
+        ActuatorStatusIngestor.new(payload).call
+      end
+    end
+
+    assert_equal "completed", event.reload.status
+  end
+
   test "duplicate completed status is idempotent" do
     event = WateringEvent.create!(
       zone: @zone,
@@ -315,5 +352,124 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     assert_equal 1, ActuatorStatus.where(zone: @zone, idempotency_key: event.idempotency_key, state: "FAULT").count
     assert_equal 1, Fault.where(zone: @zone, fault_code: "NO_FLOW").count
     assert_equal "fault", event.reload.status
+  end
+
+  test "repeated unresolved fault does not create a second fault row" do
+    first_event = WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "below_dry_threshold",
+      issued_at: Time.current,
+      idempotency_key: "zone1-run-009",
+      status: "running"
+    )
+    second_event = WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "below_dry_threshold",
+      issued_at: 1.minute.from_now,
+      idempotency_key: "zone1-run-009b",
+      status: "running"
+    )
+
+    first_payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "FAULT",
+      "timestamp" => 2.minutes.ago.iso8601,
+      "idempotency_key" => first_event.idempotency_key,
+      "fault_code" => "NO_FLOW",
+      "fault_detail" => "Pump reported no flow"
+    }
+    second_payload = first_payload.merge(
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => second_event.idempotency_key
+    )
+
+    ActuatorStatusIngestor.new(first_payload).call
+    ActuatorStatusIngestor.new(second_payload).call
+
+    assert_equal 2, ActuatorStatus.where(zone: @zone, state: "FAULT").count
+    assert_equal 1, Fault.where(zone: @zone, fault_code: "NO_FLOW", detail: "Pump reported no flow", resolved_at: nil).count
+  end
+
+  test "out of order acknowledged status does not roll event back from completed" do
+    event = WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "below_dry_threshold",
+      issued_at: Time.current,
+      idempotency_key: "zone1-run-010",
+      status: "completed"
+    )
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "ACKNOWLEDGED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => event.idempotency_key
+    }
+
+    ActuatorStatusIngestor.new(payload).call
+
+    assert_equal "completed", event.reload.status
+    assert ActuatorStatus.exists?(zone: @zone, idempotency_key: event.idempotency_key, state: "ACKNOWLEDGED")
+  end
+
+  test "status create rolls back if fault persistence fails" do
+    event = WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "below_dry_threshold",
+      issued_at: Time.current,
+      idempotency_key: "zone1-run-011",
+      status: "running"
+    )
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "FAULT",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => event.idempotency_key,
+      "fault_code" => "NO_FLOW",
+      "fault_detail" => "Pump reported no flow"
+    }
+
+    error = nil
+    original_find_by = Fault.method(:find_by)
+    original_create = Fault.method(:create!)
+    Fault.define_singleton_method(:find_by) { |*_args, **_kwargs| nil }
+    Fault.define_singleton_method(:create!) { |*_args, **_kwargs| raise ActiveRecord::ActiveRecordError, "boom" }
+
+    error = assert_raises(ActiveRecord::ActiveRecordError) { ActuatorStatusIngestor.new(payload).call }
+  ensure
+    Fault.define_singleton_method(:find_by, original_find_by)
+    Fault.define_singleton_method(:create!, original_create)
+    if error
+      assert_equal "boom", error.message
+      assert_equal "running", event.reload.status
+      assert_equal 0, ActuatorStatus.where(zone: @zone, idempotency_key: event.idempotency_key, state: "FAULT").count
+      assert_equal 0, Fault.where(zone: @zone, fault_code: "NO_FLOW").count
+    end
+  end
+
+  test "rejects payloads with unknown keys at ingestor boundary" do
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "state" => "COMPLETED",
+      "timestamp" => Time.current.iso8601,
+      "unexpected" => "nope"
+    }
+
+    error = assert_raises(ArgumentError) do
+      ActuatorStatusIngestor.new(payload).call
+    end
+
+    assert_match "unknown keys", error.message
+    assert_equal 0, ActuatorStatus.count
+    assert_equal 0, Fault.count
   end
 end

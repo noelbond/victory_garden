@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_05_06_143000) do
+ActiveRecord::Schema[8.0].define(version: 2026_05_26_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -136,6 +136,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_05_06_143000) do
     t.datetime "updated_at", null: false
     t.index ["idempotency_key"], name: "index_watering_events_on_idempotency_key", unique: true
     t.index ["zone_id", "issued_at"], name: "index_watering_events_on_zone_id_and_issued_at"
+    t.index ["zone_id", "status"], name: "index_watering_events_on_zone_id_and_status"
     t.index ["zone_id"], name: "index_watering_events_on_zone_id"
   end
 

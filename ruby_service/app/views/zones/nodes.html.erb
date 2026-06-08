@@ -2,23 +2,23 @@
   <%= render "side_nav_fallback", zone: @zone %>
 
   <div class="zone-show-content">
-    <%= turbo_frame_tag "zone_workspace" do %>
+    <%= turbo_frame_tag "zone_workspace", data: { zone_workspace_target: "nodes" } do %>
       <div class="page-header">
         <div>
           <h1 class="page-title"><%= @zone.name.presence || @zone.zone_id %> Nodes</h1>
           <div class="muted">
-            <%= @claimed_nodes.count %> claimed node<%= "s" unless @claimed_nodes.count == 1 %> for this zone.
+            <%= @assigned_nodes.count %> assigned node<%= "s" unless @assigned_nodes.count == 1 %> for this zone.
           </div>
         </div>
         <div class="dashboard-actions">
-          <%= link_to "Back to Zone", zone_path(@zone), class: "btn light", data: { turbo_frame: "zone_workspace" } %>
+          <%= link_to "Back to Zone", zone_path(@zone), class: "btn light", data: { turbo_frame: "_top" } %>
           <%= link_to "All Nodes", nodes_path, class: "btn light", data: { turbo_frame: "_top" } %>
         </div>
       </div>
 
-      <% if @claimed_nodes.any? %>
+      <% if @assigned_nodes.any? %>
         <div class="zone-grid">
-          <% @claimed_nodes.each do |node| %>
+          <% @assigned_nodes.each do |node| %>
             <% reading = @latest_readings_by_node_id[node.node_id] %>
             <% freshness_class = if node.last_seen_at.blank?
                                    "offline"
@@ -37,8 +37,8 @@
                   <div class="muted"><%= node.reported_zone_id.presence || @zone.zone_id %></div>
                 </div>
                 <div class="zone-dashboard-pills">
-                  <span class="health-pill <%= freshness_class %>"><%= node.claimed? ? "claimed" : "unclaimed" %></span>
-                  <span class="health-pill <%= freshness_class %>"><%= freshness_class %></span>
+                  <span class="health-pill <%= freshness_class %>"><%= node.assigned? ? "assigned" : "unassigned" %></span>
+                  <span class="health-pill <%= freshness_class %>"><%= freshness_label(freshness_class) %></span>
                 </div>
               </div>
 
@@ -71,7 +71,7 @@
                 </div>
 
                 <div>
-                  <div class="zone-metric-label">WiFi RSSI</div>
+                  <div class="zone-metric-label">Wi-Fi RSSI</div>
                   <div><strong><%= node.wifi_rssi || "—" %></strong></div>
                 </div>
 
@@ -85,13 +85,13 @@
         </div>
       <% else %>
         <div class="card">
-          <h3>No Nodes Claimed To This Zone</h3>
+          <h3>No Nodes Assigned To This Zone</h3>
           <p class="muted">
-            This zone does not have any claimed sensor nodes yet.
+            This zone does not have any assigned sensor nodes yet.
           </p>
           <div style="margin-top: 16px;">
             <%= link_to "Open Nodes", nodes_path, class: "btn", data: { turbo_frame: "_top" } %>
-            <%= link_to "Open Onboarding", onboarding_path, class: "btn light", data: { turbo_frame: "_top" } %>
+            <%= link_to "Open Setup Wizard", onboarding_path, class: "btn light", data: { turbo_frame: "_top" } %>
           </div>
         </div>
       <% end %>

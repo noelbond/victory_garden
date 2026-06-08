@@ -38,9 +38,7 @@ class ManualWateringActionsTest < ActionDispatch::IntegrationTest
     assert_equal @crop.max_pulse_runtime_sec, event.runtime_seconds
   end
 
-  test "water now while a zone is already running still enqueues a second command" do
-    # The firmware guards re-triggering during an active cycle — Rails does not.
-    # This test documents that intentional behaviour.
+  test "water now while a zone is already running does not enqueue a second command" do
     WateringEvent.create!(
       zone: @zone,
       command: "start_watering",
@@ -51,11 +49,34 @@ class ManualWateringActionsTest < ActionDispatch::IntegrationTest
       status: "running"
     )
 
+    assert_no_difference("WateringEvent.count") do
+      assert_no_enqueued_jobs only: CommandPublishJob do
+        post water_now_zone_path(@zone)
+      end
+    end
+
+    assert_redirected_to zone_path(@zone)
+  end
+
+  test "water now ignores stale non-terminal watering events" do
+    WateringEvent.create!(
+      zone: @zone,
+      command: "start_watering",
+      runtime_seconds: 45,
+      reason: "manual_trigger",
+      issued_at: 2.hours.ago,
+      idempotency_key: "zone1-stale-queued",
+      status: "queued"
+    )
+
     assert_difference("WateringEvent.count", 1) do
       assert_enqueued_jobs 1, only: CommandPublishJob do
         post water_now_zone_path(@zone)
       end
     end
+
+    assert_redirected_to zone_path(@zone)
+    assert_equal "manual_trigger", WateringEvent.order(:id).last.reason
   end
 
   test "stop watering queues a manual stop event and publish job" do

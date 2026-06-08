@@ -12,8 +12,10 @@
       <p>Daily Max Runtime: <%= crop.daily_max_runtime_sec %> s</p>
       <p>Climate: <%= crop.climate_preference.presence || "—" %></p>
       <p>Time to Harvest: <%= crop.time_to_harvest_days || "—" %> days</p>
-      <%= link_to "View", crop_profile_path(crop), class: "btn light" %>
-      <%= link_to "Edit", edit_crop_profile_path(crop), class: "btn light" %>
+      <div class="crop-profile-actions">
+        <%= link_to "View Crop Profile", crop_profile_path(crop), class: "btn light" %>
+        <%= link_to "Edit Crop Profile", edit_crop_profile_path(crop), class: "btn light" %>
+      </div>
     </div>
   <% end %>
 </div>

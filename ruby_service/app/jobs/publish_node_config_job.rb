@@ -9,7 +9,7 @@ class PublishNodeConfigJob < ApplicationJob
     node.update!(
       desired_config: payload,
       config_version: payload[:config_version],
-      config_status: node.claimed? ? "pending" : "unassigned",
+      config_status: node.assigned? ? "pending" : "unassigned",
       config_published_at: Time.current,
       config_error: nil
     )

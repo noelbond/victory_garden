@@ -55,6 +55,6 @@
     <%= link_to "Cancel",
                 params[:return_to].presence || crop_profiles_path,
                 class: "btn light",
-                data: { turbo_frame: (params[:return_to].present? ? "zone_workspace" : "_top") } %>
+                data: { turbo_frame: "_top" } %>
   </div>
 <% end %>

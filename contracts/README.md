@@ -15,12 +15,11 @@ If the firmware payload changes, update these fixtures first and then update the
 
 For the full topic-level transport contract, retain rules, and end-to-end examples, see:
 
-- [`../docs/mqtt.md`](/Users/noel/coding/python/victory_garden/docs/mqtt.md)
+- [`../docs/mqtt.md`](../docs/mqtt.md)
 
 Topic classes:
 
 - `greenhouse/zones/{zone_id}/nodes/{node_id}/state`: canonical retained node state
-- `greenhouse/zones/{zone_id}/state`: legacy retained node state accepted for compatibility
 - `greenhouse/zones/{zone_id}/command`: retained node commands such as `request_reading`
 - `greenhouse/zones/{zone_id}/command_ack`: node command acknowledgements
 - `greenhouse/zones/{zone_id}/actuator/command`: actuator commands published by the Python controller for automatic runs and by Rails for manual operator actions

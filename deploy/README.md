@@ -20,7 +20,7 @@ Each tarball contains:
 
 Release builds are now strict about firmware too:
 
-- `deploy/build_release.sh` verifies `pico_w_sensor_node` and `pico_w_actuator_node` from staged source before writing the release manifest
+- `deploy/build_release.sh` builds bundled UF2s for Pico W and Pico 2 W sensor/actuator boards before writing the release manifest
 - the build host must have `cmake`, `ninja`, and the ARM embedded toolchain (`arm-none-eabi-gcc`, `arm-none-eabi-g++`, `arm-none-eabi-objcopy`, `arm-none-eabi-objdump`)
 - `deploy/install_pi.sh` rejects a release tarball whose manifest does not show a successful firmware verification step
 
@@ -89,13 +89,15 @@ The script will:
 Generated config:
 
 - app env file: `/etc/victory_garden.env`
-- example env template: [`victory_garden.env.example`](/Users/noel/coding/python/victory_garden/deploy/victory_garden.env.example)
+- example env template: [`victory_garden.env.example`](../deploy/victory_garden.env.example)
 
 Web endpoints after install:
 
 - app: `http://<pi-ip>:3000`
 - liveness: `http://<pi-ip>:3000/up`
 - operator health: `http://<pi-ip>:3000/health`
+- setup checklist: `http://<pi-ip>:3000/onboarding`
+- reading history: `http://<pi-ip>:3000/reading_history`
 
 Verify after install:
 

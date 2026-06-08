@@ -3,7 +3,7 @@ class Node < ApplicationRecord
 
   after_commit :enqueue_config_publish_if_zone_changed, on: :update
   after_commit :enqueue_node_config_publish_if_calibration_changed, on: :update
-  after_commit :enqueue_config_publish_if_destroyed_claimed, on: :destroy
+  after_commit :enqueue_config_publish_if_destroyed_assigned, on: :destroy
 
   validates :node_id, presence: true, uniqueness: true
   validates :battery_voltage, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 10 }, allow_nil: true
@@ -14,15 +14,20 @@ class Node < ApplicationRecord
   validates :moisture_raw_wet, numericality: { greater_than_or_equal_to: 0, only_integer: true }, allow_nil: true
   validate :moisture_calibration_is_valid
 
-  scope :unclaimed, -> { where(zone_id: nil) }
-  scope :claimed, -> { where.not(zone_id: nil) }
+  scope :unassigned, -> { where(zone_id: nil) }
+  scope :assigned, -> { where.not(zone_id: nil) }
 
-  def claimed?
+  def assigned?
     zone_id.present?
   end
 
   def calibration_configured?
     moisture_raw_dry.present? && moisture_raw_wet.present?
+  end
+
+  def expected_publish_interval_seconds
+    interval_ms = zone&.publish_interval_ms.presence || Zone::DEFAULT_PUBLISH_INTERVAL_MS
+    [interval_ms.to_i / 1000.0, 1.0].max
   end
 
   private
@@ -33,14 +38,14 @@ class Node < ApplicationRecord
     ConfigPublishJob.perform_later
   end
 
-  def enqueue_config_publish_if_destroyed_claimed
+  def enqueue_config_publish_if_destroyed_assigned
     return if zone_id.blank?
 
     ConfigPublishJob.perform_later
   end
 
   def enqueue_node_config_publish_if_calibration_changed
-    return unless claimed?
+    return unless assigned?
     return unless saved_change_to_moisture_raw_dry? || saved_change_to_moisture_raw_wet?
 
     PublishNodeConfigJob.perform_later(id)

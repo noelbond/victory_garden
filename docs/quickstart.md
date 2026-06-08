@@ -6,12 +6,11 @@ It assumes:
 
 - one Raspberry Pi on your LAN
 - one actuator zone
-- one claimed sensor node
-- one claimed actuator node
+- one sensor node that will be assigned to the zone in Rails
+- one dedicated actuator Pico for that zone
 - Mosquitto and Rails running on the Pi
-- one dedicated actuator Pico listening on the actuator topics
 
-If you need the full install flow first, start with [`setup.md`](/Users/noel/coding/python/victory_garden/docs/setup.md).
+If you need the full install flow first, start with [`setup.md`](../docs/setup.md).
 
 ## 1. Install the Pi stack
 
@@ -34,7 +33,7 @@ sudo systemctl status victory-garden-mqtt-consumer.service --no-pager
 
 Then open:
 
-- `http://<pi-ip>:3000/onboarding`
+- `http://<pi-ip>:3000/onboarding` for the `Setup Checklist`
 - `http://<pi-ip>:3000/health`
 
 ## 2. Configure the app
@@ -46,20 +45,20 @@ In the Rails UI:
    - MQTT host points to the Pi broker
    - MQTT port is `1883`
    - MQTT username/password match the Pi broker if auth is enabled
-3. create one crop profile if needed
-   - use the onboarding page, the crop profile library, or the zone form's `Create Custom Profile` action
+3. create one Crop Profile if needed
+   - use the Setup Checklist, the Crop Profile library, or the zone form's `Create Custom Crop Profile` action
 4. create one zone
 
-The health page should show the app is running even before a node is claimed.
+The health page should show the app is running even before a node is assigned.
 
 ## 3. Bring up the sensor and actuator nodes
 
 You need:
 
 - one sensor node:
-  - Arduino MKR WiFi 1010 firmware, or
-  - Pico W sensor firmware
-- one Pico W actuator node
+  - Pico W sensor firmware, or
+  - Pico 2 W sensor firmware
+- one Pico W or Pico 2 W actuator node
 
 Set each node to publish to the Pi broker IP. If the Pi IP changes later, the Pico firmwares will rediscover it automatically through the Pi's UDP discovery service.
 
@@ -68,8 +67,7 @@ For the Pico builds:
 ```bash
 git submodule update --init --recursive
 export PICO_SDK_PATH="$PWD/firmware/pico-sdk"
-cmake -S firmware/pico_w_sensor_node -B firmware/pico_w_sensor_node/build -G Ninja -DPICO_BOARD=pico_w
-cmake --build firmware/pico_w_sensor_node/build --target pico_w_sensor_node pico_w_actuator_node
+./deploy/build_firmware_bundles.sh
 ```
 
 Before running that, make sure:
@@ -79,8 +77,10 @@ Before running that, make sure:
 
 Flash:
 
-- `firmware/pico_w_sensor_node/build/pico_w_sensor_node.uf2` to the sensor Pico
-- `firmware/pico_w_sensor_node/build/pico_w_actuator_node.uf2` to the actuator Pico
+- `firmware-bundles/pico_w_sensor_node.uf2` for a Pico W sensor board
+- `firmware-bundles/pico2_w_sensor_node.uf2` for a Pico 2 W sensor board
+- `firmware-bundles/pico_w_actuator_node.uf2` for a Pico W actuator board
+- `firmware-bundles/pico2_w_actuator_node.uf2` for a Pico 2 W actuator board
 
 ## 4. Confirm node discovery
 
@@ -99,17 +99,17 @@ In Rails:
 
 1. open `Nodes`
 2. confirm the sensor node appears
-3. claim it to the zone you created
+3. assign it to the zone you created
 4. if needed, open the node detail page and change the zone's crop profile there
 
 Important:
 
-- unclaimed nodes are visible and updated
-- only claimed nodes persist readings and trigger automatic decisions
+- unassigned nodes are visible and updated
+- only assigned nodes persist readings and trigger automatic decisions
 
 ## 5. Confirm live ingest
 
-After the node is claimed:
+After the node is assigned:
 
 - the health page should show the node
 - Rails should persist new `sensor_readings`
@@ -155,17 +155,19 @@ You should see:
 
 Check:
 
-- `/onboarding`
+- `/onboarding` (`Setup Checklist`)
 - `/health`
+- `/reading_history`
 - the zone detail page
 
 At minimum, these should show:
 
-- claimed node
+- assigned node
 - latest reading
 - watering history
 - latest actuator status
 - faults if anything failed
+- Reading History filters, CSV export, and trends
 
 ## 8. Recommended next checks
 
@@ -186,6 +188,5 @@ The software stack is ready for one-zone operation, but the final hardware valid
 
 Calibration note:
 
-- the Arduino node supports explicit dry/wet calibration in its local config
 - the Pico sensor node uses the seesaw I2C moisture sensor with dry/wet calibration bounds in firmware
-- see [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
+- see [`calibration.md`](../docs/calibration.md)

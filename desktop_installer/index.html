@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Victory Garden Installer</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero-card">
+        <div class="hero-copy-block">
+          <p class="eyebrow">Victory Garden Installer</p>
+          <h1>Flash the Pi in Raspberry Pi Imager, then finish setup here.</h1>
+          <p class="hero-copy">
+            This installer is now the setup wizard. It finds the Pi, saves the
+            initial Victory Garden configuration, creates the first crop profile
+            and zone, and only then moves on to the Pico boards.
+          </p>
+        </div>
+        <div class="progress-strip">
+          <div class="progress-chip" id="progress-pi">Pi Not Found</div>
+          <div class="progress-chip" id="progress-connection">Connection Not Saved</div>
+          <div class="progress-chip" id="progress-zone">Zone Not Created</div>
+          <div class="progress-chip" id="progress-sensor">Sensor Not Flashed</div>
+          <div class="progress-chip" id="progress-actuator">Actuator Not Provisioned</div>
+          <div class="progress-chip" id="progress-reading">Reading Not Verified</div>
+          <div class="progress-chip" id="progress-calibration">Calibration Not Saved</div>
+          <div class="progress-chip" id="progress-watering">Watering Not Verified</div>
+        </div>
+      </section>
+
+      <section class="step-card" id="step-pi">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 1</p>
+            <h2>Find The Pi</h2>
+          </div>
+          <div class="step-pill" id="pi-step-pill">Waiting</div>
+        </div>
+        <p class="step-copy">
+          Boot the Pi from the Victory Garden image you flashed in Raspberry Pi
+          Imager. Then enter the hostname or URL you configured in Imager. The
+          installer will verify that the Victory Garden app is reachable.
+        </p>
+        <label class="field">
+          <span>Pi Hostname Or URL</span>
+          <input id="wizard-url" type="text" placeholder="victory-garden.local or http://192.168.4.33:3000" />
+        </label>
+        <div class="actions">
+          <button id="find-pi" class="btn primary">Find Pi</button>
+        </div>
+        <div class="status-panel">
+          <span class="status-label">Pi Status</span>
+          <strong id="wizard-status">Waiting for you to boot the flashed Pi.</strong>
+        </div>
+      </section>
+
+      <section class="step-card" id="step-connection">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 2</p>
+            <h2>Configure Victory Garden</h2>
+          </div>
+          <div class="step-pill" id="connection-step-pill">Waiting</div>
+        </div>
+        <p class="step-copy">
+          Save the MQTT connection and installed water-zone count before any Pico
+          hardware is configured.
+        </p>
+        <div class="form-grid two-up">
+          <label class="field">
+            <span>Pico Wi-Fi SSID</span>
+            <input id="pico-wifi-ssid" type="text" placeholder="Your Wi-Fi network name" />
+          </label>
+          <label class="field">
+            <span>Pico Wi-Fi Password</span>
+            <input id="pico-wifi-password" type="password" placeholder="Your Wi-Fi password" />
+          </label>
+          <label class="field">
+            <span>MQTT Host</span>
+            <input id="mqtt-host" type="text" placeholder="127.0.0.1" />
+          </label>
+          <label class="field">
+            <span>MQTT Port</span>
+            <input id="mqtt-port" type="number" min="1" max="65535" placeholder="1883" />
+          </label>
+          <label class="field">
+            <span>MQTT Username</span>
+            <input id="mqtt-username" type="text" placeholder="victory_garden" />
+          </label>
+          <label class="field">
+            <span>MQTT Password</span>
+            <input id="mqtt-password" type="password" placeholder="Broker password" />
+          </label>
+          <label class="field">
+            <span>Installed Water Zones</span>
+            <input id="irrigation-line-count" type="number" min="1" placeholder="1" />
+          </label>
+        </div>
+        <p class="status-copy">The Pi manages broker credentials automatically. The installer will use the Pi's active MQTT username and password when provisioning Pico nodes.</p>
+        <div class="actions">
+          <button id="save-connection" class="btn primary">Save Connection Settings</button>
+        </div>
+        <p id="connection-status" class="status-copy">Find the Pi first to load and save its configuration.</p>
+      </section>
+
+      <section class="step-card" id="step-crop">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 3</p>
+            <h2>Create The First Crop Profile</h2>
+          </div>
+          <div class="step-pill" id="crop-step-pill">Waiting</div>
+        </div>
+        <div class="form-grid two-up">
+          <label class="field">
+            <span>Crop Name</span>
+            <input id="crop-name" type="text" placeholder="Tomatoes" />
+          </label>
+          <label class="field">
+            <span>Dry Threshold (%)</span>
+            <input id="dry-threshold" type="number" min="0" max="100" step="0.1" placeholder="30" />
+          </label>
+          <label class="field">
+            <span>Max Pulse Runtime (sec)</span>
+            <input id="max-pulse-runtime" type="number" min="0" placeholder="45" />
+          </label>
+          <label class="field">
+            <span>Daily Max Runtime (sec)</span>
+            <input id="daily-max-runtime" type="number" min="0" placeholder="300" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="create-crop-profile" class="btn primary">Create Crop Profile</button>
+        </div>
+        <div class="facts">
+          <div class="fact">
+            <span>Saved Crop Profiles</span>
+            <strong id="crop-profile-summary">No crop profile selected yet</strong>
+          </div>
+        </div>
+        <p id="crop-status" class="status-copy">Save a crop profile before creating the first zone.</p>
+      </section>
+
+      <section class="step-card" id="step-zone">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 4</p>
+            <h2>Create The First Zone</h2>
+          </div>
+          <div class="step-pill" id="zone-step-pill">Waiting</div>
+        </div>
+        <div class="form-grid two-up">
+          <label class="field">
+            <span>Zone Name</span>
+            <input id="zone-name" type="text" placeholder="Front Planter" />
+          </label>
+          <label class="field">
+            <span>Water Zone Number</span>
+            <input id="zone-line" type="number" min="1" placeholder="1" />
+          </label>
+          <label class="field">
+            <span>Reading Frequency (hours)</span>
+            <input id="zone-frequency-hours" type="number" min="1" placeholder="1" />
+          </label>
+          <label class="field">
+            <span>Crop Profile</span>
+            <select id="zone-crop-profile"></select>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="save-zone" class="btn primary">Save First Zone</button>
+        </div>
+        <p id="zone-status" class="status-copy">Create a crop profile first, then save the first zone.</p>
+      </section>
+
+      <section class="step-card" id="step-sensor">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 5</p>
+            <h2>Flash The Sensor Pico</h2>
+          </div>
+          <div class="step-pill" id="sensor-step-pill">Waiting</div>
+        </div>
+        <ol class="step-list">
+          <li>Unplug the Sensor Pico.</li>
+          <li>Hold <code>BOOTSEL</code> while plugging it into this computer.</li>
+          <li>Wait for the installer to detect the BOOTSEL drive.</li>
+          <li>Click <strong>Use Detected Pico For Sensor Node</strong>. The installer will flash either a <strong>Pico W</strong> or <strong>Pico 2 W (RP2350)</strong> with the matching sensor firmware, provision Wi-Fi and MQTT, then wait for the node to appear and assign it automatically.</li>
+          <li>After flashing finishes, unplug the Pico from this computer and reconnect it to the actual sensor hardware so it can read the probe and report to the Pi.</li>
+        </ol>
+        <div class="status-panel">
+          <span class="status-label">Detection Status</span>
+          <strong id="sensor-device-status">Click Detect Pico after you plug in the Sensor Pico using BOOTSEL.</strong>
+        </div>
+        <div class="actions">
+          <button id="refresh-sensor-devices" class="btn subtle">Detect Pico</button>
+        </div>
+        <div class="device-panel">
+          <div class="device-copy">
+            <span class="status-label">Detected Pico</span>
+            <strong id="sensor-detected-title">No Pico detected yet</strong>
+            <p id="sensor-detected-detail" class="status-copy">Plug in one Pico in BOOTSEL mode. Use one board at a time.</p>
+          </div>
+          <button id="flash-sensor" class="btn primary">Use Detected Pico For Sensor Node</button>
+        </div>
+        <p id="sensor-status" class="status-copy">Click Detect Pico after the Sensor Pico appears in BOOTSEL mode.</p>
+      </section>
+
+      <section class="step-card" id="step-actuator">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 6</p>
+            <h2>Flash The Actuator Pico</h2>
+          </div>
+          <div class="step-pill" id="actuator-step-pill">Waiting</div>
+        </div>
+        <ol class="step-list">
+          <li>Unplug the Sensor Pico after it reboots.</li>
+          <li>Hold <code>BOOTSEL</code> while plugging in the Actuator Pico.</li>
+          <li>Wait for the installer to detect the BOOTSEL drive.</li>
+          <li>Click <strong>Use Detected Pico For Actuator Node</strong>. The installer will flash either a <strong>Pico W</strong> or <strong>Pico 2 W (RP2350)</strong> with the matching actuator firmware and provision the saved Wi-Fi and MQTT settings.</li>
+          <li>After provisioning finishes, unplug the Pico from this computer and reconnect it to the actual actuator hardware so it can receive watering commands from the Pi.</li>
+          <li>The installer will wait until the actuator node appears on the Pi before it marks this step complete.</li>
+        </ol>
+        <div class="status-panel">
+          <span class="status-label">Detection Status</span>
+          <strong id="actuator-device-status">Click Detect Pico after you plug in the Actuator Pico using BOOTSEL.</strong>
+        </div>
+        <div class="actions">
+          <button id="refresh-actuator-devices" class="btn subtle">Detect Pico</button>
+        </div>
+        <div class="device-panel">
+          <div class="device-copy">
+            <span class="status-label">Detected Pico</span>
+            <strong id="actuator-detected-title">No Pico detected yet</strong>
+            <p id="actuator-detected-detail" class="status-copy">Plug in one Pico in BOOTSEL mode. Use one board at a time.</p>
+          </div>
+          <button id="flash-actuator" class="btn primary">Use Detected Pico For Actuator Node</button>
+        </div>
+        <p id="actuator-status" class="status-copy">Click Detect Pico after the Actuator Pico appears in BOOTSEL mode.</p>
+      </section>
+
+      <section class="step-card" id="step-reading">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 7</p>
+            <h2>Confirm The First Reading</h2>
+          </div>
+          <div class="step-pill" id="reading-step-pill">Waiting</div>
+        </div>
+        <p class="step-copy">
+          Once the sensor node is online, ask it for an immediate reading and wait until the Pi persists a fresh sample. The sensor Pico must be connected to the real sensor hardware, not left attached to this computer.
+        </p>
+        <div class="facts">
+          <div class="fact">
+            <span>Assigned Sensor Node</span>
+            <strong id="reading-node-summary">No sensor node assigned yet</strong>
+          </div>
+          <div class="fact">
+            <span>Latest Reading</span>
+            <strong id="reading-detail-summary">No reading confirmed yet</strong>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="request-reading" class="btn primary">Request First Reading</button>
+        </div>
+        <p id="reading-status" class="status-copy">Finish the sensor setup first.</p>
+      </section>
+
+      <section class="step-card" id="step-calibration">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 8</p>
+            <h2>Calibrate The Sensor Node</h2>
+          </div>
+          <div class="step-pill" id="calibration-step-pill">Waiting</div>
+        </div>
+        <p class="step-copy">
+          Prepare two containers of soil before you continue. One container should have dry soil. The other should have saturated soil. Place the sensor probe in the dry soil first, then capture ten readings for the dry calibration. After that, move the sensor into the saturated soil and capture ten readings for the wet calibration. You can recalibrate this sensor later anytime in the Victory Garden app.
+        </p>
+        <div class="facts">
+          <div class="fact">
+            <span>Dry Calibration</span>
+            <strong id="calibration-dry-summary">Not captured yet</strong>
+          </div>
+          <div class="fact">
+            <span>Wet Calibration</span>
+            <strong id="calibration-wet-summary">Not captured yet</strong>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="capture-dry-calibration" class="btn primary">Capture Dry Calibration</button>
+          <button id="capture-wet-calibration" class="btn subtle">Capture Wet Calibration</button>
+        </div>
+        <p id="calibration-status" class="status-copy">Confirm the first reading before calibration.</p>
+      </section>
+
+      <section class="step-card" id="step-watering">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 9</p>
+            <h2>Confirm The First Watering</h2>
+          </div>
+          <div class="step-pill" id="watering-step-pill">Waiting</div>
+        </div>
+        <p class="step-copy">
+          Start one manual watering cycle and wait until the actuator reports a terminal status back to the Pi. The actuator Pico must be connected to the real actuator hardware, not left attached to this computer.
+        </p>
+        <div class="facts">
+          <div class="fact">
+            <span>Target Zone</span>
+            <strong id="watering-zone-summary">No zone ready yet</strong>
+          </div>
+          <div class="fact">
+            <span>Latest Watering Result</span>
+            <strong id="watering-detail-summary">No watering cycle confirmed yet</strong>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="start-watering" class="btn primary">Run First Watering Cycle</button>
+        </div>
+        <p id="watering-status" class="status-copy">Finish the actuator setup first.</p>
+      </section>
+
+      <section class="step-card" id="step-finish">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Finish</p>
+            <h2>Open The Dashboard</h2>
+          </div>
+          <div class="step-pill" id="finish-step-pill">Waiting</div>
+        </div>
+        <p class="step-copy">
+          When the Pi configuration is saved, the sensor has connected, and both
+          Pico boards are online on their real hardware, you can hand off
+          to the main Victory Garden web app from here.
+        </p>
+        <div class="facts">
+          <div class="fact">
+            <span>Pi URL</span>
+            <strong id="verified-url">Not verified yet</strong>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="open-dashboard" class="btn subtle">Open Victory Garden Web App</button>
+          <button id="export-diagnostics" class="btn subtle">Export Diagnostics</button>
+        </div>
+        <p id="finish-status" class="status-copy">Finish the setup steps above first.</p>
+        <p id="support-status" class="status-copy">No diagnostic bundle exported yet.</p>
+      </section>
+    </main>
+  </body>
+</html>

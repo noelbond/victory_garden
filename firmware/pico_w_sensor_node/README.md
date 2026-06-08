@@ -2,10 +2,6 @@
 
 Native Raspberry Pi Pico W firmware for the Victory Garden sensor node.
 
-This implementation is separate from the Arduino-based firmware in
-`firmware/arduino/mkr1010_sensor_node/` so both hardware options can be
-supported in parallel.
-
 Current scope:
 - boot and serial logging
 - persisted node config stored in flash
@@ -90,4 +86,4 @@ Then edit `src/config_local.h` with your real Wi-Fi and broker settings.
 
 For the current calibration story, see:
 
-- [`../../docs/calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
+- [`../../docs/calibration.md`](../docs/calibration.md)

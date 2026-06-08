@@ -21,9 +21,9 @@ class SensorIngestorTest < ActiveSupport::TestCase
     clear_performed_jobs
   end
 
-  test "ingests canonical node fixture for a claimed node without enqueuing watering command" do
+  test "ingests canonical node fixture for an assigned node without enqueuing watering command" do
     Node.create!(
-      node_id: "mkr1010-zone1",
+      node_id: "pico-w-zone1",
       zone: @zone,
       last_seen_at: 1.hour.ago,
       config_status: "applied"
@@ -38,12 +38,12 @@ class SensorIngestorTest < ActiveSupport::TestCase
     end
 
     reading = SensorReading.order(:created_at).last
-    node = Node.find_by!(node_id: "mkr1010-zone1")
+    node = Node.find_by!(node_id: "pico-w-zone1")
     assert_equal @zone, reading.zone
     assert_equal "node-state/v1", reading.schema_version
     assert_equal(-54, reading.wifi_rssi)
     assert_equal "node-state/v1", reading.raw_payload["schema_version"]
-    assert_equal "mkr1010-zone1", reading.raw_payload["node_id"]
+    assert_equal "pico-w-zone1", reading.raw_payload["node_id"]
     assert_equal "zone1", reading.raw_payload["zone_id"]
     assert_equal 354, reading.raw_payload["moisture_raw"]
     assert_equal reading.recorded_at.iso8601(3), reading.raw_payload["recorded_at"]
@@ -55,7 +55,7 @@ class SensorIngestorTest < ActiveSupport::TestCase
     assert_equal 0, WateringEvent.count
   end
 
-  test "ingests partial payload for a claimed node without making watering decision" do
+  test "ingests partial payload for an assigned node without making watering decision" do
     Node.create!(
       node_id: "partial-zone1",
       zone: @zone,
@@ -76,25 +76,25 @@ class SensorIngestorTest < ActiveSupport::TestCase
     assert_equal 0, WateringEvent.count
   end
 
-  test "updates an unclaimed node but skips persistence and decisions" do
-    payload = load_fixture("node-state-v1.json").merge("node_id" => "unclaimed-zone1")
+  test "updates an unassigned node but skips persistence and decisions" do
+    payload = load_fixture("node-state-v1.json").merge("node_id" => "unassigned-zone1")
 
     assert_no_enqueued_jobs only: CommandPublishJob do
       SensorIngestor.new(payload).call
     end
 
-    node = Node.find_by!(node_id: "unclaimed-zone1")
+    node = Node.find_by!(node_id: "unassigned-zone1")
 
     assert_nil node.zone
     assert_equal "zone1", node.reported_zone_id
     assert_equal "degraded", node.health
-    assert_equal 0, SensorReading.where(node_id: "unclaimed-zone1").count
+    assert_equal 0, SensorReading.where(node_id: "unassigned-zone1").count
     assert_equal 0, WateringEvent.count
   end
 
   test "ignores duplicate node state for the same node and timestamp" do
     Node.create!(
-      node_id: "mkr1010-zone1",
+      node_id: "pico-w-zone1",
       zone: @zone,
       last_seen_at: 1.hour.ago,
       config_status: "applied"
@@ -109,13 +109,13 @@ class SensorIngestorTest < ActiveSupport::TestCase
       end
     end
 
-    assert_equal 1, SensorReading.where(node_id: "mkr1010-zone1", recorded_at: SensorReading.order(:created_at).last.recorded_at).count
+    assert_equal 1, SensorReading.where(node_id: "pico-w-zone1", recorded_at: SensorReading.order(:created_at).last.recorded_at).count
     assert_equal 0, WateringEvent.count
   end
 
   test "persists a stale reading but does not make an automatic decision" do
     Node.create!(
-      node_id: "mkr1010-zone1",
+      node_id: "pico-w-zone1",
       zone: @zone,
       last_seen_at: Time.current,
       config_status: "applied"
@@ -129,7 +129,7 @@ class SensorIngestorTest < ActiveSupport::TestCase
     end
 
     reading = SensorReading.order(:created_at).last
-    node = Node.find_by!(node_id: "mkr1010-zone1")
+    node = Node.find_by!(node_id: "pico-w-zone1")
 
     assert_equal stale_time.to_i, reading.recorded_at.to_i
     assert_equal 0, WateringEvent.count
@@ -139,14 +139,14 @@ class SensorIngestorTest < ActiveSupport::TestCase
   test "uses DB-assigned zone even when node reports a different zone_id in payload" do
     other_zone = create(:zone, zone_id: "zone2", name: "Zone 2")
     Node.create!(
-      node_id: "mkr1010-zone1",
+      node_id: "pico-w-zone1",
       zone: @zone,
       last_seen_at: 1.hour.ago,
       config_status: "applied"
     )
 
     payload = load_fixture("node-state-v1.json").merge(
-      "node_id" => "mkr1010-zone1",
+      "node_id" => "pico-w-zone1",
       "zone_id" => other_zone.zone_id,
       "timestamp" => Time.current.utc.iso8601
     )
@@ -155,13 +155,13 @@ class SensorIngestorTest < ActiveSupport::TestCase
 
     reading = SensorReading.order(:created_at).last
     assert_equal @zone, reading.zone, "reading should be filed under the DB-assigned zone, not the payload zone_id"
-    assert_equal other_zone.zone_id, Node.find_by!(node_id: "mkr1010-zone1").reported_zone_id
+    assert_equal other_zone.zone_id, Node.find_by!(node_id: "pico-w-zone1").reported_zone_id
   end
 
   test "does not move node last_seen_at backwards when an older reading arrives" do
     recent_seen_at = 2.minutes.ago.utc
     Node.create!(
-      node_id: "mkr1010-zone1",
+      node_id: "pico-w-zone1",
       zone: @zone,
       last_seen_at: recent_seen_at,
       config_status: "applied"
@@ -171,6 +171,28 @@ class SensorIngestorTest < ActiveSupport::TestCase
 
     SensorIngestor.new(payload).call
 
-    assert_equal recent_seen_at.to_i, Node.find_by!(node_id: "mkr1010-zone1").last_seen_at.to_i
+    assert_equal recent_seen_at.to_i, Node.find_by!(node_id: "pico-w-zone1").last_seen_at.to_i
+  end
+
+  test "rejects payloads that fail node state contract validation" do
+    Node.create!(
+      node_id: "pico-w-zone1",
+      zone: @zone,
+      last_seen_at: Time.current,
+      config_status: "applied"
+    )
+
+    payload = load_fixture("node-state-v1.json").merge(
+      "timestamp" => Time.current.utc.iso8601,
+      "unexpected" => "nope"
+    )
+
+    error = assert_raises(ArgumentError) do
+      SensorIngestor.new(payload).call
+    end
+
+    assert_match "unknown keys", error.message
+    assert_equal 0, SensorReading.count
+    assert_equal 0, WateringEvent.count
   end
 end

@@ -12,7 +12,7 @@ module PayloadContracts
       normalized = NodeState.normalize!(payload)
 
       assert_equal "node-state/v1", normalized["schema_version"]
-      assert_equal "mkr1010-zone1", normalized["node_id"]
+      assert_equal "pico-w-zone1", normalized["node_id"]
       assert_equal "zone1", normalized["zone_id"]
       assert_instance_of Time, normalized["recorded_at"]
     end
@@ -77,6 +77,30 @@ module PayloadContracts
       assert_raises(ArgumentError) { NodeState.normalize!(payload) }
     end
 
+    test "rejects out-of-range moisture_percent" do
+      payload = load_fixture("node-state-v1.json").merge("moisture_percent" => 101.0)
+
+      error = assert_raises(ArgumentError) { NodeState.normalize!(payload) }
+
+      assert_match("moisture_percent out of range", error.message)
+    end
+
+    test "rejects out-of-range wifi_rssi" do
+      payload = load_fixture("node-state-v1.json").merge("wifi_rssi" => -131)
+
+      error = assert_raises(ArgumentError) { NodeState.normalize!(payload) }
+
+      assert_match("wifi_rssi out of range", error.message)
+    end
+
+    test "rejects negative uptime_seconds" do
+      payload = load_fixture("node-state-v1.json").merge("uptime_seconds" => -1)
+
+      error = assert_raises(ArgumentError) { NodeState.normalize!(payload) }
+
+      assert_match("uptime_seconds out of range", error.message)
+    end
+
     test "rejects non-hash payload" do
       error = assert_raises(ArgumentError) { NodeState.normalize!([1, 2, 3]) }
 
@@ -84,4 +108,3 @@ module PayloadContracts
     end
   end
 end
-

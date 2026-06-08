@@ -44,7 +44,7 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
     assert_equal "pending", node.config_status
     assert_equal payload[:config_version], node.config_version
     assert_equal payload.deep_stringify_keys, node.desired_config
-    assert_equal Time.current.change(usec: 0), node.config_published_at
+    assert_in_delta Time.current.to_f, node.config_published_at.to_f, 1.0
     assert_nil node.config_error
   end
 

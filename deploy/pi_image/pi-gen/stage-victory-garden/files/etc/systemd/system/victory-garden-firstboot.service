@@ -1,0 +1,15 @@
+[Unit]
+Description=Victory Garden First Boot Provisioning
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/victory-garden/firstboot-complete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/victory-garden-firstboot.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

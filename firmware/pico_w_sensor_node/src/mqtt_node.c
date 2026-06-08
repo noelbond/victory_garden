@@ -556,6 +556,11 @@ static void handle_command_message(mqtt_node_t *node, const char *payload) {
     char command[32] = {0};
     char command_id[64] = {0};
     char target_node_id[VG_MAX_NODE_ID_LEN] = {0};
+
+    if (!payload || payload[0] == '\0') {
+        return;
+    }
+
     bool targeted = extract_json_string(payload, "node_id", target_node_id, sizeof(target_node_id));
 
     if (!extract_json_string(payload, "command", command, sizeof(command)) ||
@@ -680,6 +685,7 @@ static void subscribe_topics(mqtt_node_t *node) {
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status) {
     mqtt_node_t *node = (mqtt_node_t *)arg;
     (void)client;
+    printf("[mqtt_cb] status=%d\n", (int)status);
     g_runtime.connected = (status == MQTT_CONNECT_ACCEPTED);
     if (g_runtime.connected) {
         mqtt_close_broker_discovery();
@@ -687,6 +693,7 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection
         g_runtime.subscriptions_pending = true;
         set_error(node, "none");
     } else {
+        printf("[mqtt_cb] not accepted - status=%d\n", (int)status);
         set_error(node, "mqtt disconnected");
         g_runtime.next_reconnect_at = make_timeout_time_ms(5000);
         g_runtime.discovery_next_attempt_at = get_absolute_time();

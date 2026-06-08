@@ -5,7 +5,8 @@ class SettingsController < ApplicationController
 
   def update
     @setting = ConnectionSetting.first || ConnectionSetting.new
-    if @setting.update(setting_params)
+    @setting.assign_attributes(setting_params)
+    if @setting.save
       redirect_to settings_path, notice: "Connection settings updated."
     else
       render :show, status: :unprocessable_entity

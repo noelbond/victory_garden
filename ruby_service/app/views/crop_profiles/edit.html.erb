@@ -5,16 +5,15 @@
          Zone.where(crop_profile_id: @crop_profile.id).order(:id).first
 %>
 
-<div class="zone-show-layout">
-  <%= render "zones/side_nav_fallback", zone: zone if zone.present? %>
-
-  <div class="zone-show-content">
-    <%= turbo_frame_tag "zone_workspace" do %>
-      <div class="page-header">
-        <h1 class="page-title">Edit Crop Profile</h1>
+<%= turbo_frame_tag "zone_workspace", class: "card zone-workspace-page", data: { zone_workspace_target: "crop-profile" } do %>
+  <div class="page-header crop-profile-page-header">
+    <h1 class="page-title">Edit Crop Profile</h1>
+    <% if zone.present? %>
+      <div class="dashboard-actions">
+        <%= link_to "Back to Zone", zone_path(zone), class: "btn light", data: { turbo_frame: "_top" } %>
       </div>
-
-      <%= render "form", crop_profile: @crop_profile %>
     <% end %>
   </div>
-</div>
+
+  <%= render "form", crop_profile: @crop_profile %>
+<% end %>

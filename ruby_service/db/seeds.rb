@@ -32,7 +32,7 @@ end
 
 ConnectionSetting.find_or_create_by!(mqtt_host: "localhost") do |s|
   s.mqtt_port = 1883
-  s.readings_topic = "greenhouse/zones/+/state"
+  s.readings_topic = "greenhouse/zones/+/nodes/+/state"
   s.actuators_topic = "greenhouse/zones/+/actuator/status"
   s.command_topic = "greenhouse/zones/{zone_id}/actuator/command"
   s.config_topic = "greenhouse/system/config/current"

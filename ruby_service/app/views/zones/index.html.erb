@@ -2,8 +2,8 @@
   <div>
     <h1 class="page-title">Garden Dashboard</h1>
     <div class="muted">Zone overview for readings, watering state, and open issues.</div>
-    <% if @unclaimed_node_count.to_i > 0 %>
-      <div class="muted"><%= @unclaimed_node_count %> unclaimed node<%= "s" unless @unclaimed_node_count == 1 %> discovered.</div>
+    <% if @unassigned_node_count.to_i > 0 %>
+      <div class="muted"><%= @unassigned_node_count %> unassigned node<%= "s" unless @unassigned_node_count == 1 %> discovered.</div>
     <% end %>
   </div>
   <div class="dashboard-actions">
@@ -20,7 +20,7 @@
     <div class="muted">currently enabled zones</div>
   </div>
   <div class="card metric-card <%= @summary[:expected_sensor_count].positive? && @summary[:fresh_sensor_count] == @summary[:expected_sensor_count] ? "metric-ok" : "metric-warn" %>">
-    <div class="metric-label">Fresh Sensors</div>
+    <div class="metric-label">Fresh Nodes</div>
     <div class="metric-value"><%= @summary[:fresh_sensor_count] %> / <%= @summary[:expected_sensor_count] %></div>
     <div class="muted">aggregate inputs within <%= @aggregate_freshness_minutes %> minutes</div>
   </div>
@@ -73,7 +73,7 @@
         </div>
 
         <div>
-          <div class="zone-metric-label">Zone</div>
+          <div class="zone-metric-label">Water Zone</div>
           <div><strong><%= zone.irrigation_line || "—" %></strong></div>
         </div>
 
@@ -82,7 +82,7 @@
           <% if zone.nodes.any? %>
             <div><%= zone.nodes.sort_by(&:node_id).map(&:node_id).join(", ") %></div>
           <% else %>
-            <div class="muted">No claimed nodes</div>
+            <div class="muted">No assigned nodes</div>
           <% end %>
         </div>
 

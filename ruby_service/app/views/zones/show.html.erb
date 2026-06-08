@@ -10,6 +10,31 @@
   </div>
 </div>
 
+<% active_zone_tab = params[:zone_tab].presence_in(%w[zone-details zone-history notifications recent-faults]) || "zone-details" %>
+<% zone_nav_link_class = lambda do |tab|
+     classes = ["zone-side-nav-link"]
+     classes << "active" if active_zone_tab == tab
+     classes.join(" ")
+   end %>
+<% zone_action_link_class = lambda do |target|
+     ["zone-side-nav-link", "zone-side-nav-action"].join(" ")
+   end %>
+
+<details class="card zone-side-nav zone-side-nav-mobile" data-zone-side-nav-mobile>
+  <summary class="zone-side-nav-toggle">Navigate</summary>
+  <div class="zone-side-nav-mobile-inner">
+    <nav class="zone-side-nav-links" aria-label="Zone sections">
+      <%= link_to "Notifications", zone_path(@zone, zone_tab: "notifications"), class: zone_nav_link_class.call("notifications"), data: { zone_nav_target: "notifications" } %>
+      <%= link_to "Zone Details", zone_path(@zone, zone_tab: "zone-details"), class: zone_nav_link_class.call("zone-details"), data: { zone_nav_target: "zone-details" } %>
+      <%= link_to "Zone History", zone_path(@zone, zone_tab: "zone-history"), class: zone_nav_link_class.call("zone-history"), data: { zone_nav_target: "zone-history" } %>
+      <%= link_to "Recent Faults", zone_path(@zone, zone_tab: "recent-faults"), class: zone_nav_link_class.call("recent-faults"), data: { zone_nav_target: "recent-faults" } %>
+      <%= link_to "Edit Zone", edit_zone_path(@zone), class: zone_action_link_class.call("edit-zone"), data: { turbo_frame: "zone_workspace", zone_nav_target: "edit-zone" } %>
+      <%= link_to "Crop Profile", crop_profile_path(@zone.crop_profile, return_to: zone_path(@zone), zone_id: @zone.id), class: zone_action_link_class.call("crop-profile"), data: { turbo_frame: "zone_workspace", zone_nav_target: "crop-profile" } %>
+      <%= link_to "Nodes", zone_nodes_path(@zone), class: zone_action_link_class.call("nodes"), data: { turbo_frame: "zone_workspace", zone_nav_target: "nodes" } %>
+    </nav>
+  </div>
+</details>
+
 <div class="health-metrics">
   <div class="card metric-card <%= @zone.active ? "metric-ok" : "metric-alert" %>">
     <div class="metric-label">Zone State</div>
@@ -39,14 +64,14 @@
       <% end %>
     </div>
   </div>
-  <div class="card metric-card <%= @open_fault_count.positive? ? "metric-alert" : "metric-ok" %>">
+  <%= link_to zone_path(@zone, zone_tab: "recent-faults"),
+              class: "card metric-card metric-card-link #{@open_fault_count.positive? ? "metric-alert" : "metric-ok"}",
+              data: { zone_nav_target: "recent-faults" } do %>
     <div class="metric-label">Open Faults</div>
     <div class="metric-value"><%= @open_fault_count %></div>
     <div class="muted">unresolved for this zone</div>
-  </div>
+  <% end %>
 </div>
-
-<% active_zone_tab = params[:zone_tab].presence_in(%w[zone-details zone-history notifications recent-faults]) || "zone-details" %>
 
 <div class="zone-show-layout">
   <input type="radio" name="zone-section" id="zone-nav-details" class="zone-nav-toggle" <%= "checked" if active_zone_tab == "zone-details" %>>
@@ -54,16 +79,16 @@
   <input type="radio" name="zone-section" id="zone-nav-notifications" class="zone-nav-toggle" <%= "checked" if active_zone_tab == "notifications" %>>
   <input type="radio" name="zone-section" id="zone-nav-faults" class="zone-nav-toggle" <%= "checked" if active_zone_tab == "recent-faults" %>>
 
-  <aside class="card zone-side-nav">
+  <aside class="card zone-side-nav zone-side-nav-desktop">
     <h3>Navigate</h3>
     <nav class="zone-side-nav-links" aria-label="Zone sections">
-      <label class="zone-side-nav-link" for="zone-nav-notifications">Notifications</label>
-      <label class="zone-side-nav-link" for="zone-nav-details">Zone Details</label>
-      <label class="zone-side-nav-link" for="zone-nav-history">Zone History</label>
-      <label class="zone-side-nav-link" for="zone-nav-faults">Recent Faults</label>
-      <%= link_to "Edit Zone", edit_zone_path(@zone), class: "zone-side-nav-link zone-side-nav-action", data: { turbo_frame: "zone_workspace" } %>
-      <%= link_to "Crop Profile", crop_profile_path(@zone.crop_profile, return_to: zone_path(@zone), zone_id: @zone.id), class: "zone-side-nav-link zone-side-nav-action", data: { turbo_frame: "zone_workspace" } %>
-      <%= link_to "Nodes", zone_nodes_path(@zone), class: "zone-side-nav-link zone-side-nav-action", data: { turbo_frame: "zone_workspace" } %>
+      <%= link_to "Notifications", zone_path(@zone, zone_tab: "notifications"), class: zone_nav_link_class.call("notifications"), data: { zone_nav_target: "notifications" } %>
+      <%= link_to "Zone Details", zone_path(@zone, zone_tab: "zone-details"), class: zone_nav_link_class.call("zone-details"), data: { zone_nav_target: "zone-details" } %>
+      <%= link_to "Zone History", zone_path(@zone, zone_tab: "zone-history"), class: zone_nav_link_class.call("zone-history"), data: { zone_nav_target: "zone-history" } %>
+      <%= link_to "Recent Faults", zone_path(@zone, zone_tab: "recent-faults"), class: zone_nav_link_class.call("recent-faults"), data: { zone_nav_target: "recent-faults" } %>
+      <%= link_to "Edit Zone", edit_zone_path(@zone), class: zone_action_link_class.call("edit-zone"), data: { turbo_frame: "zone_workspace", zone_nav_target: "edit-zone" } %>
+      <%= link_to "Crop Profile", crop_profile_path(@zone.crop_profile, return_to: zone_path(@zone), zone_id: @zone.id), class: zone_action_link_class.call("crop-profile"), data: { turbo_frame: "zone_workspace", zone_nav_target: "crop-profile" } %>
+      <%= link_to "Nodes", zone_nodes_path(@zone), class: zone_action_link_class.call("nodes"), data: { turbo_frame: "zone_workspace", zone_nav_target: "nodes" } %>
     </nav>
   </aside>
 
@@ -84,14 +109,14 @@
       <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
       <li>Max Pulse Runtime: <%= @zone.crop_profile.max_pulse_runtime_sec %> s</li>
       <li>Daily Max Runtime: <%= @zone.crop_profile.daily_max_runtime_sec %> s</li>
-      <li>Zone: <%= @zone.irrigation_line || "—" %></li>
+      <li>Water Zone: <%= @zone.irrigation_line || "—" %></li>
       <li>Reading Frequency: <%= @zone.reading_frequency_hours || "—" %><%= " hours" if @zone.reading_frequency_hours.present? %></li>
       <li>Climate: <%= @zone.crop_profile.climate_preference.presence || "—" %></li>
       <li>Time to Harvest: <%= @zone.crop_profile.time_to_harvest_days || "—" %> days</li>
       <li>
-        Claimed Nodes (<%= @claimed_nodes.count %>):
-        <% if @claimed_nodes.any? %>
-          <%= @claimed_nodes.map(&:node_id).join(", ") %>
+        Assigned Nodes (<%= @assigned_nodes.count %>):
+        <% if @assigned_nodes.any? %>
+          <%= @assigned_nodes.map(&:node_id).join(", ") %>
           (<%= link_to "view", zone_nodes_path(@zone) %>)
         <% else %>
           —
@@ -103,15 +128,15 @@
         <div class="col card">
           <h3>Zone Moisture Aggregate</h3>
           <ul class="list">
-      <li>Freshness: <span class="health-pill <%= @aggregate_freshness %>"><%= @aggregate_freshness %></span></li>
+      <li>Freshness: <span class="health-pill <%= @aggregate_freshness %>"><%= freshness_label(@aggregate_freshness) %></span></li>
       <li>Average Moisture: <%= @zone_moisture_snapshot[:average_moisture] || "—" %><%= "%" if @zone_moisture_snapshot[:average_moisture].present? %></li>
       <li>Average Raw: <%= @zone_moisture_snapshot[:average_raw] || "—" %></li>
       <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
-      <li>Fresh Sensors: <%= @zone_moisture_snapshot[:valid_sensor_count] %> / <%= @zone_moisture_snapshot[:expected_sensor_count] %></li>
-      <li>Fresh Nodes: <%= @zone_moisture_snapshot[:valid_node_ids].presence&.join(", ") || "—" %></li>
+      <li>Valid Sensor Count: <%= @zone_moisture_snapshot[:valid_sensor_count] %> / <%= @zone_moisture_snapshot[:expected_sensor_count] %></li>
+      <li>Fresh Node IDs: <%= @zone_moisture_snapshot[:valid_node_ids].presence&.join(", ") || "—" %></li>
       <li>Missing Nodes: <%= @zone_moisture_snapshot[:missing_node_ids].presence&.join(", ") || "—" %></li>
       <li>Stale Nodes: <%= @zone_moisture_snapshot[:stale_node_ids].presence&.join(", ") || "—" %></li>
-      <li>No-Moisture Nodes: <%= @zone_moisture_snapshot[:null_moisture_node_ids].presence&.join(", ") || "—" %></li>
+      <li>Nodes Without Moisture Readings: <%= @zone_moisture_snapshot[:null_moisture_node_ids].presence&.join(", ") || "—" %></li>
       <li>
         Aggregate Updated:
         <% if @zone_moisture_snapshot[:latest_recorded_at].present? %>
@@ -128,14 +153,14 @@
           <% if @latest_reading %>
             <% reading_guidance = reading_error_guidance(@latest_reading) %>
             <ul class="list">
-        <li>Freshness: <span class="health-pill <%= @reading_freshness %>"><%= @reading_freshness %></span></li>
+        <li>Freshness: <span class="health-pill <%= @reading_freshness %>"><%= freshness_label(@reading_freshness) %></span></li>
         <li>Schema: <%= @latest_reading.schema_version || "—" %></li>
         <li>Moisture: <%= @latest_reading.moisture_percent || "—" %>%</li>
         <li>Raw: <%= @latest_reading.moisture_raw %></li>
         <li>Soil Temp: <%= @latest_reading.soil_temp_c || "—" %> C</li>
         <li>Battery: <%= @latest_reading.battery_voltage || "—" %> V</li>
         <li>Battery Percent: <%= @latest_reading.battery_percent || "—" %>%</li>
-        <li>WiFi RSSI: <%= @latest_reading.wifi_rssi || "—" %> dBm</li>
+        <li>Wi-Fi RSSI: <%= @latest_reading.wifi_rssi || "—" %> dBm</li>
         <li>Wake Count: <%= @latest_reading.wake_count || "—" %></li>
         <li>Health: <%= @latest_reading.health || "—" %></li>
         <li>
@@ -149,7 +174,7 @@
                        fix: reading_guidance[:fix] %>
           <% end %>
         </li>
-        <li>Reason: <%= @latest_reading.publish_reason || "—" %></li>
+        <li>Publish Reason: <%= @latest_reading.publish_reason || "—" %></li>
         <li>Recorded: <%= @latest_reading.recorded_at %></li>
             </ul>
           <% else %>
@@ -188,7 +213,7 @@
       <% if @last_watering_event %>
         <li>Last Command: <%= @last_watering_event.command %></li>
         <li>Requested Runtime: <%= @last_watering_event.runtime_seconds || "—" %> s</li>
-        <li>Reason: <%= @last_watering_event.reason || "—" %></li>
+        <li>Watering Reason: <%= @last_watering_event.reason || "—" %></li>
         <li>Event Status: <%= @last_watering_event.status || "—" %></li>
         <li>Issued: <%= @last_watering_event.issued_at %></li>
       <% else %>
@@ -204,7 +229,7 @@
         <h3>Zone History</h3>
         <div class="chart-controls">
           <% ["week", "month", "year", "ytd"].each do |r| %>
-            <%= link_to r.upcase, zone_path(@zone, range: r), class: "btn light" %>
+            <%= link_to r.upcase, zone_path(@zone, request.query_parameters.symbolize_keys.merge(range: r, zone_tab: "zone-history")), class: "btn light" %>
           <% end %>
         </div>
       </div>
@@ -228,7 +253,7 @@
                 moisture: <%= reading.moisture_percent || "—" %>%,
                 temp: <%= reading.soil_temp_c || "—" %> C,
                 battery: <%= reading.battery_percent || "—" %>%,
-                wifi_rssi: <%= reading.wifi_rssi || "—" %> dBm,
+                Wi-Fi RSSI: <%= reading.wifi_rssi || "—" %> dBm,
                 node: <%= reading.node_id %>,
                 health: <%= reading.health || "—" %>
               </li>

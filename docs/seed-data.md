@@ -4,7 +4,8 @@ Victory Garden ships with a small default Rails seed set for first-run developme
 
 Source:
 
-- [`../ruby_service/db/seeds.rb`](/Users/noel/coding/python/victory_garden/ruby_service/db/seeds.rb)
+- [`../ruby_service/db/seeds.rb`](../ruby_service/db/seeds.rb)
+- demo UI seed script: [`../ruby_service/script/seed_demo_data.rb`](../ruby_service/script/seed_demo_data.rb)
 
 ## Seeded Crop Profiles
 
@@ -46,7 +47,7 @@ The default connection settings seed assumes the broker runs locally on the Pi:
 - `mqtt_port`: `1883`
 - `mqtt_username`: blank by default for local development
 - `mqtt_password`: blank by default for local development
-- readings topic: `greenhouse/zones/+/state`
+- readings topic: `greenhouse/zones/+/nodes/+/state`
 - actuators topic: `greenhouse/zones/+/actuator/status`
 - command topic: `greenhouse/zones/{zone_id}/actuator/command`
 - config topic: `greenhouse/system/config/current`
@@ -60,6 +61,39 @@ Seeds are applied by:
 - local development setup via `./bin/dev-rails db:prepare`
 - Pi install via `deploy/install_pi.sh`
 
+## Demo UI Seed Data
+
+For the Reading History page and broader operator UI smoke checks, use the separate demo seed script:
+
+Warning:
+
+- local development and test use only by default
+- overwrites `ConnectionSetting` with demo/local broker values
+- upserts demo crop profiles and demo zones with canonical IDs such as `tomato`, `basil`, `zone1`, `zone2`, and `zone3`
+- recreates demo readings, watering events, actuator statuses, and demo faults
+- must not be used as production bootstrap data
+
+```bash
+cd ruby_service
+./bin/dev-rails runner script/seed_demo_data.rb
+```
+
+If you intentionally need to run it outside development/test, use an explicit override:
+
+```bash
+cd ruby_service
+ALLOW_DEMO_SEED=1 ./bin/dev-rails runner script/seed_demo_data.rb
+```
+
+This script creates:
+
+- multiple zones
+- assigned and unassigned demo nodes
+- varied sensor readings across multiple dates
+- completed watering history for trend charts
+
+It is intended for local UI validation, not production bootstrap.
+
 ## Important Note
 
 These seeded values are starting points, not final production agronomy values.
@@ -70,4 +104,4 @@ In practice you will usually adjust:
 - pulse runtime
 - daily cap
 - connection settings
-- claimed node assignments
+- assigned node mappings

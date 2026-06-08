@@ -132,6 +132,24 @@ class ControllerEventIngestorTest < ActiveSupport::TestCase
       ControllerEventIngestor.new(payload).call
     end
 
-    assert_match "Invalid runtime_seconds", error.message
+    assert_match "invalid runtime_seconds", error.message
+  end
+
+  test "rejects payloads with unknown keys at ingestor boundary" do
+    payload = {
+      "zone_id" => "zone1",
+      "timestamp" => "2026-03-31T20:00:00Z",
+      "action" => "water",
+      "runtime_seconds" => 45,
+      "idempotency_key" => "zone1-20260331T200000Z-unknown-key",
+      "unexpected" => "nope"
+    }
+
+    error = assert_raises(ArgumentError) do
+      ControllerEventIngestor.new(payload).call
+    end
+
+    assert_match "unknown keys", error.message
+    assert_equal 0, WateringEvent.count
   end
 end

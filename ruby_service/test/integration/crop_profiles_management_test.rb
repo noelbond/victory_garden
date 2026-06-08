@@ -14,18 +14,17 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
     clear_performed_jobs
   end
 
-  test "onboarding links to custom crop profile creation" do
-    get onboarding_path
+  test "zone step renders inline crop profile creation inside onboarding" do
+    get onboarding_path(step: "zone")
 
     assert_response :success
-    assert_includes response.body, "Custom Crop Profiles"
-    assert_includes response.body, "Create Custom Profile"
+    assert_includes response.body, "Create Crop Profile"
+    assert_includes response.body, "Stay in the wizard."
   end
 
-  test "creating a crop profile from onboarding redirects back to onboarding" do
+  test "creating a crop profile from onboarding stays on the wizard zone step" do
     assert_difference("CropProfile.count", 1) do
-      post crop_profiles_path, params: {
-        return_to: onboarding_path,
+      post onboarding_crop_profile_path, params: {
         crop_profile: {
           crop_name: "Custom Basil",
           dry_threshold: 34.0,
@@ -38,15 +37,40 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
       }
     end
 
-    assert_redirected_to onboarding_path
     crop = CropProfile.order(:id).last
+    assert_redirected_to onboarding_path(step: "zone", crop_profile_id: crop.id, sensor_board: "pico_w", actuator_board: "pico_w")
     assert_equal "custom-basil", crop.crop_id
   end
 
-  test "creating a crop profile rejects daily max runtime below max pulse runtime" do
+  test "creating a crop profile from onboarding preserves the unsaved zone draft" do
+    post onboarding_crop_profile_path, params: {
+      zone_draft: {
+        name: "Propagation Bench",
+        active: "true",
+        irrigation_line: "3",
+        publish_interval_ms: "7200000"
+      },
+      crop_profile: {
+        crop_name: "Mint",
+        dry_threshold: 28.0,
+        max_pulse_runtime_sec: 20,
+        daily_max_runtime_sec: 120,
+        climate_preference: "Cool",
+        notes: "Keep evenly moist"
+      }
+    }
+
+    follow_redirect!
+
+    assert_response :success
+    assert_select "input[name='zone[name]'][value='Propagation Bench']"
+    assert_select "input[name='zone[irrigation_line]'][value='3']"
+    assert_select "select[name='zone[publish_interval_ms]'] option[selected][value='7200000']"
+  end
+
+  test "creating a crop profile from onboarding rejects daily max runtime below max pulse runtime" do
     assert_no_difference("CropProfile.count") do
-      post crop_profiles_path, params: {
-        return_to: onboarding_path,
+      post onboarding_crop_profile_path, params: {
         crop_profile: {
           crop_name: "Broken Squash",
           dry_threshold: 30.0,
@@ -58,7 +82,7 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :unprocessable_entity
-    assert_includes response.body, "Profile could not be saved"
+    assert_includes response.body, "Crop profile could not be saved"
     assert_includes response.body, "Daily max runtime sec must be greater than or equal to max pulse runtime"
   end
 
@@ -71,8 +95,8 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
     get node_path(node)
 
     assert_response :success
-    assert_includes response.body, "Apply Profile To This Node's Zone"
-    assert_includes response.body, "Edit Current Profile"
+    assert_includes response.body, "Apply Crop Profile To This Zone"
+    assert_includes response.body, "Edit Crop Profile"
 
     assert_enqueued_with(job: ConfigPublishJob) do
       assert_enqueued_with(job: PublishNodeConfigJob) do
@@ -105,7 +129,7 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
   test "creating a crop profile from a node page applies it to that node's zone" do
     original_crop = create(:crop_profile, crop_name: "Basil")
     zone = create(:zone, name: "Greenhouse Zone 2", crop_profile: original_crop)
-    node = Node.create!(node_id: "demo-unclaimed-1", zone: zone, last_seen_at: Time.current)
+    node = Node.create!(node_id: "demo-unassigned-1", zone: zone, last_seen_at: Time.current)
 
     assert_difference("CropProfile.count", 1) do
       assert_enqueued_with(job: ConfigPublishJob) do
@@ -132,7 +156,7 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
 
     follow_redirect!
     assert_response :success
-    assert_includes response.body, "Current Profile:</strong> Squash"
+    assert_includes response.body, "Crop Profile:</strong> Squash"
     assert_select "option[selected]", text: "Squash"
   end
 end

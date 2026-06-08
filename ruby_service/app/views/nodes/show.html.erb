@@ -1,14 +1,15 @@
-<div class="page-header">
+<div class="page-header node-page-header">
   <div>
     <h1 class="page-title"><%= @node.node_id %></h1>
     <div class="muted">
-      <%= @node.claimed? ? "Claimed" : "Unclaimed" %>
+      <%= @node.assigned? ? "Assigned" : "Unassigned" %>
       <% if @node.zone.present? %>
         • Zone: <%= @node.zone.name.presence || @node.zone.zone_id %>
       <% end %>
     </div>
   </div>
-  <div>
+  <div class="dashboard-actions node-page-actions">
+    <%= link_to "View Node Readings", readings_node_path(@node), class: "btn light" %>
     <%= link_to "Back to Nodes", nodes_path, class: "btn light" %>
   </div>
 </div>
@@ -24,7 +25,7 @@
       <li>Last Seen: <%= @node.last_seen_at %></li>
       <li>Provisioned: <%= @node.provisioned ? "Yes" : "No" %></li>
       <li>Health: <%= @node.health.presence || "—" %></li>
-      <li>WiFi RSSI: <%= @node.wifi_rssi || "—" %> dBm</li>
+      <li>Wi-Fi RSSI: <%= @node.wifi_rssi || "—" %> dBm</li>
       <li>Battery Voltage: <%= @node.battery_voltage || "—" %> V</li>
       <li>
         Last Error: <%= @node.last_error.presence || "—" %>
@@ -40,7 +41,7 @@
       <li>Config Status: <%= @node.config_status.presence || "—" %></li>
       <li>Config Version: <%= @node.config_version.presence || "—" %></li>
       <li>Config Published: <%= @node.config_published_at || "—" %></li>
-      <li>Config Acked: <%= @node.config_acknowledged_at || "—" %></li>
+      <li>Config Acknowledged: <%= @node.config_acknowledged_at || "—" %></li>
       <li>
         Config Error: <%= @node.config_error.presence || "—" %>
         <% if @node.config_status == "error" || @node.config_status == "pending" || @node.config_error.present? %>
@@ -56,24 +57,24 @@
   </div>
 
   <div class="col card">
-    <h3>Claim Node</h3>
+    <h3>Assign Node</h3>
     <% if @available_zones.any? %>
-      <%= form_with url: claim_node_path(@node), method: :patch do %>
+      <%= form_with url: assign_node_path(@node), method: :patch do %>
         <div class="field">
-          <label for="zone_id">Assign to Zone</label>
+          <label for="zone_id">Assign To Zone</label>
           <%= select_tag :zone_id, options_for_select(@available_zones.map { |zone| [zone.name.presence || zone.zone_id, zone.id] }, @node.zone_id) %>
         </div>
         <div style="margin-top: 16px;">
-          <%= submit_tag "Claim", class: "btn" %>
+          <%= submit_tag "Assign", class: "btn" %>
         </div>
       <% end %>
     <% else %>
-      <p class="muted">Create a zone first, then claim this node.</p>
+      <p class="muted">Create a zone first, then assign this node.</p>
     <% end %>
 
     <div style="margin-top: 16px;">
-      <% if @node.claimed? %>
-        <%= button_to "Unclaim", unclaim_node_path(@node), method: :patch, class: "btn light" %>
+      <% if @node.assigned? %>
+        <%= button_to "Unassign", unassign_node_path(@node), method: :patch, class: "btn light" %>
         <%= button_to "Request Reading", request_reading_node_path(@node), method: :post, class: "btn light" %>
         <%= button_to "Reboot Node", reboot_node_path(@node), method: :post, class: "btn light" %>
       <% end %>
@@ -86,10 +87,16 @@
   <div class="col card">
     <h3>Sensor Calibration</h3>
     <p class="muted">Calibration belongs to this node and stays fixed until you deliberately replace it.</p>
-    <ul class="list">
-      <li>Dry Calibration Raw: <%= @node.moisture_raw_dry || "—" %></li>
-      <li>Wet Calibration Raw: <%= @node.moisture_raw_wet || "—" %></li>
-    </ul>
+    <div class="chart-summary-grid" style="margin-bottom: 16px;">
+      <div class="chart-summary-card">
+        <div class="zone-metric-label">Dry Calibration Raw</div>
+        <div class="metric-value"><%= @node.moisture_raw_dry || "—" %></div>
+      </div>
+      <div class="chart-summary-card">
+        <div class="zone-metric-label">Wet Calibration Raw</div>
+        <div class="metric-value"><%= @node.moisture_raw_wet || "—" %></div>
+      </div>
+    </div>
 
     <%= form_with model: @node, url: update_calibration_node_path(@node), method: :patch do |f| %>
       <div class="field">
@@ -112,12 +119,12 @@
     <div class="col card">
       <h3>Current Crop Profile</h3>
       <p><strong>Zone:</strong> <%= @node.zone.name.presence || @node.zone.zone_id %></p>
-      <p><strong>Current Profile:</strong> <%= @node.zone.crop_profile.crop_name %></p>
+      <p><strong>Crop Profile:</strong> <%= @node.zone.crop_profile.crop_name %></p>
       <p><strong>Dry Threshold:</strong> <%= @node.zone.crop_profile.dry_threshold %>%</p>
       <p><strong>Max Pulse Runtime:</strong> <%= @node.zone.crop_profile.max_pulse_runtime_sec %> s</p>
       <p><strong>Daily Max Runtime:</strong> <%= @node.zone.crop_profile.daily_max_runtime_sec %> s</p>
       <div style="margin-top: 16px;">
-        <%= link_to "Edit Current Profile", edit_crop_profile_path(@node.zone.crop_profile, return_to: node_path(@node)), class: "btn light" %>
+        <%= link_to "Edit Crop Profile", edit_crop_profile_path(@node.zone.crop_profile, return_to: node_path(@node)), class: "btn light" %>
       </div>
     </div>
 
@@ -127,31 +134,30 @@
 
       <%= form_with url: crop_profile_node_path(@node), method: :patch do %>
         <div class="field">
-          <label for="crop_profile_id">Apply Profile To This Node's Zone</label>
+          <label for="crop_profile_id">Apply Crop Profile To This Zone</label>
           <%= select_tag :crop_profile_id, options_from_collection_for_select(@crop_profiles, :id, :crop_name, @node.zone.crop_profile_id) %>
         </div>
         <div style="margin-top: 16px;">
-          <%= submit_tag "Apply Profile", class: "btn" %>
+          <%= submit_tag "Apply Crop Profile", class: "btn" %>
         </div>
       <% end %>
 
-      <div style="margin-top: 16px;">
-        <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: node_path(@node), apply_zone_id: @node.zone_id), class: "btn light" %>
+      <div class="dashboard-actions" style="margin-top: 16px;">
+        <%= link_to "Create Custom Crop Profile", new_crop_profile_path(return_to: node_path(@node), apply_zone_id: @node.zone_id), class: "btn light" %>
       </div>
     </div>
   <% else %>
     <div class="col card">
       <h3>Current Crop Profile</h3>
-      <p class="muted">Claim this node first, then assign a crop profile to its zone.</p>
+      <p class="muted">Assign this node first, then assign a crop profile to its zone.</p>
     </div>
 
     <div class="col card">
       <h3>Select Crop Profile</h3>
-      <p class="muted">Create a custom profile now, then claim this node to a zone before applying it.</p>
-      <div style="margin-top: 16px;">
-        <%= link_to "Create Custom Profile", new_crop_profile_path(return_to: node_path(@node)), class: "btn light" %>
+      <p class="muted">Create a custom crop profile now, then assign this node to a zone before applying it.</p>
+      <div class="dashboard-actions" style="margin-top: 16px;">
+        <%= link_to "Create Custom Crop Profile", new_crop_profile_path(return_to: node_path(@node)), class: "btn light" %>
       </div>
     </div>
   <% end %>
-  </div>
 </div>

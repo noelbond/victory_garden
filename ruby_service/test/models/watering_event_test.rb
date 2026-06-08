@@ -76,4 +76,20 @@ class WateringEventTest < ActiveSupport::TestCase
     event = WateringEvent.new(valid_attrs.merge(command: "start_watering", runtime_seconds: 60))
     assert event.valid?
   end
+
+  test "blocking_start_commands excludes stale non-terminal events" do
+    stale = WateringEvent.create!(valid_attrs.merge(
+      idempotency_key: "zone1-we-stale",
+      issued_at: 2.hours.ago,
+      status: "queued"
+    ))
+    fresh = WateringEvent.create!(valid_attrs.merge(
+      idempotency_key: "zone1-we-fresh",
+      issued_at: 1.minute.ago,
+      status: "running"
+    ))
+
+    assert_not_includes WateringEvent.blocking_start_commands, stale
+    assert_includes WateringEvent.blocking_start_commands, fresh
+  end
 end

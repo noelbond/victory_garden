@@ -6,7 +6,7 @@ Rails is the UI, configuration authority, persistence layer, and manual-operatio
 
 - manage crop profiles and zones
 - register provisioned nodes discovered from MQTT state payloads
-- allow claiming many nodes to a zone through the UI
+- allow assigning many nodes to a zone through the UI
 - consume node state, including optional telemetry fields when present
 - record watering events, actuator status, and faults
 - publish manual actuator commands plus node configuration
@@ -18,14 +18,14 @@ Rails is the UI, configuration authority, persistence layer, and manual-operatio
 
 Rails validates incoming node state against the shared contract fixtures in:
 
-- [`../contracts/README.md`](/Users/noel/coding/python/victory_garden/contracts/README.md)
-- [`../contracts/examples/node-state-v1.json`](/Users/noel/coding/python/victory_garden/contracts/examples/node-state-v1.json)
+- [`../contracts/README.md`](../contracts/README.md)
+- [`../contracts/examples/node-state-v1.json`](../contracts/examples/node-state-v1.json)
 
-The Rails MQTT ingest path normalizes the canonical `node-state/v1` payload and still accepts the legacy `rssi` alias for compatibility.
+The Rails MQTT ingest path validates the canonical `node-state/v1` payload and still accepts the legacy `rssi` alias for compatibility.
 
 ## Setup
 
-From [`ruby_service/`](/Users/noel/coding/python/victory_garden/ruby_service):
+From `ruby_service/`:
 
 - `./bin/dev-bundle install`
 - `./bin/dev-rails db:prepare`
@@ -48,6 +48,26 @@ Recommended local verification after setup:
 - node config publish and config ack ingest
 - MQTT topic normalization and retained-clear handling
 
+## Operator Surfaces
+
+Primary operator pages:
+
+- Setup Checklist: `/onboarding`
+- Health: `/health`
+- Reading History: `/reading_history`
+- Watering Events: `/watering_events`
+- Settings: `/settings`
+
+Reading History is the cross-node operator inbox. It supports:
+
+- `Readings` and `Trends` tabs
+- zone and node filtering
+- `Freshness`, `Health`, `Publish Reason`, moisture-range, and error filters
+- CSV export for the current filtered result set
+- per-column sort and selectable visible columns
+
+Node detail pages also expose `View Node Readings`, which is the node-scoped version of the same filtering/export surface.
+
 ## Main Models
 
 - `CropProfile`
@@ -59,7 +79,7 @@ Recommended local verification after setup:
 - `Fault`
 - `ConnectionSetting`
 
-Crop profiles are user-managed from the Rails UI. Operators can create custom profiles during onboarding, while creating/editing zones, or from a claimed node's detail page.
+Crop profiles are user-managed from the Rails UI. Operators can create custom Crop Profiles during the setup checklist, while creating/editing zones, or from an assigned node's detail page.
 
 ## MQTT Defaults
 
@@ -67,7 +87,7 @@ Crop profiles are user-managed from the Rails UI. Operators can create custom pr
 - `MQTT_PORT`: `1883`
 - `MQTT_USERNAME`: optional in local development, required on the deployed Pi
 - `MQTT_PASSWORD`: optional in local development, required on the deployed Pi
-- `MQTT_READINGS_TOPIC`: `greenhouse/zones/+/state`
+- `MQTT_READINGS_TOPIC`: `greenhouse/zones/+/nodes/+/state`
 - `MQTT_ACTUATORS_TOPIC`: `greenhouse/zones/+/actuator/status`
 - node config topic: `greenhouse/nodes/{node_id}/config`
 - node config ack topic: `greenhouse/nodes/{node_id}/config_ack`
@@ -76,7 +96,7 @@ Crop profiles are user-managed from the Rails UI. Operators can create custom pr
 
 ## Source Of Truth
 
-- PostgreSQL is authoritative for crop profiles, zones, node claims, watering history, faults, and node config sync status.
+- PostgreSQL is authoritative for crop profiles, zones, node assignments, watering history, faults, and node config sync status.
 - MQTT retained node state is the live transport layer for sleeping devices and the Python controller's working input.
 - `nodes.zone_id` is authoritative for routing. `reported_zone_id` from node payloads is stored for visibility only.
 - Actuation is external to this Rails app. Rails publishes zone-scoped actuator commands and consumes zone-scoped actuator status messages from the dedicated actuator Pico.
@@ -90,7 +110,7 @@ Node state:
   "schema_version": "node-state/v1",
   "timestamp": "2026-02-06T12:00:00Z",
   "zone_id": "zone1",
-  "node_id": "mkr1010-zone1",
+  "node_id": "pico-w-zone1",
   "moisture_raw": 1820,
   "moisture_percent": 31.4,
   "soil_temp_c": 24.8,
@@ -128,7 +148,7 @@ Node config ack:
 ```json
 {
   "schema_version": "node-config-ack/v1",
-  "node_id": "mkr1010-zone1",
+  "node_id": "pico-w-zone1",
   "config_version": "2026-02-06T12:00:00Z",
   "status": "applied",
   "timestamp": "2026-02-06T12:00:03Z",
@@ -168,9 +188,11 @@ Published crop config includes:
 - `climate_preference`
 - `time_to_harvest_days`
 
-Claiming or unclaiming a node also publishes a node-specific config payload to `greenhouse/nodes/{node_id}/config`. Rails tracks the desired config, the last acked config, and the config sync status on each node record.
+Assigning or unassigning a node also publishes a node-specific config payload to `greenhouse/nodes/{node_id}/config`. Rails tracks the desired config, the last Config Acknowledged payload, and the config sync status on each node record.
 
-Changing a zone's assigned crop profile or editing a crop profile that is already assigned also republishes node config for the affected claimed nodes.
+Changing a zone's assigned Crop Profile or editing a Crop Profile that is already assigned also republishes node config for the affected assigned nodes.
+
+In `Settings`, `Save` writes connection settings to PostgreSQL. `Publish Config` broadcasts the current saved crop/zone topology over MQTT so the Python controller and nodes can pick up the latest policy immediately.
 
 ## MQTT Consumer
 
@@ -186,17 +208,20 @@ When broker auth is enabled, Rails uses `mqtt_username` and `mqtt_password` from
 
 Empty retained clears are ignored cleanly.
 
-If a node publishes state before a matching zone exists, Rails still registers the node by `node_id` and exposes it on the Nodes UI for claiming.
+If a node publishes state before a matching zone exists, Rails still registers the node by `node_id` and exposes it on the Nodes UI for assignment.
 
-Once a node is claimed, Rails routes future readings by the claimed `node_id` mapping first. The node's reported `zone_id` is still stored for visibility, but it no longer overrides the claim.
+Once a node is assigned, Rails routes future readings by the assigned `node_id` mapping first. The node's reported `zone_id` is still stored for visibility, but it no longer overrides the assignment.
 
-Unclaimed nodes are registered and updated, but they do not persist readings.
+Unassigned nodes are registered and updated, but they do not persist readings.
 Automatic watering decisions are made by the Python controller, not by Rails.
 
 Operator pages:
 
-- onboarding: `/onboarding`
+- setup checklist: `/onboarding`
 - health dashboard: `/health`
+- reading history: `/reading_history`
+- watering events: `/watering_events`
+- settings: `/settings`
 
 ## Retention
 

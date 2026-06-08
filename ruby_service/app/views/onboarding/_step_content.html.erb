@@ -1,0 +1,603 @@
+<% case onboarding_current_step[:key] %>
+<% when "welcome" %>
+  <div class="wizard-step-block">
+    <div class="wizard-step-summary">
+      Start here. Each required step now keeps the inputs and actions on this page.
+    </div>
+  </div>
+
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <div class="dashboard-actions wizard-action-row">
+    <% onboarding_current_step[:actions].each do |action| %>
+      <%= link_to action[:label], action[:path], class: action[:class] %>
+    <% end %>
+  </div>
+<% when "connection" %>
+  <% if @setting.errors.any? %>
+    <div class="card metric-alert" style="margin-bottom: 16px;">
+      <h3>Connection settings could not be saved</h3>
+      <ul class="list">
+        <% @setting.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <div class="wizard-step-block">
+    <div class="wizard-section-header">
+      <h3>Broker Connection</h3>
+      <p class="muted">Enter the broker and water-zone details needed for the rest of setup. Saving here also queues a config publish.</p>
+    </div>
+  </div>
+
+  <%= form_with model: @setting, url: onboarding_connection_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :patch do |f| %>
+    <div class="wizard-form-panel">
+      <div class="form-grid">
+        <div class="field">
+          <%= f.label :mqtt_host, "MQTT Host" %>
+          <%= f.text_field :mqtt_host, autocomplete: "off" %>
+          <div class="wizard-field-note">Usually the Pi itself or your local broker address.</div>
+        </div>
+        <div class="field">
+          <%= f.label :mqtt_port, "MQTT Port" %>
+          <%= f.number_field :mqtt_port, min: 1, max: 65_535 %>
+          <div class="wizard-field-note">Default is 1883 unless your broker is configured differently.</div>
+        </div>
+        <div class="field">
+          <%= f.label :mqtt_username, "MQTT Username" %>
+          <%= f.text_field :mqtt_username, autocomplete: "off" %>
+          <div class="wizard-field-note">Use the exact broker username expected by the controller and nodes.</div>
+        </div>
+        <div class="field">
+          <%= f.label :mqtt_password, "MQTT Password" %>
+          <%= f.password_field :mqtt_password, autocomplete: "new-password" %>
+          <div class="wizard-field-note">Stored securely after save. Required before the wizard can move forward.</div>
+        </div>
+        <div class="field">
+          <%= f.label :irrigation_line_count, "Installed Water Zones" %>
+          <%= f.number_field :irrigation_line_count, min: 1 %>
+          <div class="wizard-field-note">Count the physical actuator outputs available on this install.</div>
+        </div>
+      </div>
+    </div>
+
+    <details class="card wizard-advanced-panel">
+      <summary><strong>Advanced Topic Settings</strong></summary>
+      <div class="field">
+        <p class="muted wizard-advanced-copy">Leave these on defaults unless your broker topic structure differs from the standard Victory Garden layout.</p>
+      </div>
+      <div class="form-grid wizard-advanced-grid">
+        <div class="field">
+          <%= f.label :readings_topic, "Readings Topic" %>
+          <%= f.text_field :readings_topic %>
+        </div>
+        <div class="field">
+          <%= f.label :actuators_topic, "Actuator Status Topic" %>
+          <%= f.text_field :actuators_topic %>
+        </div>
+        <div class="field">
+          <%= f.label :command_topic, "Command Topic" %>
+          <%= f.text_field :command_topic %>
+        </div>
+        <div class="field">
+          <%= f.label :config_topic, "Config Topic" %>
+          <%= f.text_field :config_topic %>
+        </div>
+      </div>
+    </details>
+
+    <div class="dashboard-actions wizard-action-row">
+      <%= f.submit "Save and Continue", class: "btn" %>
+      <%= link_to "Republish Current Config", onboarding_publish_config_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), class: "btn light", data: { turbo_method: :post } %>
+    </div>
+  <% end %>
+<% when "firmware" %>
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <div class="card metric-warn wizard-status-card">
+    <div class="metric-label">Step Status</div>
+    <div class="metric-value">Flash Both Pico Boards</div>
+    <div class="muted">Pick the actual board type for each Pico before downloading firmware. Pico W and Pico 2 W need different UF2 files.</div>
+  </div>
+
+  <div class="wizard-two-up">
+    <div class="wizard-step-block">
+      <div class="wizard-section-header">
+        <h3>Sensor Board</h3>
+        <p class="muted">Choose the exact sensor board before flashing. The selected board controls which firmware file the wizard downloads and how the later BOOTSEL instructions are written.</p>
+      </div>
+
+      <div class="wizard-fact-panel">
+        <div class="wizard-fact-grid">
+          <div class="wizard-fact"><span>Selected Board</span><strong><%= firmware_board_label(selected_firmware_board("sensor")) %></strong></div>
+          <div class="wizard-fact"><span>Chip</span><strong><%= firmware_board_chip(selected_firmware_board("sensor")) %></strong></div>
+          <div class="wizard-fact"><span>BOOTSEL Drive</span><strong><%= firmware_boot_drive_label(selected_firmware_board("sensor")) %></strong></div>
+        </div>
+      </div>
+
+      <div class="dashboard-actions wizard-action-row">
+        <% firmware_board_options.each_key do |board| %>
+          <%= link_to "#{firmware_board_label(board)} Sensor", onboarding_step_path("firmware", sensor_board: board), class: "btn #{selected_firmware_board('sensor') == board ? '' : 'light'}" %>
+        <% end %>
+      </div>
+
+      <div class="dashboard-actions wizard-action-row">
+        <% if firmware_bundle_path("sensor", selected_firmware_board("sensor"))&.file? %>
+          <%= link_to "Download Sensor Firmware", onboarding_firmware_path(kind: "sensor", board: selected_firmware_board("sensor")), class: "btn" %>
+        <% end %>
+      </div>
+    </div>
+
+    <div class="wizard-step-block">
+      <div class="wizard-section-header">
+        <h3>Actuator Board</h3>
+        <p class="muted">Do the same for the actuator Pico. This is the board that receives watering commands and reports actuator status back into the app.</p>
+      </div>
+
+      <div class="wizard-fact-panel">
+        <div class="wizard-fact-grid">
+          <div class="wizard-fact"><span>Selected Board</span><strong><%= firmware_board_label(selected_firmware_board("actuator")) %></strong></div>
+          <div class="wizard-fact"><span>Chip</span><strong><%= firmware_board_chip(selected_firmware_board("actuator")) %></strong></div>
+          <div class="wizard-fact"><span>BOOTSEL Drive</span><strong><%= firmware_boot_drive_label(selected_firmware_board("actuator")) %></strong></div>
+        </div>
+      </div>
+
+      <div class="dashboard-actions wizard-action-row">
+        <% firmware_board_options.each_key do |board| %>
+          <%= link_to "#{firmware_board_label(board)} Actuator", onboarding_step_path("firmware", actuator_board: board), class: "btn #{selected_firmware_board('actuator') == board ? '' : 'light'}" %>
+        <% end %>
+      </div>
+
+      <div class="dashboard-actions wizard-action-row">
+        <% if firmware_bundle_path("actuator", selected_firmware_board("actuator"))&.file? %>
+          <%= link_to "Download Actuator Firmware", onboarding_firmware_path(kind: "actuator", board: selected_firmware_board("actuator")), class: "btn light" %>
+        <% end %>
+      </div>
+    </div>
+  </div>
+
+  <div class="card wizard-side-panel" data-pico-flasher-shell>
+    <h3>Desktop Helper</h3>
+    <p class="muted">This is the browser-driven flashing path. Start the helper once on your Mac, then use the flash buttons here instead of drag-and-drop.</p>
+
+    <div class="wizard-fact-panel">
+      <div class="wizard-fact-grid">
+        <div class="wizard-fact"><span>Helper Status</span><strong data-pico-flasher-status-value>Checking...</strong></div>
+      </div>
+      <div class="muted" data-pico-flasher-status-copy>Checking for the local helper service now.</div>
+    </div>
+
+    <div class="wizard-step-block">
+      <div class="wizard-section-header">
+        <h3>Start The Helper</h3>
+        <p class="muted">From your Mac, run this once from `python_tools/`:</p>
+      </div>
+      <pre class="wizard-log-snippet">.venv/bin/python -m tools.pico_flasher_helper</pre>
+    </div>
+
+    <div class="wizard-step-block">
+      <div class="wizard-section-header">
+        <h3>Detected BOOTSEL Drives</h3>
+        <p class="muted">The helper only flashes when exactly one matching BOOTSEL drive is mounted for the chosen board type.</p>
+      </div>
+      <div class="wizard-fact-grid" data-pico-flasher-devices></div>
+    </div>
+
+    <div class="dashboard-actions wizard-action-row">
+      <% if firmware_bundle_path("sensor", selected_firmware_board("sensor"))&.file? %>
+        <button
+          type="button"
+          class="btn"
+          data-pico-flash-button
+          data-pico-flash-kind="sensor"
+          data-pico-flash-board="<%= selected_firmware_board("sensor") %>"
+          data-pico-flash-path="<%= onboarding_firmware_path(kind: "sensor", board: selected_firmware_board("sensor")) %>">
+          Flash Sensor With Helper
+        </button>
+      <% end %>
+      <% if firmware_bundle_path("actuator", selected_firmware_board("actuator"))&.file? %>
+        <button
+          type="button"
+          class="btn light"
+          data-pico-flash-button
+          data-pico-flash-kind="actuator"
+          data-pico-flash-board="<%= selected_firmware_board("actuator") %>"
+          data-pico-flash-path="<%= onboarding_firmware_path(kind: "actuator", board: selected_firmware_board("actuator")) %>">
+          Flash Actuator With Helper
+        </button>
+      <% end %>
+      <button type="button" class="btn light" data-pico-flasher-refresh>Refresh Helper</button>
+    </div>
+  </div>
+
+  <div class="dashboard-actions wizard-action-row">
+    <%= link_to "Refresh", onboarding_step_path("firmware"), class: "btn light" %>
+  </div>
+<% when "zone" %>
+  <% if @zone_form.errors.any? %>
+    <div class="card metric-alert" style="margin-bottom: 16px;">
+      <h3>First zone could not be saved</h3>
+      <ul class="list">
+        <% @zone_form.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <% if @crop_profile_form.errors.any? %>
+    <div class="card metric-alert" style="margin: 16px 0;">
+      <h3>Crop profile could not be saved</h3>
+      <ul class="list">
+        <% @crop_profile_form.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div class="wizard-two-up">
+    <div class="wizard-step-block">
+      <div class="wizard-section-header">
+        <h3>Zone Details</h3>
+        <p class="muted">Define the first live growing zone and map it to a physical actuator output.</p>
+      </div>
+
+      <%= form_with model: @zone_form, url: onboarding_zone_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :patch, html: { data: { onboarding_zone_form: true } } do |f| %>
+        <div class="wizard-form-panel">
+          <div class="form-grid">
+            <div class="field">
+              <%= f.label :name, "Zone Name" %>
+              <%= f.text_field :name, placeholder: "Greenhouse Zone 1" %>
+              <div class="wizard-field-note">Use the name operators should see on the dashboard.</div>
+            </div>
+            <div class="field">
+              <%= f.label :irrigation_line, "Water Zone" %>
+              <%= f.number_field :irrigation_line, min: 1 %>
+              <div class="wizard-field-note">Match the physical actuator output number that waters this zone.</div>
+            </div>
+            <div class="field">
+              <%= f.label :publish_interval_ms, "Reading Frequency" %>
+              <%= f.select :publish_interval_ms, options_for_select(@reading_frequency_options, @zone_form.publish_interval_ms) %>
+              <div class="wizard-field-note">How often the node should publish its normal readings.</div>
+            </div>
+            <div class="field">
+              <%= f.label :crop_profile_id, "Crop Profile" %>
+              <%= f.select :crop_profile_id, options_from_collection_for_select(@crop_profiles, :id, :crop_name, @zone_form.crop_profile_id), { prompt: @crop_profiles.any? ? "Choose a crop profile" : "Create a crop profile below first" }, disabled: @crop_profiles.empty? %>
+              <div class="wizard-field-note">This determines watering thresholds and runtime limits.</div>
+            </div>
+            <div class="field">
+              <%= f.label :active, "Zone Enabled" %>
+              <%= f.select :active, [["Yes", true], ["No", false]] %>
+              <div class="wizard-field-note">Leave enabled unless you are saving a draft configuration.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dashboard-actions wizard-action-row">
+          <%= f.submit "Save and Continue", class: "btn", disabled: @crop_profiles.empty? %>
+        </div>
+      <% end %>
+    </div>
+
+    <div class="card wizard-side-panel">
+      <h3>Create Crop Profile</h3>
+      <p class="muted">Stay in the wizard. Create the crop profile here, then save the zone on the left.</p>
+
+      <%= form_with model: @crop_profile_form, url: onboarding_crop_profile_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :post, html: { data: { onboarding_crop_profile_form: true } } do |f| %>
+        <%= hidden_field_tag "zone_draft[name]", @zone_form.name, data: { zone_draft_field: "name" } %>
+        <%= hidden_field_tag "zone_draft[active]", @zone_form.active, data: { zone_draft_field: "active" } %>
+        <%= hidden_field_tag "zone_draft[irrigation_line]", @zone_form.irrigation_line, data: { zone_draft_field: "irrigation_line" } %>
+        <%= hidden_field_tag "zone_draft[publish_interval_ms]", @zone_form.publish_interval_ms, data: { zone_draft_field: "publish_interval_ms" } %>
+
+        <div class="form-grid">
+          <div class="field">
+            <%= f.label :crop_name, "Crop Name" %>
+            <%= f.text_field :crop_name, placeholder: "Basil" %>
+          </div>
+          <div class="field">
+            <%= f.label :dry_threshold, "Dry Threshold (%)" %>
+            <%= f.number_field :dry_threshold, min: 0, max: 100, step: 0.1 %>
+          </div>
+          <div class="field">
+            <%= f.label :max_pulse_runtime_sec, "Max Pulse Runtime (sec)" %>
+            <%= f.number_field :max_pulse_runtime_sec, min: 0 %>
+          </div>
+          <div class="field">
+            <%= f.label :daily_max_runtime_sec, "Daily Max Runtime (sec)" %>
+            <%= f.number_field :daily_max_runtime_sec, min: 0 %>
+          </div>
+          <div class="field">
+            <%= f.label :climate_preference, "Climate Preference" %>
+            <%= f.text_field :climate_preference, placeholder: "Warm, sunny" %>
+          </div>
+          <div class="field">
+            <%= f.label :time_to_harvest_days, "Time To Harvest (days)" %>
+            <%= f.number_field :time_to_harvest_days, min: 0 %>
+          </div>
+        </div>
+
+        <div class="field wizard-notes-field">
+          <%= f.label :notes, "Notes" %>
+          <%= f.text_area :notes, rows: 3 %>
+        </div>
+
+        <div class="dashboard-actions wizard-action-row">
+          <%= f.submit "Create Crop Profile", class: "btn light" %>
+        </div>
+      <% end %>
+    </div>
+  </div>
+<% when "detected_node" %>
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <% if @latest_detected_node.present? %>
+    <div class="card metric-ok wizard-status-card">
+      <div class="metric-label">Step Status</div>
+      <div class="metric-value">Sensor Node Detected</div>
+      <div class="muted">The wizard found a live sensor node. You can continue to assignment or stay here to verify the latest discovery details.</div>
+    </div>
+
+    <div class="card wizard-fact-panel">
+      <h3>Latest Detected Node</h3>
+      <div class="wizard-fact-grid">
+        <div class="wizard-fact"><span>Node ID</span><strong><%= @latest_detected_node.node_id %></strong></div>
+        <div class="wizard-fact"><span>Last Seen</span><strong><%= @latest_detected_node.last_seen_at %></strong></div>
+        <div class="wizard-fact"><span>Reported Zone ID</span><strong><%= @latest_detected_node.reported_zone_id.presence || "—" %></strong></div>
+      </div>
+    </div>
+  <% else %>
+    <div class="card metric-warn wizard-status-card">
+      <div class="metric-label">Step Status</div>
+      <div class="metric-value">Waiting For Sensor Node</div>
+      <div class="muted">Leave the sensor powered on near the Pi. This step checks automatically every 5 seconds until a node appears.</div>
+    </div>
+  <% end %>
+
+  <div class="wizard-step-block">
+    <div class="wizard-section-header">
+      <h3>How To Set Up The Sensor Pico</h3>
+      <p class="muted">You should not need to leave this wizard. Work through these steps in order, then this page will detect the node automatically.</p>
+    </div>
+    <div class="wizard-guide" data-onboarding-guide="sensor-node">
+      <div class="wizard-guide-step" data-guide-step>
+        <div class="wizard-guide-step-head">
+          <span class="wizard-guide-step-index">1</span>
+          <div>
+            <strong>Download the sensor firmware</strong>
+            <div class="muted">Get the bundled `<%= firmware_bundle_path("sensor", selected_firmware_board("sensor"))&.basename || firmware_bundle_filename("sensor", selected_firmware_board("sensor")) %>` file for the selected <%= firmware_board_label(selected_firmware_board("sensor")) %> sensor board.</div>
+          </div>
+        </div>
+        <div class="dashboard-actions wizard-action-row">
+          <% if firmware_bundle_path("sensor", selected_firmware_board("sensor"))&.file? %>
+            <%= link_to "Download Sensor Firmware", onboarding_firmware_path(kind: "sensor", board: selected_firmware_board("sensor")), class: "btn light" %>
+            <%= link_to "Change Board Type", onboarding_step_path("firmware"), class: "btn light" %>
+          <% end %>
+          <button type="button" class="btn" data-guide-complete>Done With This Step</button>
+        </div>
+      </div>
+
+      <div class="wizard-guide-step" data-guide-step>
+        <div class="wizard-guide-step-head">
+          <span class="wizard-guide-step-index">2</span>
+          <div>
+            <strong>Put the Pico into BOOTSEL mode</strong>
+            <div class="muted">Hold the `BOOTSEL` button while plugging the Pico into your computer over USB. It should appear as a removable drive named `<%= firmware_boot_drive_label(selected_firmware_board("sensor")) %>` for a <%= firmware_board_label(selected_firmware_board("sensor")) %>.</div>
+          </div>
+        </div>
+        <div class="dashboard-actions wizard-action-row">
+          <button type="button" class="btn" data-guide-complete>The `RPI-RP2` Drive Appeared</button>
+        </div>
+      </div>
+
+      <div class="wizard-guide-step" data-guide-step>
+        <div class="wizard-guide-step-head">
+          <span class="wizard-guide-step-index">3</span>
+          <div>
+            <strong>Flash the firmware</strong>
+            <div class="muted">Drag the downloaded `<%= firmware_bundle_filename("sensor", selected_firmware_board("sensor")) %>` file onto the `<%= firmware_boot_drive_label(selected_firmware_board("sensor")) %>` drive. The Pico should reboot automatically after the copy finishes.</div>
+          </div>
+        </div>
+        <div class="dashboard-actions wizard-action-row">
+          <button type="button" class="btn" data-guide-complete>The Firmware Copy Finished</button>
+        </div>
+      </div>
+
+      <div class="wizard-guide-step" data-guide-step>
+        <div class="wizard-guide-step-head">
+          <span class="wizard-guide-step-index">4</span>
+          <div>
+            <strong>Move the Pico to the grow setup</strong>
+            <div class="muted">Disconnect it from your computer, connect the sensor hardware, and power it near the Pi so it can join the same local network.</div>
+          </div>
+        </div>
+        <div class="dashboard-actions wizard-action-row">
+          <button type="button" class="btn" data-guide-complete>The Pico Is Powered Near The Pi</button>
+        </div>
+      </div>
+
+      <div class="wizard-guide-step" data-guide-step>
+        <div class="wizard-guide-step-head">
+          <span class="wizard-guide-step-index">5</span>
+          <div>
+            <strong>Wait for discovery</strong>
+            <div class="muted">The wizard checks every 5 seconds and marks this step done as soon as the node publishes live state. If it still does not appear, use Refresh Detection and re-check power, Wi-Fi reachability, and that the Pico really rebooted after flashing.</div>
+          </div>
+        </div>
+        <div class="dashboard-actions wizard-action-row">
+          <%= link_to "Refresh Detection", onboarding_step_path("detected_node"), class: "btn light" %>
+          <button type="button" class="btn light" data-guide-reset>Start Guide Over</button>
+        </div>
+      </div>
+    </div>
+  </div>
+<% when "assigned_node" %>
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <% if @assignable_nodes.any? && @assignable_zones.any? %>
+    <div class="card <%= onboarding_current_step[:done] ? "metric-ok" : "metric-warn" %> wizard-status-card">
+      <div class="metric-label">Step Status</div>
+      <div class="metric-value"><%= onboarding_current_step[:done] ? "Sensor Assigned" : "Choose Node And Zone" %></div>
+      <div class="muted">Pick the discovered sensor node and the zone it should report into. Saving here keeps you inside the wizard and queues the node config update automatically.</div>
+    </div>
+
+    <%= form_with url: onboarding_assignment_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :patch do %>
+      <div class="form-grid">
+        <div class="field">
+          <%= label_tag :node_id, "Sensor Node" %>
+          <%= select_tag :node_id, options_from_collection_for_select(@assignable_nodes, :id, :node_id, @selected_assignment_node&.id) %>
+        </div>
+        <div class="field">
+          <%= label_tag :zone_id, "Assign To Zone" %>
+          <%= select_tag :zone_id, options_for_select(@assignable_zones.map { |zone| [zone.name.presence || zone.zone_id, zone.id] }, @selected_assignment_zone&.id) %>
+        </div>
+      </div>
+
+      <div class="dashboard-actions wizard-action-row">
+        <%= submit_tag "Assign and Continue", class: "btn" %>
+      </div>
+    <% end %>
+  <% else %>
+    <p class="muted">You need at least one discovered node and one saved zone before assignment can continue.</p>
+    <div class="dashboard-actions wizard-action-row">
+      <%= link_to "Refresh", onboarding_step_path("assigned_node"), class: "btn" %>
+    </div>
+  <% end %>
+<% when "reading" %>
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <% if @selected_reading_node.present? %>
+    <div class="card <%= onboarding_current_step[:done] ? "metric-ok" : "metric-warn" %> wizard-status-card">
+      <div class="metric-label">Step Status</div>
+      <div class="metric-value"><%= onboarding_current_step[:done] ? "First Reading Confirmed" : "Waiting For First Reading" %></div>
+      <div class="muted">
+        <% if onboarding_current_step[:done] %>
+          A persisted reading exists for an assigned sensor node.
+        <% else %>
+          Request a reading below. After that, the wizard checks automatically every 5 seconds until the reading is persisted.
+        <% end %>
+      </div>
+    </div>
+
+    <div class="card wizard-fact-panel">
+      <h3>Selected Node</h3>
+      <div class="wizard-fact-grid">
+        <div class="wizard-fact"><span>Node ID</span><strong><%= @selected_reading_node.node_id %></strong></div>
+        <div class="wizard-fact"><span>Zone</span><strong><%= @selected_reading_node.zone.name.presence || @selected_reading_node.zone.zone_id %></strong></div>
+        <div class="wizard-fact"><span>Latest Reading</span><strong><%= @latest_selected_reading&.recorded_at || "No persisted reading yet" %></strong></div>
+      </div>
+    </div>
+
+    <%= form_with url: onboarding_request_reading_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :post do %>
+      <%= hidden_field_tag :node_id, @selected_reading_node.id %>
+      <div class="dashboard-actions wizard-action-row">
+        <%= submit_tag "Request Reading", class: "btn" %>
+        <%= link_to "Refresh", onboarding_step_path("reading", node_id: @selected_reading_node.id), class: "btn light" %>
+      </div>
+    <% end %>
+  <% else %>
+    <p class="muted">No assigned sensor node is available yet.</p>
+  <% end %>
+<% when "watering" %>
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <% if @selected_watering_zone.present? %>
+    <% waiting_for_confirmation = @latest_watering_event.present? && !WateringEvent::TERMINAL_STATUSES.include?(@latest_watering_event.status) %>
+    <div class="card <%= onboarding_current_step[:done] ? "metric-ok" : (waiting_for_confirmation ? "metric-warn" : "metric-warn") %> wizard-status-card">
+      <div class="metric-label">Step Status</div>
+      <div class="metric-value">
+        <% if onboarding_current_step[:done] %>
+          First Watering Confirmed
+        <% elsif waiting_for_confirmation %>
+          Waiting For Actuator Confirmation
+        <% else %>
+          Ready For Watering Test
+        <% end %>
+      </div>
+      <div class="muted">
+        <% if onboarding_current_step[:done] %>
+          A terminal watering event exists, so the actuator cycle has been recorded in history.
+        <% elsif waiting_for_confirmation %>
+          The watering command has been queued or is still running. This step checks automatically every 5 seconds until the event reaches a final state.
+        <% else %>
+          Trigger one manual watering cycle below and the wizard will stay on this step while it waits for actuator status history.
+        <% end %>
+      </div>
+    </div>
+
+    <div class="card wizard-fact-panel">
+      <h3>Selected Zone</h3>
+      <div class="wizard-fact-grid">
+        <div class="wizard-fact"><span>Zone</span><strong><%= @selected_watering_zone.name.presence || @selected_watering_zone.zone_id %></strong></div>
+        <div class="wizard-fact"><span>Water Zone</span><strong><%= @selected_watering_zone.irrigation_line.presence || "Not set" %></strong></div>
+        <div class="wizard-fact"><span>Latest Watering Event</span><strong><%= @latest_watering_event&.issued_at || "No watering events yet" %></strong></div>
+        <div class="wizard-fact"><span>Latest Event Status</span><strong><%= @latest_watering_event&.status&.humanize || "—" %></strong></div>
+      </div>
+    </div>
+
+    <%= form_with url: onboarding_water_now_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :post do %>
+      <%= hidden_field_tag :zone_id, @selected_watering_zone.id %>
+      <div class="dashboard-actions wizard-action-row">
+        <%= submit_tag "Water Now", class: "btn" %>
+        <%= link_to "Refresh", onboarding_step_path("watering", zone_id: @selected_watering_zone.id), class: "btn light" %>
+      </div>
+    <% end %>
+  <% else %>
+    <p class="muted">No zone is available for a watering test yet.</p>
+  <% end %>
+<% when "done" %>
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+
+  <div class="dashboard-actions wizard-action-row">
+    <%= link_to "Done", zones_path, class: "btn" %>
+    <%= link_to "Open Health", health_path, class: "btn light" %>
+  </div>
+<% else %>
+  <ul class="list wizard-checklist">
+    <% onboarding_current_step[:checklist].each do |item| %>
+      <li><%= item %></li>
+    <% end %>
+  </ul>
+<% end %>

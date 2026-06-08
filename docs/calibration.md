@@ -6,7 +6,7 @@ This guide explains how Victory Garden turns a raw moisture reading into the nor
 
 The reference calibration math lives in:
 
-- [`../python_tools/watering/calibration.py`](/Users/noel/coding/python/victory_garden/python_tools/watering/calibration.py)
+- [`../python_tools/watering/calibration.py`](../python_tools/watering/calibration.py)
 
 Reference formula:
 
@@ -29,26 +29,13 @@ For the current controller and Rails rules, `moisture_percent` is the value that
 
 ## Hardware Status Today
 
-### Arduino MKR WiFi 1010
-
-The Arduino node already supports explicit dry/wet calibration through:
-
-- [`../firmware/arduino/mkr1010_sensor_node/node_config.example.h`](/Users/noel/coding/python/victory_garden/firmware/arduino/mkr1010_sensor_node/node_config.example.h)
-
-Relevant fields:
-
-- `DRY_READING`
-- `WET_READING`
-
-That firmware maps the raw reading directly to `0..100` using those two calibration points.
-
 ### Pico W
 
 The Pico W firmware now reads the Adafruit seesaw soil sensor over I2C and supports dry/wet calibration bounds.
 
 Current behavior in:
 
-- [`../firmware/pico_w_sensor_node/src/sensors.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/sensors.c)
+- [`../firmware/pico_w_sensor_node/src/sensors.c`](../firmware/pico_w_sensor_node/src/sensors.c)
 
 Current Pico behavior:
 
@@ -110,7 +97,7 @@ Many moisture probes behave like this:
 - drier soil -> higher raw reading
 - wetter soil -> lower raw reading
 
-That is the direction assumed by the Python reference formula and by the Arduino defaults.
+That is the direction assumed by the Python reference formula and by the Pico firmware defaults.
 
 If your sensor is reversed:
 
@@ -141,29 +128,7 @@ That means your calibrated scale should make tomato watering kick in below about
 
 If the normalized percentages do not line up with real plant conditions, recalibrate the raw references before changing crop thresholds.
 
-## Arduino Workflow
-
-Set the calibration values in:
-
-- [`../firmware/arduino/mkr1010_sensor_node/node_config.example.h`](/Users/noel/coding/python/victory_garden/firmware/arduino/mkr1010_sensor_node/node_config.example.h)
-
-Example:
-
-```c
-const int DRY_READING = 322;
-const int WET_READING = 510;
-```
-
-Then rebuild/upload and verify the published `moisture_percent` on MQTT:
-
-```bash
-set -a
-source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
-set +a
-mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/nodes/+/state' -v
-```
-
-## Pico Workflow Today
+## Pico Workflow
 
 For Pico today, focus on:
 
@@ -173,7 +138,7 @@ For Pico today, focus on:
 
 Relevant defaults live in:
 
-- [`../firmware/pico_w_sensor_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/config.h)
+- [`../firmware/pico_w_sensor_node/src/config.h`](../firmware/pico_w_sensor_node/src/config.h)
 
 Relevant fields:
 
@@ -193,7 +158,6 @@ Relevant fields:
 
 ## Related Files
 
-- [`../python_tools/watering/calibration.py`](/Users/noel/coding/python/victory_garden/python_tools/watering/calibration.py)
-- [`../python_tools/tests/test_calibration.py`](/Users/noel/coding/python/victory_garden/python_tools/tests/test_calibration.py)
-- [`../firmware/arduino/mkr1010_sensor_node/node_config.example.h`](/Users/noel/coding/python/victory_garden/firmware/arduino/mkr1010_sensor_node/node_config.example.h)
-- [`../firmware/pico_w_sensor_node/src/sensors.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/sensors.c)
+- [`../python_tools/watering/calibration.py`](../python_tools/watering/calibration.py)
+- [`../python_tools/tests/test_calibration.py`](../python_tools/tests/test_calibration.py)
+- [`../firmware/pico_w_sensor_node/src/sensors.c`](../firmware/pico_w_sensor_node/src/sensors.c)

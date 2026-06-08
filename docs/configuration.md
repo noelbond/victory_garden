@@ -18,7 +18,7 @@ set +a
 
 Template source in the repo:
 
-- [`../deploy/victory_garden.env.example`](/Users/noel/coding/python/victory_garden/deploy/victory_garden.env.example)
+- [`../deploy/victory_garden.env.example`](../deploy/victory_garden.env.example)
 
 Current keys:
 
@@ -52,46 +52,22 @@ Local Rails development uses project-local Bundler wrappers instead of a repo `.
 
 Use:
 
-- [`../ruby_service/bin/dev-bundle`](/Users/noel/coding/python/victory_garden/ruby_service/bin/dev-bundle)
-- [`../ruby_service/bin/dev-rails`](/Users/noel/coding/python/victory_garden/ruby_service/bin/dev-rails)
+- [`../ruby_service/bin/dev-bundle`](../ruby_service/bin/dev-bundle)
+- [`../ruby_service/bin/dev-rails`](../ruby_service/bin/dev-rails)
 
 The local database defaults are defined in:
 
-- [`../ruby_service/config/database.yml`](/Users/noel/coding/python/victory_garden/ruby_service/config/database.yml)
-
-## Arduino Node Config
-
-Arduino node local config template:
-
-- [`../firmware/arduino/mkr1010_sensor_node/node_config.example.h`](/Users/noel/coding/python/victory_garden/firmware/arduino/mkr1010_sensor_node/node_config.example.h)
-
-Typical values to set:
-
-- Wi‑Fi SSID/password
-- MQTT broker IP/port
-- node ID
-- zone ID
-- moisture dry/wet calibration
-- publish and timeout windows
-- optional battery monitor settings
-
-This is the only node firmware in the repo that currently applies explicit dry/wet reference calibration directly in firmware.
-
-This file is copied to:
-
-- `firmware/arduino/mkr1010_sensor_node/node_config.h`
-
-for a real local build.
+- [`../ruby_service/config/database.yml`](../ruby_service/config/database.yml)
 
 ## Pico W Node Config
 
 Tracked defaults live in:
 
-- [`../firmware/pico_w_sensor_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/config.h)
+- [`../firmware/pico_w_sensor_node/src/config.h`](../firmware/pico_w_sensor_node/src/config.h)
 
 Create an untracked local override file from:
 
-- [`../firmware/pico_w_sensor_node/src/config_local.h.example`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/config_local.h.example)
+- [`../firmware/pico_w_sensor_node/src/config_local.h.example`](../firmware/pico_w_sensor_node/src/config_local.h.example)
 
 Typical values to set before flashing:
 
@@ -108,7 +84,7 @@ Important:
 
 - the Pico now expects a seesaw I2C moisture sensor, not a raw analog probe
 - earlier ADC-based Pico readings should not be reused as calibration data
-- see [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
+- see [`calibration.md`](../docs/calibration.md)
 
 The Pico also supports persisted config in flash at runtime through retained `node-config/v1` messages from Rails.
 If the Pi broker IP changes later, the Pico will fall back to UDP discovery on `MQTT_DISCOVERY_PORT`, update its saved `mqtt_host`, and reconnect automatically.
@@ -117,11 +93,11 @@ If the Pi broker IP changes later, the Pico will fall back to UDP discovery on `
 
 Tracked defaults live in:
 
-- [`../firmware/pico_w_actuator_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/config.h)
+- [`../firmware/pico_w_actuator_node/src/config.h`](../firmware/pico_w_actuator_node/src/config.h)
 
 Create an untracked local override file from:
 
-- [`../firmware/pico_w_actuator_node/src/config_local.h.example`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/config_local.h.example)
+- [`../firmware/pico_w_actuator_node/src/config_local.h.example`](../firmware/pico_w_actuator_node/src/config_local.h.example)
 
 Typical values to set before flashing:
 
@@ -145,7 +121,7 @@ field is published for shared topology visibility but is not yet enforced as a d
 
 Shared example payloads live in:
 
-- [`../contracts/examples/`](/Users/noel/coding/python/victory_garden/contracts/examples)
+- [`../contracts/examples/`](../contracts/examples)
 
 These are the canonical reference fixtures for:
 
@@ -155,7 +131,7 @@ These are the canonical reference fixtures for:
 
 The topic-level contract is documented in:
 
-- [`mqtt.md`](/Users/noel/coding/python/victory_garden/docs/mqtt.md)
+- [`mqtt.md`](../docs/mqtt.md)
 
 ## Current Config Sources Of Truth
 
@@ -165,7 +141,7 @@ Authoritative configuration is stored in PostgreSQL for:
 
 - zones
 - crop profiles
-- node claims
+- node assignments
 - node config sync state
 
 Runtime process configuration comes from:
@@ -188,4 +164,4 @@ For the actuator Pico specifically, live topology comes from retained
 
 The broker itself is configured by the Pi install and local Mosquitto config files, while topic shapes and payloads are defined by:
 
-- [`mqtt.md`](/Users/noel/coding/python/victory_garden/docs/mqtt.md)
+- [`mqtt.md`](../docs/mqtt.md)

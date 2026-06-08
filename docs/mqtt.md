@@ -1,6 +1,6 @@
 # Victory Garden MQTT Contract
 
-This document defines the canonical MQTT transport used by the Pico/Arduino nodes, the Python controller, and the Rails control plane.
+This document defines the canonical MQTT transport used by the Pico nodes, the Python controller, and the Rails control plane.
 
 ## Conventions
 
@@ -19,7 +19,6 @@ Outside MQTT itself, the Pi also exposes a small UDP discovery responder on `MQT
 | Topic | Producer | Consumer | Retained | Purpose |
 |---|---|---|---|---|
 | `greenhouse/zones/{zone_id}/nodes/{node_id}/state` | sensor node | Rails, Python controller | yes | latest node reading and telemetry |
-| `greenhouse/zones/{zone_id}/state` | legacy sensor node | Rails, Python controller | yes | legacy latest node reading and telemetry |
 | `greenhouse/zones/{zone_id}/command` | Rails, Python controller | sensor node | yes | retained `request_reading` reread command |
 | `greenhouse/zones/{zone_id}/command_ack` | sensor node | Rails, operators | yes | acknowledgement of handled or ignored node command |
 | `greenhouse/nodes/{node_id}/config` | Rails | sensor node | yes | retained node assignment and crop config |
@@ -32,7 +31,7 @@ Outside MQTT itself, the Pi also exposes a small UDP discovery responder on `MQT
 | `greenhouse/zones/{zone_id}/controller/moisture_percent` | Python controller | operators | no | latest controller input moisture |
 | `greenhouse/zones/{zone_id}/controller/action` | Python controller | operators | no | `water` or `none` |
 | `greenhouse/zones/{zone_id}/controller/runtime_seconds_today` | Python controller | operators | no | cumulative runtime for the zone today |
-| `greenhouse/zones/{zone_id}/controller/skip_reason` | Python controller | operators | no | duplicate-read or cooldown reason |
+| `greenhouse/zones/{zone_id}/controller/skip_reason` | Python controller | operators | no | machine-readable skip reason such as cooldown, stale-reading, or quorum failure |
 | `greenhouse/system/config/current` | Rails | Python controller | yes | retained crop and zone policy broadcast |
 
 ## Canonical Payloads
@@ -89,8 +88,7 @@ Compatibility note:
 
 - Rails and Python still accept the legacy `rssi` field as an alias for `wifi_rssi`
 - canonical publishers should emit `wifi_rssi`
-- Rails and Python still accept the legacy retained topic `greenhouse/zones/{zone_id}/state`
-- multi-sensor zones should publish to the per-node retained topic so each sensor's latest reading survives broker and controller restarts
+- multi-sensor zones should publish only to the per-node retained topic so each sensor's latest reading survives broker and controller restarts
 
 ### Node Command
 
@@ -196,7 +194,7 @@ Behavior:
 - `config_version` is the idempotency key for config application
 - nodes should not rewrite flash if the same retained `config_version` is replayed
 
-### Node Config Ack
+### Node Config Acknowledged
 
 Topic:
 
@@ -223,6 +221,9 @@ Example:
 
 Observed status values:
 
+- `applied`
+- `error`
+
 ### Actuator Config
 
 Topic:
@@ -247,14 +248,11 @@ Example:
 Behavior:
 
 - published retained
-- defines the installed irrigation line count on the shared actuator controller
-- maps one irrigation line to one zone
+- defines the installed Water Zone count on the shared actuator controller
+- maps one Water Zone to one zone
 - lets the actuator Pico subscribe to exact per-zone command topics such as `greenhouse/zones/zone1/actuator/command`
 - zone subscriptions are derived from the retained zone-to-line assignments, not from a wildcard topic
 - `active` is currently topology metadata for operators and upstream publishers; the actuator Pico uses `zone_id` to `irrigation_line` mapping and does not reject commands only because `active` is `false`
-
-- `applied`
-- `error`
 
 ### Actuator Command
 
@@ -357,7 +355,16 @@ Related single-value controller topics:
 - `greenhouse/zones/{zone_id}/controller/runtime_seconds_today`
 - `greenhouse/zones/{zone_id}/controller/skip_reason`
 
-When a zone has multiple claimed nodes, the Python controller averages fresh, non-null `moisture_percent` values from the configured `node_ids` and uses that aggregate as the watering decision input. A zone can require a minimum fresh sensor count with `--min-zone-sensor-readings`; if quorum is not met, the controller publishes `insufficient_sensor_quorum`.
+Observed `controller/skip_reason` values in the current controller include:
+
+- `cooldown`
+- `outside_allowed_hours`
+- `insufficient_sensor_quorum`
+- `stale_reading`
+- `incomplete-reading`
+- `same-reading-after-watering`
+
+When a zone has multiple assigned nodes, the Python controller averages fresh, non-null `moisture_percent` values from the configured `node_ids` and uses that aggregate as the watering decision input. A zone can require a minimum fresh sensor count with `--min-zone-sensor-readings`; if quorum is not met, the controller publishes `insufficient_sensor_quorum`.
 
 ## Retained Message Rules
 
@@ -382,7 +389,7 @@ Clearing retained topics:
 
 ## Source Of Truth Boundaries
 
-- Rails/Postgres is authoritative for zones, crop profiles, node claims, config sync status, watering history, and faults
+- Rails/Postgres is authoritative for zones, crop profiles, node assignments, config sync status, watering history, and faults
 - MQTT retained state is the live transport layer for nodes and the controller
 - `nodes.zone_id` in Rails is authoritative for routing readings; node-reported `zone_id` is stored as visibility metadata
 
@@ -390,11 +397,11 @@ Clearing retained topics:
 
 This document is derived from the actual implementation in:
 
-- [`contracts/examples/`](/Users/noel/coding/python/victory_garden/contracts/examples)
-- [`ruby_service/lib/mqtt_client.rb`](/Users/noel/coding/python/victory_garden/ruby_service/lib/mqtt_client.rb)
-- [`ruby_service/app/jobs/publish_node_config_job.rb`](/Users/noel/coding/python/victory_garden/ruby_service/app/jobs/publish_node_config_job.rb)
-- [`python_tools/watering/schemas.py`](/Users/noel/coding/python/victory_garden/python_tools/watering/schemas.py)
-- [`firmware/pico_w_sensor_node/src/topics.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/topics.c)
-- [`firmware/pico_w_sensor_node/src/mqtt_node.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/mqtt_node.c)
-- [`firmware/pico_w_actuator_node/src/topics.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/topics.c)
-- [`firmware/pico_w_actuator_node/src/mqtt_node.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/mqtt_node.c)
+- [contracts/examples/](../contracts/examples)
+- [ruby_service/lib/mqtt_client.rb](../ruby_service/lib/mqtt_client.rb)
+- [ruby_service/app/jobs/publish_node_config_job.rb](../ruby_service/app/jobs/publish_node_config_job.rb)
+- [python_tools/watering/schemas.py](../python_tools/watering/schemas.py)
+- [firmware/pico_w_sensor_node/src/topics.c](../firmware/pico_w_sensor_node/src/topics.c)
+- [firmware/pico_w_sensor_node/src/mqtt_node.c](../firmware/pico_w_sensor_node/src/mqtt_node.c)
+- [firmware/pico_w_actuator_node/src/topics.c](../firmware/pico_w_actuator_node/src/topics.c)
+- [firmware/pico_w_actuator_node/src/mqtt_node.c](../firmware/pico_w_actuator_node/src/mqtt_node.c)

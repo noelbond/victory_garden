@@ -12,7 +12,7 @@ It is written for the current architecture:
 - Rails is the UI, persistence layer, config authority, and manual-operations surface
 - Mosquitto runs on the Pi
 - the Python controller runs on the Pi
-- sensor nodes can be Arduino MKR WiFi 1010 or Pico W
+- sensor nodes are Pico W or Pico 2 W
 - actuation can be handled by a dedicated Pico W actuator node
 
 ## 1. Raspberry Pi Setup
@@ -60,7 +60,7 @@ The installer writes:
 
 Template source:
 
-- [`../deploy/victory_garden.env.example`](/Users/noel/coding/python/victory_garden/deploy/victory_garden.env.example)
+- [`../deploy/victory_garden.env.example`](../deploy/victory_garden.env.example)
 
 Important values:
 
@@ -84,12 +84,17 @@ sudo systemctl status victory-garden-mqtt-consumer.service --no-pager
 sudo systemctl status mosquitto --no-pager
 ```
 
+For a dedicated operator log reference, see:
+
+- [`logging.md`](../docs/logging.md)
+
 Check web endpoints:
 
 - app UI: `http://<pi-ip>:3000`
 - liveness: `http://<pi-ip>:3000/up`
 - operator health: `http://<pi-ip>:3000/health`
-- onboarding: `http://<pi-ip>:3000/onboarding`
+- setup checklist: `http://<pi-ip>:3000/onboarding`
+- reading history: `http://<pi-ip>:3000/reading_history`
 
 Check MQTT state:
 
@@ -125,7 +130,7 @@ Recommended shutdown order:
 
 The local Rails app now uses a project-local bundle instead of mixed global gems.
 
-From [`../ruby_service`](/Users/noel/coding/python/victory_garden/ruby_service):
+From [`../ruby_service`](../ruby_service):
 
 ```bash
 ./bin/dev-bundle install
@@ -157,7 +162,8 @@ Local app pages:
 
 - `http://localhost:3000`
 - `http://localhost:3000/health`
-- `http://localhost:3000/onboarding`
+- `http://localhost:3000/onboarding` for the `Setup Checklist`
+- `http://localhost:3000/reading_history`
 
 ### Local database
 
@@ -177,7 +183,7 @@ cd ruby_service
 ./bin/dev-rails db:prepare
 ```
 
-## 3. Pico W Firmware Setup
+## 3. Pico Wi-Fi Firmware Setup
 
 ### Initialize the SDK
 
@@ -202,40 +208,45 @@ Example environment:
 
 ```bash
 export PICO_SDK_PATH="$PWD/firmware/pico-sdk"
-cmake -S firmware/pico_w_sensor_node -B firmware/pico_w_sensor_node/build -G Ninja -DPICO_BOARD=pico_w
-cmake --build firmware/pico_w_sensor_node/build --target pico_w_sensor_node pico_w_actuator_node
+./deploy/build_firmware_bundles.sh
 ```
 
 Before building, make sure `arm-none-eabi-gcc` is installed and already available on your `PATH`.
 
 Output:
 
-- `firmware/pico_w_sensor_node/build/pico_w_sensor_node.uf2`
-- `firmware/pico_w_sensor_node/build/pico_w_actuator_node.uf2`
+- `firmware-bundles/pico_w_sensor_node.uf2`
+- `firmware-bundles/pico2_w_sensor_node.uf2`
+- `firmware-bundles/pico_w_actuator_node.uf2`
+- `firmware-bundles/pico2_w_actuator_node.uf2`
 
 ### Flash the Pico
 
 1. Hold `BOOTSEL`
 2. Plug in the Pico you want to flash
-3. Wait for `RPI-RP2`
+3. Wait for:
+   - `RPI-RP2` on Pico W
+   - `RP2350` on Pico 2 W
 4. Copy the UF2
 
 The Pico should reboot automatically after the copy completes.
 
 Use:
 
-- `pico_w_sensor_node.uf2` for the sensor Pico
-- `pico_w_actuator_node.uf2` for the actuator Pico
+- `pico_w_sensor_node.uf2` for a Pico W sensor
+- `pico2_w_sensor_node.uf2` for a Pico 2 W sensor
+- `pico_w_actuator_node.uf2` for a Pico W actuator
+- `pico2_w_actuator_node.uf2` for a Pico 2 W actuator
 
 ### Pico sensor runtime assumptions
 
 Tracked defaults live in:
 
-- [`../firmware/pico_w_sensor_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/config.h)
+- [`../firmware/pico_w_sensor_node/src/config.h`](../firmware/pico_w_sensor_node/src/config.h)
 
 Local secret and environment overrides belong in an untracked file copied from:
 
-- [`../firmware/pico_w_sensor_node/src/config_local.h.example`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/config_local.h.example)
+- [`../firmware/pico_w_sensor_node/src/config_local.h.example`](../firmware/pico_w_sensor_node/src/config_local.h.example)
 
 Typical values to set before flashing:
 
@@ -250,7 +261,7 @@ Current moisture-input note:
 - the Pico moisture path uses an Adafruit seesaw I2C soil sensor
 - default bus settings are `GPIO4`/`GPIO5` on I2C address `0x36`
 - it supports firmware dry/wet calibration using `VG_DEFAULT_MOISTURE_RAW_DRY` and `VG_DEFAULT_MOISTURE_RAW_WET`
-- see [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
+- see [`calibration.md`](../docs/calibration.md)
 
 ### Pico verification
 
@@ -273,11 +284,11 @@ Expected:
 
 Tracked defaults live in:
 
-- [`../firmware/pico_w_actuator_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/config.h)
+- [`../firmware/pico_w_actuator_node/src/config.h`](../firmware/pico_w_actuator_node/src/config.h)
 
 Local secret and environment overrides belong in an untracked file copied from:
 
-- [`../firmware/pico_w_actuator_node/src/config_local.h.example`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/src/config_local.h.example)
+- [`../firmware/pico_w_actuator_node/src/config_local.h.example`](../firmware/pico_w_actuator_node/src/config_local.h.example)
 
 Typical values to set before flashing:
 
@@ -310,18 +321,18 @@ Expected during a test run:
 
 ## 4. Documentation Map
 
-- architecture: [`architecture.md`](/Users/noel/coding/python/victory_garden/docs/architecture.md)
-- configuration reference: [`configuration.md`](/Users/noel/coding/python/victory_garden/docs/configuration.md)
-- calibration guide: [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
-- wiring guide: [`wiring.md`](/Users/noel/coding/python/victory_garden/docs/wiring.md)
-- one-zone quick start: [`quickstart.md`](/Users/noel/coding/python/victory_garden/docs/quickstart.md)
-- seed data: [`seed-data.md`](/Users/noel/coding/python/victory_garden/docs/seed-data.md)
-- MQTT contract: [`mqtt.md`](/Users/noel/coding/python/victory_garden/docs/mqtt.md)
-- deployment details: [`../deploy/README.md`](/Users/noel/coding/python/victory_garden/deploy/README.md)
-- Rails UI and persistence layer: [`../ruby_service/README.md`](/Users/noel/coding/python/victory_garden/ruby_service/README.md)
-- Python tools: [`../python_tools/README.md`](/Users/noel/coding/python/victory_garden/python_tools/README.md)
-- Pico firmware: [`../firmware/pico_w_sensor_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/README.md)
-- Pico actuator firmware: [`../firmware/pico_w_actuator_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/README.md)
+- architecture: [`architecture.md`](../docs/architecture.md)
+- configuration reference: [`configuration.md`](../docs/configuration.md)
+- calibration guide: [`calibration.md`](../docs/calibration.md)
+- wiring guide: [`wiring.md`](../docs/wiring.md)
+- one-zone quick start: [`quickstart.md`](../docs/quickstart.md)
+- seed data: [`seed-data.md`](../docs/seed-data.md)
+- MQTT contract: [`mqtt.md`](../docs/mqtt.md)
+- deployment details: [`../deploy/README.md`](../deploy/README.md)
+- Rails UI and persistence layer: [`../ruby_service/README.md`](../ruby_service/README.md)
+- Python tools: [`../python_tools/README.md`](../python_tools/README.md)
+- Pico firmware: [`../firmware/pico_w_sensor_node/README.md`](../firmware/pico_w_sensor_node/README.md)
+- Pico actuator firmware: [`../firmware/pico_w_actuator_node/README.md`](../firmware/pico_w_actuator_node/README.md)
 
 ## 5. Current Remaining Work
 

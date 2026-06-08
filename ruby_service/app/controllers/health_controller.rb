@@ -2,6 +2,7 @@ class HealthController < ApplicationController
   helper_method :node_seen_freshness_state, :reading_freshness_state_for
 
   def show
+    @mqtt_consumer_status = load_mqtt_consumer_status
     @nodes = Node.includes(:zone).to_a.sort_by do |node|
       [
         node_freshness_rank(node),
@@ -15,17 +16,19 @@ class HealthController < ApplicationController
     @recent_faults = Fault.includes(:zone).order(recorded_at: :desc).limit(10)
     @environment_label = Rails.env.production? ? "Production" : Rails.env.titleize
     @recent_activity = build_recent_activity
-    claimed_zones = @nodes.filter_map(&:zone).uniq(&:id)
+    assigned_zones = @nodes.filter_map(&:zone).uniq(&:id)
 
     @summary = {
       nodes: @nodes.count,
-      claimed_nodes: @nodes.count(&:claimed?),
-      claimed_zones: claimed_zones.count,
+      assigned_nodes: @nodes.count(&:assigned?),
+      assigned_zones: assigned_zones.count,
       stale_nodes: @nodes.count { |node| node_seen_freshness_state(node) != "ok" },
-      fresh_readings: claimed_zones.count { |zone| reading_freshness_state_for(zone) == "ok" },
+      fresh_zone_readings: assigned_zones.count { |zone| reading_freshness_state_for(zone) == "ok" },
       config_errors: @nodes.count { |node| node.config_status == "error" },
       config_pending: @nodes.count { |node| node.config_status == "pending" },
-      open_faults: Fault.where(resolved_at: nil).count
+      open_faults: Fault.where(resolved_at: nil).count,
+      mqtt_consumer_status: @mqtt_consumer_status["status"] || "unknown",
+      firstboot_status: firstboot_status.status
     }
     @attention_items = build_attention_items
   end
@@ -76,7 +79,7 @@ class HealthController < ApplicationController
     Node.where.not(config_acknowledged_at: nil).includes(:zone).order(config_acknowledged_at: :desc).limit(5).each do |node|
       items << {
         at: node.config_acknowledged_at,
-        label: "Config Ack",
+        label: "Config Acknowledged",
         detail: "#{node.node_id}: #{node.config_status || "applied"}"
       }
     end
@@ -95,11 +98,11 @@ class HealthController < ApplicationController
       }
     end
 
-    stale_readings = @summary[:claimed_zones] - @summary[:fresh_readings]
+    stale_readings = @summary[:assigned_zones] - @summary[:fresh_zone_readings]
     if stale_readings > 0
       items << {
-        label: "Stale Readings",
-        detail: "#{stale_readings} claimed zone#{'s' unless stale_readings == 1} do not have a fresh reading in the expected interval.",
+        label: "Stale Zone Readings",
+        detail: "#{stale_readings} assigned zone#{'s' unless stale_readings == 1} do not have a fresh reading in the expected interval.",
         tone: "warn"
       }
     end
@@ -128,7 +131,36 @@ class HealthController < ApplicationController
       }
     end
 
+    if @mqtt_consumer_status["status"].in?(%w[retrying degraded])
+      detail = "MQTT consumer is #{@mqtt_consumer_status['status']}."
+      detail += " Retry #{@mqtt_consumer_status['retry_count']}." if @mqtt_consumer_status["retry_count"].to_i.positive?
+      detail += " Last error: #{@mqtt_consumer_status['last_error']}." if @mqtt_consumer_status["last_error"].present?
+      detail += " Next retry at #{@mqtt_consumer_status['next_retry_at']}." if @mqtt_consumer_status["next_retry_at"].present?
+      items << {
+        label: "MQTT Consumer",
+        detail: detail,
+        tone: @mqtt_consumer_status["status"] == "degraded" ? "alert" : "warn"
+      }
+    end
+
+    if firstboot_status.failed? || firstboot_status.running?
+      items << {
+        label: "Image Provisioning",
+        detail: firstboot_status.summary,
+        tone: firstboot_status.failed? ? "alert" : "warn"
+      }
+    end
+
     items
+  end
+
+  def load_mqtt_consumer_status
+    path = MqttConsumer::STATUS_PATH
+    return {} unless path.exist?
+
+    JSON.parse(File.read(path))
+  rescue JSON::ParserError
+    {}
   end
 
   def node_seen_freshness_state(node)

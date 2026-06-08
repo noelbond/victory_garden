@@ -35,18 +35,18 @@ select 'nodes=' || count(*) from nodes;
 
 before="$(sudo -u postgres psql --pset pager=off -d "$APP_DB" -Atc "select count(*) from sensor_readings")"
 
-mosquitto_pub "${MQTT_ARGS[@]}" -t greenhouse/zones/zone1/state -m '{"schema_version":"node-state/v1","timestamp":"2026-03-25T15:20:00Z","zone_id":"zone1","node_id":"mkr1010-zone1","moisture_raw":354,"moisture_percent":17,"soil_temp_c":26.45,"battery_voltage":2.56,"battery_percent":0,"wifi_rssi":-54,"uptime_seconds":12,"wake_count":1,"ip":"192.168.4.25","health":"degraded","last_error":"none","publish_reason":"scheduled"}'
+mosquitto_pub "${MQTT_ARGS[@]}" -t greenhouse/zones/zone1/nodes/pico-w-zone1/state -m '{"schema_version":"node-state/v1","timestamp":"2026-03-25T15:20:00Z","zone_id":"zone1","node_id":"pico-w-zone1","moisture_raw":354,"moisture_percent":17,"soil_temp_c":26.45,"battery_voltage":2.56,"battery_percent":0,"wifi_rssi":-54,"uptime_seconds":12,"wake_count":1,"ip":"192.168.4.25","health":"degraded","last_error":"none","publish_reason":"scheduled"}'
 
 sleep 5
 
 sudo -u postgres psql --pset pager=off -d "$APP_DB" -c "
 update nodes
 set zone_id = (select id from zones where zone_id = 'zone1')
-where node_id = 'mkr1010-zone1'
+where node_id = 'pico-w-zone1'
   and zone_id is null;
 "
 
-mosquitto_pub "${MQTT_ARGS[@]}" -t greenhouse/zones/zone1/state -m '{"schema_version":"node-state/v1","timestamp":"2026-03-25T15:20:10Z","zone_id":"zone1","node_id":"mkr1010-zone1","moisture_raw":354,"moisture_percent":17,"soil_temp_c":26.45,"battery_voltage":2.56,"battery_percent":0,"wifi_rssi":-54,"uptime_seconds":22,"wake_count":2,"ip":"192.168.4.25","health":"degraded","last_error":"none","publish_reason":"scheduled"}'
+mosquitto_pub "${MQTT_ARGS[@]}" -t greenhouse/zones/zone1/nodes/pico-w-zone1/state -m '{"schema_version":"node-state/v1","timestamp":"2026-03-25T15:20:10Z","zone_id":"zone1","node_id":"pico-w-zone1","moisture_raw":354,"moisture_percent":17,"soil_temp_c":26.45,"battery_voltage":2.56,"battery_percent":0,"wifi_rssi":-54,"uptime_seconds":22,"wake_count":2,"ip":"192.168.4.25","health":"degraded","last_error":"none","publish_reason":"scheduled"}'
 
 sleep 5
 

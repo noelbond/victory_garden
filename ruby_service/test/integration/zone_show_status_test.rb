@@ -117,14 +117,27 @@ class ZoneShowStatusTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Zone Moisture Aggregate"
     assert_includes response.body, "Average Moisture: 30.0%"
     assert_includes response.body, "Average Raw: 520"
-    assert_includes response.body, "Fresh Sensors: 2 / 4"
-    assert_includes response.body, "Fresh Nodes: sensor-a, sensor-b"
+    assert_includes response.body, "Valid Sensor Count: 2 / 4"
+    assert_includes response.body, "Fresh Node IDs: sensor-a, sensor-b"
     assert_includes response.body, "Stale Nodes: sensor-c"
     assert_includes response.body, "Missing Nodes: sensor-d"
     assert_includes response.body, "Partial aggregate"
   end
 
-  test "zone nodes page shows only nodes claimed to that zone" do
+  test "zone history range links preserve the zone history section" do
+    zone = create(:zone, name: "History Zone")
+
+    get zone_path(zone, zone_tab: "zone-history")
+
+    assert_response :success
+    assert_includes response.body, "zone_tab=zone-history"
+    assert_includes response.body, "range=week"
+    assert_includes response.body, "range=month"
+    assert_includes response.body, "range=year"
+    assert_includes response.body, "range=ytd"
+  end
+
+  test "zone nodes page shows only nodes assigned to that zone" do
     zone = create(:zone, name: "Zone With Nodes")
     other_zone = create(:zone, name: "Other Zone")
 
@@ -166,7 +179,7 @@ class ZoneShowStatusTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_includes response.body, "Zone With Nodes Nodes"
-    assert_includes response.body, "2 claimed nodes for this zone."
+    assert_includes response.body, "2 assigned nodes for this zone."
     assert_includes response.body, "zone-node-a"
     assert_includes response.body, "zone-node-b"
     assert_includes response.body, "52.0%"

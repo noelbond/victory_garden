@@ -21,6 +21,22 @@ class SettingsTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
+  test "invalid mqtt_port above 65535 renders show with unprocessable entity" do
+    patch settings_path, params: {
+      connection_setting: { mqtt_port: 70_000 }
+    }
+
+    assert_response :unprocessable_entity
+  end
+
+  test "invalid mqtt_host renders show with unprocessable entity" do
+    patch settings_path, params: {
+      connection_setting: { mqtt_host: "bad host name", mqtt_port: 1883 }
+    }
+
+    assert_response :unprocessable_entity
+  end
+
   test "invalid irrigation_line_count below existing assignment renders show with error" do
     create(:zone, irrigation_line: 3)
 
@@ -46,5 +62,7 @@ class SettingsTest < ActionDispatch::IntegrationTest
     get settings_path
 
     assert_response :success
+    assert_includes response.body, "Save stores these connection settings in the app database."
+    assert_includes response.body, "Publish Config sends the current saved system configuration to MQTT"
   end
 end

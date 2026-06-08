@@ -1,6 +1,11 @@
 class ConnectionSetting < ApplicationRecord
-  validates :mqtt_port, numericality: { greater_than: 0 }, allow_nil: true
+  HOST_PATTERN = /\A(?:localhost|(?:\[[0-9A-Fa-f:]+\])|(?:\d{1,3}\.){3}\d{1,3}|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)\z/
+
+  encrypts :mqtt_password
+
+  validates :mqtt_port, numericality: { greater_than: 0, less_than_or_equal_to: 65_535, only_integer: true }, allow_nil: true
   validates :irrigation_line_count, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :mqtt_host, format: { with: HOST_PATTERN, message: "must be a valid hostname, IPv4 address, or bracketed IPv6 address" }, allow_blank: true
 
   validate :irrigation_line_count_covers_assigned_zones
 

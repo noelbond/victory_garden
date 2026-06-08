@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/select_arm_gnu_toolchain.cmake)
+
 if(NOT DEFINED ENV{PICO_SDK_PATH})
   get_filename_component(DEFAULT_PICO_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/../pico-sdk" ABSOLUTE)
   set(ENV{PICO_SDK_PATH} "${DEFAULT_PICO_SDK_PATH}")

@@ -13,6 +13,6 @@ class CreateWateringEvents < ActiveRecord::Migration[8.0]
     end
 
     add_index :watering_events, :idempotency_key, unique: true
-    add_index :watering_events, %i[zone_id issued_at]
+    add_index :watering_events, %i[zone_id issued_at status]
   end
 end

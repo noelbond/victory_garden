@@ -1,5 +1,7 @@
-<div class="page-header">
-  <h1 class="page-title">New Crop Profile</h1>
-</div>
+<%= turbo_frame_tag "zone_workspace", class: "card zone-workspace-page", data: { zone_workspace_target: "crop-profile" } do %>
+  <div class="page-header crop-profile-page-header">
+    <h1 class="page-title">New Crop Profile</h1>
+  </div>
 
-<%= render "form", crop_profile: @crop_profile %>
+  <%= render "form", crop_profile: @crop_profile %>
+<% end %>

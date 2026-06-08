@@ -9,11 +9,11 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_USER="${SUDO_USER:-$(id -un)}"
 PYTHON_TOOLS_DIR="$REPO_ROOT/python_tools"
 PYTHON_VENV_DIR="$PYTHON_TOOLS_DIR/.venv"
 PYTHON_WHEELHOUSE_DIR="$REPO_ROOT/python_wheelhouse"
 RUBY_SERVICE_DIR="$REPO_ROOT/ruby_service"
+FIRMWARE_BUNDLE_DIR="$REPO_ROOT/firmware-bundles"
 ENV_FILE="/etc/victory_garden.env"
 RELEASE_MANIFEST="$REPO_ROOT/deploy/release_manifest.json"
 
@@ -27,14 +27,50 @@ DB_NAME="ruby_service_production"
 DB_CACHE_NAME="ruby_service_production_cache"
 DB_QUEUE_NAME="ruby_service_production_queue"
 DB_CABLE_NAME="ruby_service_production_cable"
-
-release_install() {
-  [[ -f "$RELEASE_MANIFEST" ]]
-}
+SKIP_SYSTEM_PACKAGES=0
 
 fail() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-system-packages)
+      SKIP_SYSTEM_PACKAGES=1
+      shift
+      ;;
+    *)
+      fail "Unknown argument: $1"
+      ;;
+  esac
+done
+
+detect_run_user() {
+  if [[ -n "${VICTORY_GARDEN_RUN_USER:-}" ]]; then
+    echo "$VICTORY_GARDEN_RUN_USER"
+    return
+  fi
+
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    echo "$SUDO_USER"
+    return
+  fi
+
+  local primary_user
+  primary_user="$(awk -F: '$3 == 1000 { print $1; exit }' /etc/passwd)"
+  if [[ -n "$primary_user" ]]; then
+    echo "$primary_user"
+    return
+  fi
+
+  fail "Could not determine the non-root user that should own the Victory Garden runtime."
+}
+
+RUN_USER="$(detect_run_user)"
+
+release_install() {
+  [[ -f "$RELEASE_MANIFEST" ]]
 }
 
 generated_secret() {
@@ -242,6 +278,9 @@ EOF
   grep -q '^MQTT_USERNAME=' "$ENV_FILE" || echo 'MQTT_USERNAME=victory_garden' >> "$ENV_FILE"
   grep -q '^MQTT_PASSWORD=' "$ENV_FILE" || echo "MQTT_PASSWORD=$mqtt_password" >> "$ENV_FILE"
   grep -q '^MQTT_DISCOVERY_PORT=' "$ENV_FILE" || echo 'MQTT_DISCOVERY_PORT=44737' >> "$ENV_FILE"
+  if [[ -d "$FIRMWARE_BUNDLE_DIR" ]]; then
+    grep -q '^VG_FIRMWARE_BUNDLE_ROOT=' "$ENV_FILE" || echo "VG_FIRMWARE_BUNDLE_ROOT=$FIRMWARE_BUNDLE_DIR" >> "$ENV_FILE"
+  fi
 }
 
 load_env_file() {
@@ -382,7 +421,7 @@ Type=simple
 User=$RUN_USER
 WorkingDirectory=$PYTHON_TOOLS_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=/bin/sh -lc 'exec "$0" -m tools.mqtt_discovery_responder --discovery-port "${MQTT_DISCOVERY_PORT:-44737}" --mqtt-port "${MQTT_PORT:-1883}"' $PYTHON_VENV_DIR/bin/python
+ExecStart=/bin/sh -lc 'exec "\$0" -m tools.mqtt_discovery_responder --discovery-port "\${MQTT_DISCOVERY_PORT:-44737}" --mqtt-port "\${MQTT_PORT:-1883}"' "$PYTHON_VENV_DIR/bin/python"
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -470,7 +509,9 @@ print_status() {
 }
 
 ensure_supported_platform
-ensure_system_packages
+if [[ "$SKIP_SYSTEM_PACKAGES" -eq 0 ]]; then
+  ensure_system_packages
+fi
 ensure_bundler
 ensure_ruby_version
 validate_release_manifest

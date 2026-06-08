@@ -31,7 +31,7 @@ class TestControllerContract:
     def test_real_node_payload_flows_through_controller(self):
         payload = load_fixture("node-state-v1.json")
         message = SimpleNamespace(
-            topic=f"greenhouse/zones/{payload['zone_id']}/state",
+            topic=f"greenhouse/zones/{payload['zone_id']}/nodes/{payload['node_id']}/state",
             payload=json.dumps(payload).encode("utf-8"),
         )
 
@@ -39,7 +39,7 @@ class TestControllerContract:
 
         reading = LATEST_STATE["zone1"]
         assert reading.schema_version == "node-state/v1"
-        assert reading.node_id == "mkr1010-zone1"
+        assert reading.node_id == "pico-w-zone1"
 
         profile = CropProfile(
             crop_id="tomato",
@@ -63,12 +63,12 @@ class TestControllerContract:
         assert new_state.runtime_seconds_today == 45
 
     def test_retained_empty_payload_is_ignored(self):
-        assert parse_sensor_message("greenhouse/zones/zone1/state", b"") is None
+        assert parse_sensor_message("greenhouse/zones/zone1/nodes/pico-w-zone1/state", b"") is None
 
     def test_legacy_payload_alias_is_accepted(self):
         payload = load_fixture("node-state-legacy-rssi.json")
         reading = parse_sensor_message(
-            "greenhouse/zones/zone1/state",
+            "greenhouse/zones/zone1/nodes/legacy-zone1/state",
             json.dumps(payload).encode("utf-8"),
         )
 
@@ -79,7 +79,7 @@ class TestControllerContract:
     def test_partial_payload_is_not_ready_for_control(self):
         payload = load_fixture("node-state-partial.json")
         reading = parse_sensor_message(
-            "greenhouse/zones/zone1/state",
+            "greenhouse/zones/zone1/nodes/pico-w-zone1/state",
             json.dumps(payload).encode("utf-8"),
         )
 
@@ -92,7 +92,7 @@ class TestControllerContract:
         payload["moisture_percent"] = 101.0
 
         reading = parse_sensor_message(
-            "greenhouse/zones/zone1/state",
+            "greenhouse/zones/zone1/nodes/pico-w-zone1/state",
             json.dumps(payload).encode("utf-8"),
         )
 
@@ -101,24 +101,24 @@ class TestControllerContract:
     def test_invalid_payload_does_not_replace_latest_state(self):
         payload = load_fixture("node-state-v1.json")
         valid_message = SimpleNamespace(
-            topic=f"greenhouse/zones/{payload['zone_id']}/state",
+            topic=f"greenhouse/zones/{payload['zone_id']}/nodes/{payload['node_id']}/state",
             payload=json.dumps(payload).encode("utf-8"),
         )
         on_message(None, None, valid_message)
 
         invalid_message = SimpleNamespace(
-            topic=f"greenhouse/zones/{payload['zone_id']}/state",
+            topic=f"greenhouse/zones/{payload['zone_id']}/nodes/{payload['node_id']}/state",
             payload=json.dumps(["not", "an", "object"]).encode("utf-8"),
         )
         on_message(None, None, invalid_message)
 
-        assert LATEST_STATE["zone1"].node_id == "mkr1010-zone1"
+        assert LATEST_STATE["zone1"].node_id == "pico-w-zone1"
         assert LATEST_STATE["zone1"].moisture_percent == payload["moisture_percent"]
 
     def test_optional_metadata_payload_is_accepted(self):
         payload = load_fixture("node-state-optional-nulls.json")
         reading = parse_sensor_message(
-            "greenhouse/zones/zone1/state",
+            "greenhouse/zones/zone1/nodes/pico-w-zone1/state",
             json.dumps(payload).encode("utf-8"),
         )
 

@@ -12,11 +12,11 @@ It is intentionally conservative:
 
 Current Pico defaults live in:
 
-- [`../firmware/pico_w_sensor_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/config.h)
+- [`../firmware/pico_w_sensor_node/src/config.h`](../firmware/pico_w_sensor_node/src/config.h)
 
 Current moisture-read implementation lives in:
 
-- [`../firmware/pico_w_sensor_node/src/sensors.c`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/sensors.c)
+- [`../firmware/pico_w_sensor_node/src/sensors.c`](../firmware/pico_w_sensor_node/src/sensors.c)
 
 Default assumptions:
 
@@ -59,7 +59,7 @@ If you move the sensor bus to different Pico pins, update:
 
 in:
 
-- [`../firmware/pico_w_sensor_node/src/config.h`](/Users/noel/coding/python/victory_garden/firmware/pico_w_sensor_node/src/config.h)
+- [`../firmware/pico_w_sensor_node/src/config.h`](../firmware/pico_w_sensor_node/src/config.h)
 
 ### Calibration note
 
@@ -67,20 +67,7 @@ The Pico moisture path now uses the seesaw I2C sensor with calibrated dry/wet bo
 
 For the calibration model and current status, see:
 
-- [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
-
-## Arduino MKR WiFi 1010 Moisture Wiring
-
-The Arduino node has its own sensor assumptions in:
-
-- [`../firmware/arduino/mkr1010_sensor_node/node_config.example.h`](/Users/noel/coding/python/victory_garden/firmware/arduino/mkr1010_sensor_node/node_config.example.h)
-- [`../firmware/arduino/mkr1010_sensor_node/mkr1010_sensor_node.ino`](/Users/noel/coding/python/victory_garden/firmware/arduino/mkr1010_sensor_node/mkr1010_sensor_node.ino)
-
-Important difference from Pico:
-
-- Arduino already supports explicit `DRY_READING` and `WET_READING` calibration points
-
-So if you want the most complete calibration path today, Arduino is the more mature node firmware.
+- [`calibration.md`](../docs/calibration.md)
 
 ## Actuator Wiring Status
 
@@ -88,7 +75,7 @@ The actuator path is now a dedicated Pico W firmware target, separate from the s
 
 Current actuator firmware:
 
-- [`../firmware/pico_w_actuator_node/README.md`](/Users/noel/coding/python/victory_garden/firmware/pico_w_actuator_node/README.md)
+- [`../firmware/pico_w_actuator_node/README.md`](../firmware/pico_w_actuator_node/README.md)
 
 Current actuator flow:
 
@@ -113,12 +100,12 @@ For network and hardware stability:
 1. power the Pi
 2. let the Pi join Wi‑Fi and start services
 3. confirm the broker and web app are up
-4. power the Pico or Arduino node
+4. power the Pico node
 5. verify live node state on MQTT before connecting any real pump or valve hardware
 
 ## Related Docs
 
-- [`architecture.md`](/Users/noel/coding/python/victory_garden/docs/architecture.md)
-- [`setup.md`](/Users/noel/coding/python/victory_garden/docs/setup.md)
-- [`calibration.md`](/Users/noel/coding/python/victory_garden/docs/calibration.md)
-- [`mqtt.md`](/Users/noel/coding/python/victory_garden/docs/mqtt.md)
+- [`architecture.md`](../docs/architecture.md)
+- [`setup.md`](../docs/setup.md)
+- [`calibration.md`](../docs/calibration.md)
+- [`mqtt.md`](../docs/mqtt.md)

@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/select_arm_gnu_toolchain.cmake)
+
 if(NOT DEFINED ENV{PICO_SDK_PATH})
   get_filename_component(DEFAULT_PICO_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/../pico-sdk" ABSOLUTE)
   set(ENV{PICO_SDK_PATH} "${DEFAULT_PICO_SDK_PATH}")
@@ -43,30 +45,3 @@ pico_enable_stdio_uart(pico_w_sensor_node 0)
 pico_enable_stdio_usb(pico_w_sensor_node 1)
 
 pico_add_extra_outputs(pico_w_sensor_node)
-
-add_executable(pico_w_actuator_node
-    ../pico_w_actuator_node/src/main.c
-    ../pico_w_actuator_node/src/mqtt_node.c
-    ../pico_w_actuator_node/src/node_config.c
-    ../pico_w_actuator_node/src/time_sync.c
-    ../pico_w_actuator_node/src/topics.c
-    ../pico_w_actuator_node/src/wifi.c
-)
-
-target_include_directories(pico_w_actuator_node PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/../pico_w_actuator_node/src
-)
-
-target_link_libraries(pico_w_actuator_node
-    pico_stdlib
-    pico_cyw43_arch_lwip_threadsafe_background
-    pico_lwip_mqtt
-    pico_lwip_sntp
-    hardware_flash
-    hardware_sync
-)
-
-pico_enable_stdio_uart(pico_w_actuator_node 0)
-pico_enable_stdio_usb(pico_w_actuator_node 1)
-
-pico_add_extra_outputs(pico_w_actuator_node)

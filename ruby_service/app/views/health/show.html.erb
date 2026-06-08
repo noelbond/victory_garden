@@ -11,18 +11,18 @@
 
 <div class="health-metrics">
   <div class="card metric-card">
-    <div class="metric-label">Nodes Claimed</div>
-    <div class="metric-value"><%= @summary[:claimed_nodes] %> / <%= @summary[:nodes] %></div>
+    <div class="metric-label">Assigned Nodes</div>
+    <div class="metric-value"><%= @summary[:assigned_nodes] %> / <%= @summary[:nodes] %></div>
     <div class="muted">assigned to a zone</div>
   </div>
   <div class="card metric-card <%= @summary[:stale_nodes] > 0 ? "metric-alert" : "metric-ok" %>">
-    <div class="metric-label">Nodes Online</div>
+    <div class="metric-label">Fresh Nodes</div>
     <div class="metric-value"><%= @summary[:nodes] - @summary[:stale_nodes] %> / <%= @summary[:nodes] %></div>
     <div class="muted">seen in the expected interval</div>
   </div>
-  <div class="card metric-card <%= @summary[:fresh_readings] < @summary[:claimed_zones] ? "metric-warn" : "metric-ok" %>">
-    <div class="metric-label">Fresh Readings</div>
-    <div class="metric-value"><%= @summary[:fresh_readings] %> / <%= @summary[:claimed_zones] %></div>
+  <div class="card metric-card <%= @summary[:fresh_zone_readings] < @summary[:assigned_zones] ? "metric-warn" : "metric-ok" %>">
+    <div class="metric-label">Fresh Zone Readings</div>
+    <div class="metric-value"><%= @summary[:fresh_zone_readings] %> / <%= @summary[:assigned_zones] %></div>
     <div class="muted">zones with a reading in the expected interval</div>
   </div>
   <div class="card metric-card <%= @summary[:config_pending] > 0 ? "metric-warn" : "metric-ok" %>">
@@ -34,6 +34,48 @@
     <div class="metric-label">Config Errors</div>
     <div class="metric-value"><%= @summary[:config_errors] %></div>
     <div class="muted">nodes with config failures</div>
+  </div>
+  <% firstboot_tone =
+      case @summary[:firstboot_status]
+      when "complete" then "metric-ok"
+      when "failed" then "metric-alert"
+      when "running" then "metric-warn"
+      else ""
+      end %>
+  <div class="card metric-card <%= firstboot_tone %>">
+    <div class="metric-label">Image Provisioning</div>
+    <div class="metric-value"><%= @summary[:firstboot_status].to_s.humanize %></div>
+    <div class="muted">
+      <% if firstboot_status.complete? %>
+        first boot finished
+      <% elsif firstboot_status.failed? %>
+        first boot needs review
+      <% elsif firstboot_status.running? %>
+        first boot is still running
+      <% else %>
+        not image-managed
+      <% end %>
+    </div>
+  </div>
+  <% mqtt_consumer_tone =
+      case @summary[:mqtt_consumer_status]
+      when "connected" then "metric-ok"
+      when "retrying" then "metric-warn"
+      when "degraded" then "metric-alert"
+      else ""
+      end %>
+  <div class="card metric-card <%= mqtt_consumer_tone %>">
+    <div class="metric-label">MQTT Consumer</div>
+    <div class="metric-value"><%= @summary[:mqtt_consumer_status].to_s.humanize %></div>
+    <div class="muted">
+      <% if @mqtt_consumer_status["connected"] %>
+        subscribed and receiving
+      <% elsif @mqtt_consumer_status["retry_count"].to_i.positive? %>
+        retry <%= @mqtt_consumer_status["retry_count"] %>
+      <% else %>
+        waiting for connection
+      <% end %>
+    </div>
   </div>
   <div class="card metric-card <%= @summary[:open_faults] > 0 ? "metric-alert" : "metric-ok" %>">
     <div class="metric-label">Open Faults</div>
@@ -105,7 +147,7 @@
     <section class="card zone-section health-panel health-panel-activity">
       <div class="zone-section-header">
         <h3>Recent Activity</h3>
-        <div class="muted">Latest readings, actuator updates, and config acknowledgements.</div>
+        <div class="muted">Latest readings, actuator updates, and config acknowledged events.</div>
       </div>
 
       <% if @recent_activity.any? %>
@@ -113,7 +155,7 @@
           <% @recent_activity.each do |item| %>
             <% activity_tone = case item[:label]
                                when "Actuator" then "warn"
-                               when "Config Ack" then "ok"
+                               when "Config Acknowledged" then "ok"
                                else "stale"
                                end %>
             <div class="activity-item">
@@ -131,7 +173,7 @@
     <section class="card zone-section health-panel health-panel-nodes">
       <div class="zone-section-header">
         <h3>Nodes</h3>
-        <div class="muted">Claimed state, freshness, config sync, and direct navigation to each node.</div>
+        <div class="muted">Assignment state, freshness, config sync, and direct navigation to each node.</div>
       </div>
 
       <% if @nodes.any? %>
@@ -141,12 +183,12 @@
               <tr>
                 <th>Node</th>
                 <th>Zone</th>
-                <th>Reported Zone</th>
+                <th>Reported Zone ID</th>
                 <th>Last Seen</th>
                 <th>Latest Reading</th>
                 <th>Actuator</th>
                 <th>Health</th>
-                <th>Wi-Fi</th>
+                <th>Wi-Fi RSSI</th>
                 <th>Last Error</th>
                 <th>Config</th>
                 <th>Actions</th>
@@ -219,7 +261,7 @@
                       <% end %>
                     </div>
                     <% if node.config_acknowledged_at.present? %>
-                      <div class="muted">acked <%= time_ago_in_words(node.config_acknowledged_at) %> ago</div>
+                      <div class="muted">acknowledged <%= time_ago_in_words(node.config_acknowledged_at) %> ago</div>
                     <% elsif node.config_published_at.present? %>
                       <div class="muted">published <%= time_ago_in_words(node.config_published_at) %> ago</div>
                     <% end %>
@@ -238,6 +280,7 @@
                   <td>
                     <div class="health-actions">
                       <%= link_to "Node", node_path(node), class: "table-link" %>
+                      <%= link_to "Node Readings", readings_node_path(node), class: "table-link" %>
                       <% if node.zone.present? %>
                         <%= link_to "Zone", zone_path(node.zone), class: "table-link" %>
                       <% end %>
