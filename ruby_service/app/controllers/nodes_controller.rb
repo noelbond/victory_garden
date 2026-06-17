@@ -2,6 +2,7 @@ class NodesController < ApplicationController
   include HistoryFiltering
 
   DEFAULT_HISTORY_WINDOW = 7.days
+  DEFAULT_TIMEFRAME = "last_7d"
   DEFAULT_PER_PAGE = 25
   MAX_HISTORY_LIMIT = 250
   TIMEFRAME_OPTIONS = {
