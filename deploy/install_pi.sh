@@ -9,6 +9,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_ROOT/deploy/lib/platform.sh"
 PYTHON_TOOLS_DIR="$REPO_ROOT/python_tools"
 PYTHON_VENV_DIR="$PYTHON_TOOLS_DIR/.venv"
 PYTHON_WHEELHOUSE_DIR="$REPO_ROOT/python_wheelhouse"
@@ -21,6 +22,10 @@ CONTROLLER_SERVICE="greenhouse.service"
 MQTT_DISCOVERY_SERVICE="victory-garden-mqtt-discovery.service"
 WEB_SERVICE="victory-garden-web.service"
 MQTT_CONSUMER_SERVICE="victory-garden-mqtt-consumer.service"
+
+# Shared by every unit's [Service] block below.
+SYSTEMD_SERVICE_RESTART_POLICY=$'Restart=always\nRestartSec=5'
+SYSTEMD_SERVICE_LOGGING=$'StandardOutput=journal\nStandardError=journal'
 
 DB_USER="ruby_service"
 DB_NAME="ruby_service_production"
@@ -85,20 +90,6 @@ generated_mqtt_password() {
 import secrets
 print(secrets.token_hex(24))
 PY
-}
-
-detect_platform_target() {
-  case "$(uname -m)" in
-    armv7l|armv6l)
-      echo "linux-armv7"
-      ;;
-    aarch64|arm64)
-      echo "linux-aarch64"
-      ;;
-    *)
-      echo "unsupported"
-      ;;
-  esac
 }
 
 manifest_value() {
@@ -397,11 +388,9 @@ User=$RUN_USER
 WorkingDirectory=$PYTHON_TOOLS_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$PYTHON_VENV_DIR/bin/python -m main
-Restart=always
-RestartSec=5
+$SYSTEMD_SERVICE_RESTART_POLICY
 Environment=PYTHONUNBUFFERED=1
-StandardOutput=journal
-StandardError=journal
+$SYSTEMD_SERVICE_LOGGING
 SyslogIdentifier=victory-garden-controller
 
 [Install]
@@ -422,11 +411,9 @@ User=$RUN_USER
 WorkingDirectory=$PYTHON_TOOLS_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=/bin/sh -lc 'exec "\$0" -m tools.mqtt_discovery_responder --discovery-port "\${MQTT_DISCOVERY_PORT:-44737}" --mqtt-port "\${MQTT_PORT:-1883}"' "$PYTHON_VENV_DIR/bin/python"
-Restart=always
-RestartSec=5
+$SYSTEMD_SERVICE_RESTART_POLICY
 Environment=PYTHONUNBUFFERED=1
-StandardOutput=journal
-StandardError=journal
+$SYSTEMD_SERVICE_LOGGING
 SyslogIdentifier=victory-garden-mqtt-discovery
 
 [Install]
@@ -448,10 +435,8 @@ User=$RUN_USER
 WorkingDirectory=$RUBY_SERVICE_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=/usr/bin/env bash -lc 'bundle exec puma -C config/puma.rb'
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
+$SYSTEMD_SERVICE_RESTART_POLICY
+$SYSTEMD_SERVICE_LOGGING
 SyslogIdentifier=victory-garden-web
 
 [Install]
@@ -473,10 +458,8 @@ User=$RUN_USER
 WorkingDirectory=$RUBY_SERVICE_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=/usr/bin/env bash -lc 'bundle exec ruby bin/mqtt_consumer'
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
+$SYSTEMD_SERVICE_RESTART_POLICY
+$SYSTEMD_SERVICE_LOGGING
 SyslogIdentifier=victory-garden-mqtt-consumer
 
 [Install]

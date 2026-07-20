@@ -31,6 +31,7 @@ VERSION="$(date +%Y.%m.%d)"
 FIRST_USER_NAME="${VG_PI_FIRST_USER_NAME:-pi}"
 FIRST_USER_PASS="${VG_PI_FIRST_USER_PASS:-}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$REPO_ROOT/deploy/lib/release_excludes.sh"
 OUTPUT_DIR="$REPO_ROOT/deploy/pi_image/releases"
 TEMPLATE_STAGE_DIR="$REPO_ROOT/deploy/pi_image/pi-gen/stage-victory-garden"
 FIRMWARE_BUILD_SCRIPT="$REPO_ROOT/deploy/build_firmware_bundles.sh"
@@ -114,15 +115,7 @@ create_source_tarball() {
     cd "$REPO_ROOT"
     tar \
       --exclude='.git' \
-      --exclude='deploy/releases' \
-      --exclude='python_tools/.venv' \
-      --exclude='python_tools/__pycache__' \
-      --exclude='python_tools/controller_runtime.json' \
-      --exclude='python_tools/state.json' \
-      --exclude='ruby_service/vendor/bundle' \
-      --exclude='ruby_service/vendor/cache' \
-      --exclude='ruby_service/tmp' \
-      --exclude='ruby_service/log' \
+      "${RELEASE_TAR_EXCLUDES[@]}" \
       --exclude='firmware/pico_w_sensor_node/build' \
       --exclude='firmware/pico_w_actuator_node/build' \
       --exclude='firmware-bundles' \

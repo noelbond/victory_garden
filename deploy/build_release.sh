@@ -60,6 +60,8 @@ case "$TARGET" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_ROOT/deploy/lib/platform.sh"
+source "$REPO_ROOT/deploy/lib/release_excludes.sh"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/deploy/releases}"
 ARTIFACT_NAME="victory-garden-${TARGET}"
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/victory-garden-release.XXXXXX")"
@@ -92,25 +94,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-detect_target() {
-  case "$(uname -m)" in
-    armv7l|armv6l)
-      echo "linux-armv7"
-      ;;
-    aarch64|arm64)
-      echo "linux-aarch64"
-      ;;
-    *)
-      echo "unsupported"
-      ;;
-  esac
-}
-
 ensure_host_matches_target() {
   [[ "$(uname -s)" == "Linux" ]] || fail "Release artifacts must be built on Linux."
 
   local host_target
-  host_target="$(detect_target)"
+  host_target="$(detect_platform_target)"
   [[ "$host_target" != "unsupported" ]] || fail "Unsupported build architecture: $(uname -m)."
   [[ "$host_target" == "$TARGET" ]] || fail "Build this artifact on a matching target host. Host is '$host_target', requested '$TARGET'."
 }
@@ -184,15 +172,7 @@ copy_repo_source() {
     (
       cd "$REPO_ROOT"
       tar \
-        --exclude='deploy/releases' \
-        --exclude='python_tools/.venv' \
-        --exclude='python_tools/__pycache__' \
-        --exclude='python_tools/controller_runtime.json' \
-        --exclude='python_tools/state.json' \
-        --exclude='ruby_service/vendor/bundle' \
-        --exclude='ruby_service/vendor/cache' \
-        --exclude='ruby_service/tmp' \
-        --exclude='ruby_service/log' \
+        "${RELEASE_TAR_EXCLUDES[@]}" \
         -cf - "${SOURCE_PATHS[@]}"
     ) | (
       cd "$STAGE_DIR"
