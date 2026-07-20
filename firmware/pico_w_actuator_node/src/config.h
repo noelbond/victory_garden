@@ -10,7 +10,7 @@
 #define __has_include(x) 0
 #endif
 
-#if __has_include("config_local.h")
+#if !defined(VG_BUNDLED_BUILD) && __has_include("config_local.h")
 #include "config_local.h"
 #endif
 

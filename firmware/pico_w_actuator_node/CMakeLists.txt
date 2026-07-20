@@ -11,6 +11,8 @@ include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 
 project(victory_garden_pico_w_actuator_node C CXX ASM)
 
+option(VG_BUNDLED_BUILD "Build distributable firmware without config_local.h" OFF)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -23,11 +25,17 @@ add_executable(pico_w_actuator_node
     src/time_sync.c
     src/topics.c
     src/wifi.c
+    ${CMAKE_CURRENT_LIST_DIR}/../shared/json_lite.c
 )
 
 target_include_directories(pico_w_actuator_node PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
+    ${CMAKE_CURRENT_LIST_DIR}/../shared
 )
+
+if(VG_BUNDLED_BUILD)
+    target_compile_definitions(pico_w_actuator_node PRIVATE VG_BUNDLED_BUILD=1)
+endif()
 
 target_link_libraries(pico_w_actuator_node
     pico_stdlib

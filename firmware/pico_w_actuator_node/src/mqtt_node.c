@@ -14,6 +14,7 @@
 #include "lwip/udp.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
+#include "json_lite.h"
 #include "time_sync.h"
 #include "topics.h"
 #include "wifi.h"
@@ -94,106 +95,6 @@ static err_t mqtt_client_connect_locked(mqtt_client_t *client, const ip_addr_t *
     err_t err = mqtt_client_connect(client, ipaddr, port, cb, arg, client_info);
     cyw43_arch_lwip_end();
     return err;
-}
-
-static bool decode_json_string(const char *start, char *out, size_t out_size, const char **end_out) {
-    size_t out_len = 0;
-    const char *cursor = start;
-
-    if (!start || !out || out_size == 0) {
-        return false;
-    }
-
-    while (*cursor != '\0') {
-        char ch = *cursor++;
-        if (ch == '"') {
-            out[out_len] = '\0';
-            if (end_out) {
-                *end_out = cursor;
-            }
-            return true;
-        }
-
-        if (ch == '\\') {
-            ch = *cursor++;
-            switch (ch) {
-                case '"':
-                case '\\':
-                case '/':
-                    break;
-                case 'b':
-                    ch = '\b';
-                    break;
-                case 'f':
-                    ch = '\f';
-                    break;
-                case 'n':
-                    ch = '\n';
-                    break;
-                case 'r':
-                    ch = '\r';
-                    break;
-                case 't':
-                    ch = '\t';
-                    break;
-                default:
-                    return false;
-            }
-        }
-
-        if (out_len + 1 < out_size) {
-            out[out_len++] = ch;
-        }
-    }
-
-    return false;
-}
-
-static const char *skip_json_whitespace(const char *cursor) {
-    while (cursor && (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t')) {
-        ++cursor;
-    }
-    return cursor;
-}
-
-static bool extract_json_string(const char *payload, const char *key, char *out, size_t out_size) {
-    char key_pattern[64];
-    snprintf(key_pattern, sizeof(key_pattern), "\"%s\"", key);
-    const char *start = strstr(payload, key_pattern);
-    if (!start) {
-        return false;
-    }
-    start += strlen(key_pattern);
-    start = strchr(start, ':');
-    if (!start) {
-        return false;
-    }
-    start = skip_json_whitespace(start + 1);
-    if (!start || *start != '"') {
-        return false;
-    }
-    ++start;
-    return decode_json_string(start, out, out_size, NULL);
-}
-
-static bool extract_json_int(const char *payload, const char *key, int *out) {
-    char key_pattern[64];
-    snprintf(key_pattern, sizeof(key_pattern), "\"%s\"", key);
-    const char *start = strstr(payload, key_pattern);
-    if (!start) {
-        return false;
-    }
-    start += strlen(key_pattern);
-    start = strchr(start, ':');
-    if (!start) {
-        return false;
-    }
-    start = skip_json_whitespace(start + 1);
-    if (!start) {
-        return false;
-    }
-    *out = (int)strtol(start, NULL, 10);
-    return true;
 }
 
 static void mqtt_close_broker_discovery(void) {
@@ -522,7 +423,6 @@ static void actuator_set_line_output(mqtt_node_t *node, uint8_t irrigation_line,
     uint8_t gpio = line_gpio_for_index(node, line_index);
     bool level = enabled ? node->config->actuator_relay_active_high : !node->config->actuator_relay_active_high;
     gpio_put(gpio, level ? 1u : 0u);
-    node->relay_enabled[line_index] = enabled;
     printf("[actuator] line=%u relay_gp=%u enabled=%d level=%d\n",
            (unsigned)irrigation_line,
            (unsigned)gpio,

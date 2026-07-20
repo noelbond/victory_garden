@@ -37,7 +37,6 @@ typedef struct {
     uint8_t irrigation_line_count;
     actuator_zone_assignment_t assignments[VG_MAX_IRRIGATION_LINES];
     actuator_line_run_t runs[VG_MAX_IRRIGATION_LINES];
-    bool relay_enabled[VG_MAX_IRRIGATION_LINES];
     char last_error[128];
 } mqtt_node_t;
 

@@ -2,10 +2,6 @@
 
 #include <stdio.h>
 
-void topic_actuator_command_pattern(char *out, size_t out_size) {
-    snprintf(out, out_size, "greenhouse/zones/+/actuator/command");
-}
-
 void topic_actuator_command_for_zone(const char *zone_id, char *out, size_t out_size) {
     snprintf(out, out_size, "greenhouse/zones/%s/actuator/command", zone_id);
 }

@@ -10,6 +10,8 @@
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
 
+#include "json_lite.h"
+
 static uint32_t config_checksum(const node_config_t *config) {
     const uint8_t *bytes = (const uint8_t *)config;
     uint32_t hash = 2166136261u;
@@ -39,113 +41,6 @@ static void set_error(char *error, size_t error_size, const char *message) {
 
 static bool string_is_placeholder(const char *value) {
     return value && strncmp(value, "CHANGE_ME_", 10) == 0;
-}
-
-static bool decode_json_string(const char *start, char *out, size_t out_size, const char **end_out) {
-    size_t out_len = 0;
-    const char *cursor = start;
-
-    if (!start || !out || out_size == 0) {
-        return false;
-    }
-
-    while (*cursor != '\0') {
-        char ch = *cursor++;
-        if (ch == '"') {
-            out[out_len] = '\0';
-            if (end_out) {
-                *end_out = cursor;
-            }
-            return true;
-        }
-
-        if (ch == '\\') {
-            ch = *cursor++;
-            switch (ch) {
-                case '"':
-                case '\\':
-                case '/':
-                    break;
-                case 'b':
-                    ch = '\b';
-                    break;
-                case 'f':
-                    ch = '\f';
-                    break;
-                case 'n':
-                    ch = '\n';
-                    break;
-                case 'r':
-                    ch = '\r';
-                    break;
-                case 't':
-                    ch = '\t';
-                    break;
-                default:
-                    return false;
-            }
-        }
-
-        if (out_len + 1 < out_size) {
-            out[out_len++] = ch;
-        }
-    }
-
-    return false;
-}
-
-static bool extract_json_string(const char *payload, const char *key, char *out, size_t out_size) {
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
-    const char *start = strstr(payload, pattern);
-    if (!start) {
-        return false;
-    }
-    start += strlen(pattern);
-    return decode_json_string(start, out, out_size, NULL);
-}
-
-static bool extract_json_bool(const char *payload, const char *key, bool *out) {
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    const char *start = strstr(payload, pattern);
-    if (!start) {
-        return false;
-    }
-    start += strlen(pattern);
-    if (strncmp(start, "true", 4) == 0) {
-        *out = true;
-        return true;
-    }
-    if (strncmp(start, "false", 5) == 0) {
-        *out = false;
-        return true;
-    }
-    return false;
-}
-
-static bool extract_json_int(const char *payload, const char *key, int *out) {
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    const char *start = strstr(payload, pattern);
-    if (!start) {
-        return false;
-    }
-    start += strlen(pattern);
-    *out = (int)strtol(start, NULL, 10);
-    return true;
-}
-
-static bool extract_json_float(const char *payload, const char *key, float *out) {
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    const char *start = strstr(payload, pattern);
-    if (!start) {
-        return false;
-    }
-    start += strlen(pattern);
-    *out = strtof(start, NULL);
-    return true;
 }
 
 void node_config_reset_defaults(node_config_t *config) {

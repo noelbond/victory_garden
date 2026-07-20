@@ -79,7 +79,8 @@ build_bundle() {
     -S "$REPO_ROOT/$source_dir" \
     -B "$build_dir" \
     -G Ninja \
-    -DPICO_BOARD="$pico_board"
+    -DPICO_BOARD="$pico_board" \
+    -DVG_BUNDLED_BUILD=ON
 
   cmake --build "$build_dir" --target "$target_name"
 
