@@ -31,7 +31,7 @@ For the current controller and Rails rules, `moisture_percent` is the value that
 
 ### Pico W
 
-The Pico W firmware now reads the Adafruit seesaw soil sensor over I2C and supports dry/wet calibration bounds.
+The Pico W firmware now reads analog capacitive probes through an ADS1115 I2C ADC and supports per-channel dry/wet calibration bounds.
 
 Current behavior in:
 
@@ -39,14 +39,14 @@ Current behavior in:
 
 Current Pico behavior:
 
-- reads moisture from seesaw `touchRead()` over I2C
+- reads moisture from ADS1115 channels `AIN0` through `AIN3`
 - uses true dry/wet calibration when both `raw_dry` and `raw_wet` are configured
-- otherwise falls back to a rough interim seesaw range
+- otherwise falls back to a rough interim ADS1115 raw-count range
 
 Important:
 
-- earlier Pico ADC-based readings are not valid calibration data for the seesaw hardware
-- dry/wet calibration on Pico should be restarted from scratch using seesaw readings only
+- earlier readings from different sensor hardware are not valid calibration data for the ADS1115 path
+- dry/wet calibration on Pico should be captured per ADS1115 channel
 
 ## How To Capture Dry And Wet References
 
@@ -132,9 +132,9 @@ If the normalized percentages do not line up with real plant conditions, recalib
 
 For Pico today, focus on:
 
-- correct seesaw I2C wiring
+- correct ADS1115 I2C wiring
 - stable insertion depth and probe placement
-- collecting new `raw_dry` / `raw_wet` values from seesaw readings
+- collecting new `raw_dry` / `raw_wet` values from ADS1115 channel readings
 
 Relevant defaults live in:
 
@@ -142,12 +142,12 @@ Relevant defaults live in:
 
 Relevant fields:
 
-- `VG_DEFAULT_SEESAW_I2C_SDA_GPIO`
-- `VG_DEFAULT_SEESAW_I2C_SCL_GPIO`
-- `VG_DEFAULT_SEESAW_I2C_ADDRESS`
-- `VG_DEFAULT_SEESAW_TOUCH_CHANNEL`
-- `VG_DEFAULT_MOISTURE_RAW_DRY`
-- `VG_DEFAULT_MOISTURE_RAW_WET`
+- `VG_DEFAULT_ADS1115_I2C_SDA_GPIO`
+- `VG_DEFAULT_ADS1115_I2C_SCL_GPIO`
+- `VG_DEFAULT_ADS1115_I2C_ADDRESS`
+- `VG_DEFAULT_CHANNEL{N}_NODE_ID`
+- `VG_DEFAULT_CHANNEL{N}_MOISTURE_RAW_DRY`
+- `VG_DEFAULT_CHANNEL{N}_MOISTURE_RAW_WET`
 
 ## Practical Rules
 

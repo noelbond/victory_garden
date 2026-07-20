@@ -76,14 +76,14 @@ Typical values to set before flashing:
 - NTP server
 - node ID
 - zone ID
-- seesaw SDA/SCL pins
-- seesaw I2C address and touch channel
-- dry/wet calibration bounds once measured
+- ADS1115 SDA/SCL pins
+- ADS1115 I2C address
+- per-channel node IDs and dry/wet calibration bounds once measured
 
 Important:
 
-- the Pico now expects a seesaw I2C moisture sensor, not a raw analog probe
-- earlier ADC-based Pico readings should not be reused as calibration data
+- the Pico now expects an ADS1115 I2C ADC reading analog capacitive probes
+- earlier readings from different sensor hardware should not be reused as calibration data
 - see [`calibration.md`](../docs/calibration.md)
 
 The Pico also supports persisted config in flash at runtime through retained `node-config/v1` messages from Rails.

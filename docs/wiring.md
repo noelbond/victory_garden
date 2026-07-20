@@ -8,7 +8,7 @@ It is intentionally conservative:
 - the actuator path has a concrete default relay GPIO in firmware
 - the final pump and relay power topology still depends on the hardware you attach
 
-## Pico W Moisture Sensor Wiring
+## Pico W Sensor Wiring
 
 Current Pico defaults live in:
 
@@ -20,42 +20,51 @@ Current moisture-read implementation lives in:
 
 Default assumptions:
 
-- seesaw I2C SDA: `GPIO4`
-- seesaw I2C SCL: `GPIO5`
-- seesaw I2C address: `0x36`
-- seesaw touch channel: `0`
-- `moisture_raw` comes from seesaw `touchRead()`
-- `moisture_percent` is derived from dry/wet calibration when configured, or a rough fallback range otherwise
+- ADS1115 I2C SDA: `GPIO14`
+- ADS1115 I2C SCL: `GPIO15`
+- ADS1115 I2C address: `0x48`
+- ADS1115 channels `AIN0` through `AIN3` read four analog capacitive probes
+- SHT40 I2C address: `0x44`
+- one Pico is one zone; each ADS1115 channel publishes as a separate node ID
+- `moisture_percent` is derived from per-channel dry/wet calibration when configured, or a rough fallback range otherwise
 
 ### Basic wiring
 
-For the Adafruit seesaw/STEMMA soil sensor path:
+For the ADS1115 analog probe path:
 
-- Pico `3V3(OUT)` -> sensor `VIN`
-- Pico `GND` -> sensor `GND`
-- Pico `GPIO4` -> sensor `SDA`
-- Pico `GPIO5` -> sensor `SCL`
+- Pico `3V3(OUT)` -> ADS1115 `VDD`
+- Pico `GND` -> ADS1115 `GND`
+- Pico `GPIO14` -> ADS1115 `SDA` and SHT40 `SDA`
+- Pico `GPIO15` -> ADS1115 `SCL` and SHT40 `SCL`
+- Pico `3V3(OUT)` -> SHT40 `VIN`
+- Pico `GND` -> SHT40 `GND`
+- each capacitive probe signal -> one ADS1115 input, `AIN0` through `AIN3`
+- each probe power/ground -> appropriate local 3.3V/GND rails
 
 Important:
 
 - keep grounds common
-- the sensor is I2C, not analog
-- the previous ADC-based Pico readings are not valid calibration data for this hardware
+- the ADS1115 and SHT40 share the I2C bus; the probes are analog
+- calibrate each channel separately because probes and placements vary
 
 ### Current software expectation
 
 The Pico firmware currently expects:
 
-- one seesaw moisture sensor on I2C
+- one ADS1115 ADC on I2C
+- one SHT40 temperature/humidity sensor on the same I2C bus
+- up to four analog capacitive probes, one per ADS1115 channel
 - on the configured SDA/SCL pins
 - no separate battery wiring yet
 
 If you move the sensor bus to different Pico pins, update:
 
-- `VG_DEFAULT_SEESAW_I2C_SDA_GPIO`
-- `VG_DEFAULT_SEESAW_I2C_SCL_GPIO`
-- `VG_DEFAULT_SEESAW_I2C_ADDRESS`
-- `VG_DEFAULT_SEESAW_TOUCH_CHANNEL`
+- `VG_DEFAULT_ADS1115_I2C_SDA_GPIO`
+- `VG_DEFAULT_ADS1115_I2C_SCL_GPIO`
+- `VG_DEFAULT_ADS1115_I2C_ADDRESS`
+- `VG_DEFAULT_CHANNEL{N}_NODE_ID`
+- `VG_DEFAULT_CHANNEL{N}_MOISTURE_RAW_DRY`
+- `VG_DEFAULT_CHANNEL{N}_MOISTURE_RAW_WET`
 
 in:
 
@@ -63,7 +72,7 @@ in:
 
 ### Calibration note
 
-The Pico moisture path now uses the seesaw I2C sensor with calibrated dry/wet bounds in firmware. The current measured calibration values for the live replacement sensor are `raw_dry = 552` and `raw_wet = 943`.
+The Pico moisture path now uses ADS1115 raw ADC counts with per-channel dry/wet bounds in firmware. Capture fresh dry/wet references for each analog probe channel.
 
 For the calibration model and current status, see:
 

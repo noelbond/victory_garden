@@ -6,7 +6,7 @@ It assumes:
 
 - one Raspberry Pi on your LAN
 - one actuator zone
-- one sensor node that will be assigned to the zone in Rails
+- one four-channel sensor device whose channel nodes will be assigned to the zone in Rails
 - one dedicated actuator Pico for that zone
 - Mosquitto and Rails running on the Pi
 
@@ -93,13 +93,13 @@ set +a
 mosquitto_sub -h localhost -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/nodes/+/state' -v
 ```
 
-You should see retained `node-state/v1` messages from the sensor node.
+You should see four retained `node-state/v1` messages from the sensor device. Each has a distinct channel `node_id` and the same physical `device_id`.
 
 In Rails:
 
 1. open `Nodes`
-2. confirm the sensor node appears
-3. assign it to the zone you created
+2. confirm all four channel nodes appear
+3. assign any channel to the zone you created; Rails cascades the assignment to its `device_id` siblings
 4. if needed, open the node detail page and change the zone's crop profile there
 
 Important:
@@ -188,5 +188,5 @@ The software stack is ready for one-zone operation, but the final hardware valid
 
 Calibration note:
 
-- the Pico sensor node uses the seesaw I2C moisture sensor with dry/wet calibration bounds in firmware
+- the Pico sensor node uses an ADS1115 I2C ADC with per-channel dry/wet calibration bounds in firmware
 - see [`calibration.md`](../docs/calibration.md)

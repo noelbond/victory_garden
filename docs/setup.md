@@ -211,6 +211,8 @@ export PICO_SDK_PATH="$PWD/firmware/pico-sdk"
 ./deploy/build_firmware_bundles.sh
 ```
 
+Bundled installer firmware is built with `VG_BUNDLED_BUILD=ON`, which deliberately ignores untracked `config_local.h` files. Wi-Fi and broker credentials are supplied later by the installer over USB provisioning.
+
 Before building, make sure `arm-none-eabi-gcc` is installed and already available on your `PATH`.
 
 Output:
@@ -258,10 +260,21 @@ Typical values to set before flashing:
 
 Current moisture-input note:
 
-- the Pico moisture path uses an Adafruit seesaw I2C soil sensor
-- default bus settings are `GPIO4`/`GPIO5` on I2C address `0x36`
-- it supports firmware dry/wet calibration using `VG_DEFAULT_MOISTURE_RAW_DRY` and `VG_DEFAULT_MOISTURE_RAW_WET`
+- the Pico moisture path uses an ADS1115 I2C ADC with analog capacitive probes
+- default bus settings are SDA `GPIO14` and SCL `GPIO15` on I2C1, address `0x48`
+- it supports firmware dry/wet calibration using `VG_DEFAULT_CHANNEL{N}_MOISTURE_RAW_DRY` and `VG_DEFAULT_CHANNEL{N}_MOISTURE_RAW_WET`
 - see [`calibration.md`](../docs/calibration.md)
+
+### Four-channel installer flow
+
+The sensor Pico provisioning acknowledgement supplies four explicit channel node IDs. The installer waits for all four channel state messages before continuing; it does not derive IDs from naming conventions.
+
+1. Flash and provision one sensor Pico.
+2. Wait for all four ADS1115 channels to appear in Rails.
+3. Pick one zone. Assigning one channel assigns every sibling with the same physical `device_id`.
+4. Put all four probes in dry soil and capture once. One `request_reading` wake publishes all four dry values.
+5. Put all four probes in saturated soil and capture once. One wake publishes all four wet values.
+6. The installer saves dry/wet calibration independently on each channel. Rails publishes one aggregated config to `greenhouse/nodes/{device_id}/config` with a four-entry `channels` array.
 
 ### Pico verification
 
