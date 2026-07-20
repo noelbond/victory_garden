@@ -20,6 +20,8 @@ const INSTALLER_LOG_ROTATED_FILE: &str = "installer.log.1";
 const INSTALLER_LOG_MAX_BYTES: u64 = 1_000_000;
 const INSTALLER_SUPPORT_DIR: &str = "support-bundles";
 const TAURI_RUNTIME_VERSION: &str = "2.11.2";
+// Must match firmware VG_ADS1115_CHANNEL_COUNT.
+const EXPECTED_SENSOR_CHANNEL_COUNT: usize = 4;
 
 #[derive(Clone, Serialize)]
 struct BootselDevice {
@@ -32,6 +34,7 @@ struct BootselDevice {
 struct FlashResult {
     board: String,
     kind: String,
+    operation_id: String,
     flashed_filename: String,
     flashed_path: String,
     device: BootselDevice,
@@ -121,6 +124,10 @@ struct SetupZone {
 struct SetupNode {
     id: u64,
     node_id: String,
+    name: Option<String>,
+    device_id: Option<String>,
+    #[serde(default)]
+    channels: Vec<SetupNode>,
     zone_id: Option<u64>,
     zone_name: Option<String>,
     assigned: bool,
@@ -183,9 +190,16 @@ struct SetupSensorReading {
     id: u64,
     node_id: String,
     recorded_at: Option<String>,
-    moisture_raw: u64,
+    moisture_raw: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_option_f64ish")]
     moisture_percent: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_option_f64ish")]
+    air_temperature_c: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_option_f64ish")]
+    humidity_percent: Option<f64>,
+    greenhouse_alert_status: Option<String>,
+    health: Option<String>,
+    last_error: Option<String>,
     publish_reason: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_f64ish")]
     battery_percent: Option<f64>,
@@ -360,9 +374,51 @@ struct ProvisionPicoInput {
 #[derive(Serialize)]
 struct ProvisionPicoResult {
     kind: String,
+    operation_id: String,
     serial_port: String,
     node_id: String,
     zone_id: String,
+    channels: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ProvisionReadyPayload {
+    role: String,
+    node_id: String,
+    zone_id: String,
+    requires_provisioning: bool,
+}
+
+#[derive(Deserialize)]
+struct ProvisionOkPayload {
+    node_id: String,
+    zone_id: String,
+    #[serde(default)]
+    channels: Vec<String>,
+    rebooting: bool,
+}
+
+fn provisioned_channel_ids(kind: &str, payload: &ProvisionOkPayload) -> Result<Vec<String>, String> {
+    if kind != "sensor" {
+        return Ok(Vec::new());
+    }
+
+    let channels: Vec<String> = payload
+        .channels
+        .iter()
+        .map(|channel| channel.trim().to_string())
+        .filter(|channel| !channel.is_empty())
+        .collect();
+    let unique: std::collections::HashSet<&String> = channels.iter().collect();
+    if channels.len() != EXPECTED_SENSOR_CHANNEL_COUNT || unique.len() != EXPECTED_SENSOR_CHANNEL_COUNT {
+        return Err(format!(
+            "sensor provisioning acknowledgement must contain {} unique channel ids, got {}",
+            EXPECTED_SENSOR_CHANNEL_COUNT,
+            channels.len()
+        ));
+    }
+
+    Ok(channels)
 }
 
 #[derive(Serialize)]
@@ -835,11 +891,38 @@ fn timestamp_string() -> String {
     format!("{}.{}", now.as_secs(), now.subsec_millis())
 }
 
+fn operation_id(prefix: &str) -> String {
+    format!("{}-{}", prefix, timestamp_string().replace('.', "-"))
+}
+
 fn installer_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
         .or_else(|_| app.path().app_data_dir())
         .map_err(|error| format!("could not resolve installer data directory: {error}"))
+}
+
+fn is_disappearing_serial_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("serial read failed")
+        && (lower.contains("no such file")
+            || lower.contains("resource busy")
+            || lower.contains("device not configured")
+            || lower.contains("input/output error")
+            || lower.contains("broken pipe"))
+}
+
+fn should_retry_provision_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("timed out waiting for the pico usb serial port after flash")
+        || (lower.contains("could not open /dev") && (lower.contains("no such file") || lower.contains("resource busy") || lower.contains("device not configured")))
+        || lower.contains("did not receive provisioning prompt from pico")
+        || lower.contains("timed out waiting for provisioning confirmation")
+        || lower.contains("invalid provisioning ready payload")
+        || lower.contains("invalid provisioning acknowledgement payload")
+        || lower.contains("unexpected provisioning acknowledgement")
+        || lower.contains("unexpected provisioning prompt")
+        || is_disappearing_serial_error(error)
 }
 
 fn installer_logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -996,6 +1079,20 @@ fn create_support_zip(bundle_dir: &Path, zip_path: &Path) -> Result<(), String> 
     Ok(())
 }
 
+fn flash_io_error(action: &str, target_path: &Path, error: std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof => {
+            format!(
+                "the BOOTSEL drive disappeared while {} {}: {}",
+                action,
+                target_path.display(),
+                error
+            )
+        }
+        _ => format!("could not {} {}: {}", action, target_path.display(), error),
+    }
+}
+
 fn api_url_from_base(base_url: &str, path: &str) -> Result<String, String> {
     let (_, host, port, _) = parse_http_url(base_url)?;
     Ok(format!("http://{host}:{port}{path}"))
@@ -1072,6 +1169,13 @@ fn decode_json_response<T: DeserializeOwned>(status_code: u16, body: &str, url: 
     }
 
     Err(format!("HTTP {status_code} from {url}"))
+}
+
+// Lets the JS side derive its expectation from this one constant instead of
+// hardcoding its own copy of the sensor channel count.
+#[tauri::command]
+fn expected_sensor_channel_count() -> usize {
+    EXPECTED_SENSOR_CHANNEL_COUNT
 }
 
 #[tauri::command]
@@ -1385,6 +1489,13 @@ fn collect_pico_runtime_diagnostics(input: PicoRuntimeDiagnosticsInput) -> Resul
 
 #[tauri::command]
 fn provision_pico(app: AppHandle, input: ProvisionPicoInput) -> Result<ProvisionPicoResult, String> {
+    const MAX_PROVISION_ATTEMPTS: u8 = 3;
+    const SERIAL_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+    const READY_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+    const ACK_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+    const RETRY_DELAY: Duration = Duration::from_millis(1200);
+
+    let provisioning_operation_id = operation_id("provision");
     log_internal(
         &app,
         "info",
@@ -1392,6 +1503,7 @@ fn provision_pico(app: AppHandle, input: ProvisionPicoInput) -> Result<Provision
         "start",
         "Starting Pico serial provisioning.",
         Some(json!({
+            "operation_id": &provisioning_operation_id,
             "kind": &input.kind,
             "node_id": &input.node_id,
             "zone_id": &input.zone_id,
@@ -1400,149 +1512,229 @@ fn provision_pico(app: AppHandle, input: ProvisionPicoInput) -> Result<Provision
         })),
     );
 
-    let serial_port_name = wait_for_single_serial_port(Duration::from_secs(20))?;
-    log_internal(
-        &app,
-        "info",
-        "provisioning",
-        "serial_port_detected",
-        "Detected a single Pico serial port for provisioning.",
-        Some(json!({
-            "serial_port": &serial_port_name,
-            "kind": &input.kind,
-            "node_id": &input.node_id,
-        })),
-    );
-    let mut port = serialport::new(&serial_port_name, 115_200)
-        .timeout(Duration::from_millis(250))
-        .open()
-        .map_err(|error| format!("could not open {serial_port_name}: {error}"))?;
+    let mqtt_host = resolve_ipv4_host(&input.mqtt_host, input.mqtt_port)?;
+    let payload = json!({
+        "wifi_ssid": &input.wifi_ssid,
+        "wifi_password": &input.wifi_password,
+        "mqtt_host": mqtt_host,
+        "mqtt_port": input.mqtt_port,
+        "mqtt_username": &input.mqtt_username,
+        "mqtt_password": &input.mqtt_password,
+        "node_id": &input.node_id,
+        "zone_id": &input.zone_id,
+        "publish_interval_ms": input.publish_interval_ms
+    });
+    let command = format!("VG_PROVISION {}\n", payload);
+    let mut last_error = String::new();
 
-    let _ = port.clear(ClearBuffer::All);
-
-    let hello_deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let mut saw_ready = false;
-    let mut last_identify_at = std::time::Instant::now() - Duration::from_secs(1);
-    while std::time::Instant::now() < hello_deadline {
-        if last_identify_at.elapsed() >= Duration::from_millis(750) {
-            let _ = port.write_all(b"VG_IDENTIFY\n");
-            let _ = port.flush();
-            last_identify_at = std::time::Instant::now();
-        }
-
-        if let Some(line) = read_serial_line(port.as_mut(), Duration::from_millis(500))? {
-            if line.starts_with("VG_READY ") {
-                saw_ready = true;
-                break;
-            }
-        }
-    }
-
-    if !saw_ready {
+    for attempt in 1..=MAX_PROVISION_ATTEMPTS {
         log_internal(
             &app,
-            "error",
+            "info",
             "provisioning",
-            "ready_timeout",
-            "Timed out waiting for the Pico provisioning prompt.",
+            "attempt_start",
+            "Starting a Pico provisioning attempt.",
             Some(json!({
-                "serial_port": &serial_port_name,
+                "operation_id": &provisioning_operation_id,
+                "attempt": attempt,
+                "max_attempts": MAX_PROVISION_ATTEMPTS,
                 "kind": &input.kind,
                 "node_id": &input.node_id,
             })),
         );
-        return Err(format!(
-            "did not receive provisioning prompt from Pico on {serial_port_name}"
-        ));
-    }
 
-    let mqtt_host = resolve_ipv4_host(&input.mqtt_host, input.mqtt_port)?;
-    let payload = json!({
-        "wifi_ssid": input.wifi_ssid,
-        "wifi_password": input.wifi_password,
-        "mqtt_host": mqtt_host,
-        "mqtt_port": input.mqtt_port,
-        "mqtt_username": input.mqtt_username,
-        "mqtt_password": input.mqtt_password,
-        "node_id": input.node_id,
-        "zone_id": input.zone_id,
-        "publish_interval_ms": input.publish_interval_ms
-    });
-    let command = format!("VG_PROVISION {}\n", payload);
-    port.write_all(command.as_bytes())
-        .map_err(|error| format!("could not write provisioning command to {serial_port_name}: {error}"))?;
-    port.flush()
-        .map_err(|error| format!("could not flush provisioning command to {serial_port_name}: {error}"))?;
-    log_internal(
-        &app,
-        "info",
-        "provisioning",
-        "payload_sent",
-        "Sent provisioning payload to the Pico.",
-        Some(json!({
-            "serial_port": &serial_port_name,
-            "kind": &input.kind,
-            "node_id": &input.node_id,
-            "zone_id": &input.zone_id,
-        })),
-    );
+        let attempt_result: Result<ProvisionPicoResult, String> = (|| {
+            let serial_port_name = wait_for_single_serial_port(SERIAL_WAIT_TIMEOUT)?;
+            log_internal(
+                &app,
+                "info",
+                "provisioning",
+                "serial_port_detected",
+                "Detected a single Pico serial port for provisioning.",
+                Some(json!({
+                    "operation_id": &provisioning_operation_id,
+                    "attempt": attempt,
+                    "serial_port": &serial_port_name,
+                    "kind": &input.kind,
+                    "node_id": &input.node_id,
+                })),
+            );
 
-    let response_deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while std::time::Instant::now() < response_deadline {
-        if let Some(line) = read_serial_line(port.as_mut(), Duration::from_millis(500))? {
-            if line.starts_with("VG_PROVISION_OK ") {
-                log_internal(
-                    &app,
-                    "info",
-                    "provisioning",
-                    "ack_received",
-                    "Received Pico provisioning confirmation.",
-                    Some(json!({
-                        "serial_port": &serial_port_name,
-                        "kind": &input.kind,
-                        "node_id": &input.node_id,
-                    })),
-                );
-                return Ok(ProvisionPicoResult {
-                    kind: input.kind,
-                    serial_port: serial_port_name,
-                    node_id: input.node_id,
-                    zone_id: input.zone_id,
-                });
+            let mut port = serialport::new(&serial_port_name, 115_200)
+                .timeout(Duration::from_millis(250))
+                .open()
+                .map_err(|error| format!("could not open {serial_port_name}: {error}"))?;
+
+            let _ = port.clear(ClearBuffer::All);
+
+            let hello_deadline = std::time::Instant::now() + READY_WAIT_TIMEOUT;
+            let mut last_identify_at = std::time::Instant::now() - Duration::from_secs(1);
+            let mut ready_payload: Option<ProvisionReadyPayload> = None;
+            while std::time::Instant::now() < hello_deadline {
+                if last_identify_at.elapsed() >= Duration::from_millis(750) {
+                    let _ = port.write_all(b"VG_IDENTIFY\n");
+                    let _ = port.flush();
+                    last_identify_at = std::time::Instant::now();
+                }
+
+                if let Some(line) = read_serial_line(port.as_mut(), Duration::from_millis(500))? {
+                    if let Some(payload_text) = line.strip_prefix("VG_READY ") {
+                        let parsed: ProvisionReadyPayload = serde_json::from_str(payload_text)
+                            .map_err(|error| format!("invalid provisioning ready payload from {serial_port_name}: {error}"))?;
+                        if parsed.role != input.kind {
+                            return Err(format!(
+                                "unexpected provisioning prompt from {serial_port_name}: expected role {} but device announced {}",
+                                input.kind, parsed.role
+                            ));
+                        }
+                        ready_payload = Some(parsed);
+                        break;
+                    }
+                }
             }
-            if let Some(error) = line.strip_prefix("VG_PROVISION_ERROR ") {
+
+            let ready_payload = ready_payload.ok_or_else(|| {
+                format!("did not receive provisioning prompt from Pico on {serial_port_name}")
+            })?;
+
+            log_internal(
+                &app,
+                "info",
+                "provisioning",
+                "ready_received",
+                "Received Pico provisioning prompt.",
+                Some(json!({
+                    "operation_id": &provisioning_operation_id,
+                    "attempt": attempt,
+                    "serial_port": &serial_port_name,
+                    "reported_role": ready_payload.role,
+                    "reported_node_id": ready_payload.node_id,
+                    "reported_zone_id": ready_payload.zone_id,
+                    "requires_provisioning": ready_payload.requires_provisioning,
+                })),
+            );
+
+            port.write_all(command.as_bytes())
+                .map_err(|error| format!("could not write provisioning command to {serial_port_name}: {error}"))?;
+            port.flush()
+                .map_err(|error| format!("could not flush provisioning command to {serial_port_name}: {error}"))?;
+            log_internal(
+                &app,
+                "info",
+                "provisioning",
+                "payload_sent",
+                "Sent provisioning payload to the Pico.",
+                Some(json!({
+                    "operation_id": &provisioning_operation_id,
+                    "attempt": attempt,
+                    "serial_port": &serial_port_name,
+                    "kind": &input.kind,
+                    "node_id": &input.node_id,
+                    "zone_id": &input.zone_id,
+                })),
+            );
+
+            let response_deadline = std::time::Instant::now() + ACK_WAIT_TIMEOUT;
+            while std::time::Instant::now() < response_deadline {
+                if let Some(line) = read_serial_line(port.as_mut(), Duration::from_millis(500))? {
+                    if let Some(payload_text) = line.strip_prefix("VG_PROVISION_OK ") {
+                        let ack_payload: ProvisionOkPayload = serde_json::from_str(payload_text)
+                            .map_err(|error| format!("invalid provisioning acknowledgement payload from {serial_port_name}: {error}"))?;
+                        if ack_payload.node_id != input.node_id || ack_payload.zone_id != input.zone_id {
+                            return Err(format!(
+                                "unexpected provisioning acknowledgement from {serial_port_name}: expected node {} zone {} but got node {} zone {}",
+                                input.node_id, input.zone_id, ack_payload.node_id, ack_payload.zone_id
+                            ));
+                        }
+                        let channels = provisioned_channel_ids(&input.kind, &ack_payload)?;
+                        log_internal(
+                            &app,
+                            "info",
+                            "provisioning",
+                            "ack_received",
+                            "Received Pico provisioning confirmation.",
+                            Some(json!({
+                                "operation_id": &provisioning_operation_id,
+                                "attempt": attempt,
+                                "serial_port": &serial_port_name,
+                                "kind": &input.kind,
+                                "node_id": &input.node_id,
+                                "rebooting": ack_payload.rebooting,
+                            })),
+                        );
+                        return Ok(ProvisionPicoResult {
+                            kind: input.kind.clone(),
+                            operation_id: provisioning_operation_id.clone(),
+                            serial_port: serial_port_name,
+                            node_id: input.node_id.clone(),
+                            zone_id: input.zone_id.clone(),
+                            channels,
+                        });
+                    }
+                    if let Some(error) = line.strip_prefix("VG_PROVISION_ERROR ") {
+                        log_internal(
+                            &app,
+                            "error",
+                            "provisioning",
+                            "ack_error",
+                            "The Pico returned a provisioning error.",
+                            Some(json!({
+                                "operation_id": &provisioning_operation_id,
+                                "attempt": attempt,
+                                "serial_port": &serial_port_name,
+                                "kind": &input.kind,
+                                "node_id": &input.node_id,
+                                "error": error,
+                            })),
+                        );
+                        return Err(error.to_string());
+                    }
+                }
+            }
+
+            Err(format!(
+                "timed out waiting for provisioning confirmation from {serial_port_name}"
+            ))
+        })();
+
+        match attempt_result {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                last_error = error;
+                let retryable = should_retry_provision_error(&last_error);
+                let will_retry = retryable && attempt < MAX_PROVISION_ATTEMPTS;
                 log_internal(
                     &app,
-                    "error",
+                    if will_retry { "warn" } else { "error" },
                     "provisioning",
-                    "ack_error",
-                    "The Pico returned a provisioning error.",
+                    if will_retry { "attempt_retry" } else { "attempt_failed" },
+                    if will_retry {
+                        "Provisioning attempt failed, but the installer will retry."
+                    } else {
+                        "Provisioning attempt failed."
+                    },
                     Some(json!({
-                        "serial_port": &serial_port_name,
-                        "kind": &input.kind,
-                        "node_id": &input.node_id,
-                        "error": error,
+                        "operation_id": &provisioning_operation_id,
+                        "attempt": attempt,
+                        "max_attempts": MAX_PROVISION_ATTEMPTS,
+                        "retryable": retryable,
+                        "error": &last_error,
                     })),
                 );
-                return Err(error.to_string());
+
+                if !will_retry {
+                    break;
+                }
+
+                thread::sleep(RETRY_DELAY);
             }
         }
     }
 
-    log_internal(
-        &app,
-        "error",
-        "provisioning",
-        "ack_timeout",
-        "Timed out waiting for Pico provisioning confirmation.",
-        Some(json!({
-            "serial_port": &serial_port_name,
-            "kind": &input.kind,
-            "node_id": &input.node_id,
-        })),
-    );
     Err(format!(
-        "timed out waiting for provisioning confirmation from {serial_port_name}"
+        "{} after {} provisioning attempts",
+        last_error,
+        MAX_PROVISION_ATTEMPTS
     ))
 }
 
@@ -1552,6 +1744,7 @@ async fn flash_firmware(
     kind: String,
     board: String,
 ) -> Result<FlashResult, String> {
+    let flash_operation_id = operation_id("flash");
     log_internal(
         &app,
         "info",
@@ -1559,6 +1752,7 @@ async fn flash_firmware(
         "start",
         "Starting UF2 flash to a BOOTSEL device.",
         Some(json!({
+            "operation_id": &flash_operation_id,
             "kind": &kind,
             "board": &board,
         })),
@@ -1586,12 +1780,8 @@ async fn flash_firmware(
                 firmware_path_for_copy.display()
             )
         })?;
-        let mut destination = fs::File::create(&target_path_for_copy).map_err(|error| {
-            format!(
-                "could not create {}: {error}",
-                target_path_for_copy.display()
-            )
-        })?;
+        let mut destination = fs::File::create(&target_path_for_copy)
+            .map_err(|error| flash_io_error("opening", &target_path_for_copy, error))?;
 
         let mut buffer = [0u8; 1024 * 64];
         loop {
@@ -1607,20 +1797,15 @@ async fn flash_firmware(
 
             destination
                 .write_all(&buffer[..bytes_read])
-                .map_err(|error| {
-                    format!("could not write {}: {error}", target_path_for_copy.display())
-                })?;
+                .map_err(|error| flash_io_error("writing", &target_path_for_copy, error))?;
         }
 
         destination
             .flush()
-            .map_err(|error| format!("could not flush {}: {error}", target_path_for_copy.display()))?;
-        destination.sync_all().map_err(|error| {
-            format!(
-                "could not finish writing {}: {error}",
-                target_path_for_copy.display()
-            )
-        })?;
+            .map_err(|error| flash_io_error("flushing", &target_path_for_copy, error))?;
+        destination
+            .sync_all()
+            .map_err(|error| flash_io_error("finishing", &target_path_for_copy, error))?;
         Ok(())
     })
     .await
@@ -1633,6 +1818,7 @@ async fn flash_firmware(
         "success",
         "Completed UF2 flash to the BOOTSEL device.",
         Some(json!({
+            "operation_id": &flash_operation_id,
             "kind": &kind,
             "board": &board,
             "filename": filename,
@@ -1643,6 +1829,7 @@ async fn flash_firmware(
     Ok(FlashResult {
         board,
         kind,
+        operation_id: flash_operation_id,
         flashed_filename: filename.to_string(),
         flashed_path: target_path.display().to_string(),
         device,
@@ -1687,6 +1874,7 @@ fn open_url(url: String) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            expected_sensor_channel_count,
             write_installer_log,
             export_support_bundle,
             detect_bootsel_devices,
@@ -1709,4 +1897,91 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Victory Garden desktop installer");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_http_url_adds_http_defaults() {
+        let (normalized, host, port, path) = parse_http_url("victory-garden.local").unwrap();
+        assert_eq!(normalized, "http://victory-garden.local");
+        assert_eq!(host, "victory-garden.local");
+        assert_eq!(port, 80);
+        assert_eq!(path, "/");
+    }
+
+    #[test]
+    fn parse_http_url_preserves_explicit_port_and_path() {
+        let (normalized, host, port, path) =
+            parse_http_url("http://192.168.4.33:3000/setup_api/bootstrap").unwrap();
+        assert_eq!(normalized, "http://192.168.4.33:3000/setup_api/bootstrap");
+        assert_eq!(host, "192.168.4.33");
+        assert_eq!(port, 3000);
+        assert_eq!(path, "/setup_api/bootstrap");
+    }
+
+    #[test]
+    fn infer_board_maps_supported_bootsel_volume_names() {
+        assert_eq!(infer_board("RPI-RP2"), Some("pico_w"));
+        assert_eq!(infer_board("RP2350"), Some("pico2_w"));
+        assert_eq!(infer_board("UNTITLED"), None);
+    }
+
+    #[test]
+    fn normalized_serial_port_key_deduplicates_macos_modem_variants() {
+        assert_eq!(
+            normalized_serial_port_key("/dev/cu.usbmodem21101"),
+            normalized_serial_port_key("/dev/tty.usbmodem21101")
+        );
+    }
+
+    #[test]
+    fn provisioning_retry_classification_matches_serial_edge_cases() {
+        assert!(is_disappearing_serial_error(
+            "serial read failed: device not configured"
+        ));
+        assert!(should_retry_provision_error(
+            "timed out waiting for the Pico USB serial port after flash"
+        ));
+        assert!(should_retry_provision_error(
+            "invalid provisioning acknowledgement payload: missing field"
+        ));
+        assert!(!should_retry_provision_error(
+            "VG_PROVISION_ERROR provisioning fields cannot be blank"
+        ));
+    }
+
+    #[test]
+    fn sensor_channel_ids_come_from_the_provisioning_ack() {
+        let payload = ProvisionOkPayload {
+            node_id: "sensor-zone1".to_string(),
+            zone_id: "zone1".to_string(),
+            channels: (0..4).map(|channel| format!("sensor-zone1-ch{channel}")).collect(),
+            rebooting: true,
+        };
+
+        assert_eq!(
+            provisioned_channel_ids("sensor", &payload).unwrap(),
+            vec![
+                "sensor-zone1-ch0",
+                "sensor-zone1-ch1",
+                "sensor-zone1-ch2",
+                "sensor-zone1-ch3"
+            ]
+        );
+    }
+
+    #[test]
+    fn sensor_channel_ids_reject_incomplete_acknowledgements() {
+        let payload = ProvisionOkPayload {
+            node_id: "sensor-zone1".to_string(),
+            zone_id: "zone1".to_string(),
+            channels: vec!["sensor-zone1-ch0".to_string()],
+            rebooting: true,
+        };
+
+        assert!(provisioned_channel_ids("sensor", &payload).is_err());
+    }
 }

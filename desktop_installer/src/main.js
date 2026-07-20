@@ -1,5 +1,26 @@
 import "./styles.css"
 import { invoke } from "@tauri-apps/api/core"
+import {
+  asErrorMessage,
+  buildPicoProvisioningPayload,
+  classifyPiConnectivityError,
+  classifyPiDiscoveryError,
+  nextInstallerStep,
+  normalizeSensorChannels,
+  normalizePiUrl,
+  retryAsyncOperation,
+} from "./lib/installer_core.js"
+
+// The Rust backend's EXPECTED_SENSOR_CHANNEL_COUNT is the single source of
+// truth (comment there notes it must match firmware VG_ADS1115_CHANNEL_COUNT);
+// fetched once and cached rather than duplicating the literal here.
+let cachedExpectedSensorChannelCount = null
+const expectedSensorChannelCount = async () => {
+  if (cachedExpectedSensorChannelCount === null) {
+    cachedExpectedSensorChannelCount = await invoke("expected_sensor_channel_count")
+  }
+  return cachedExpectedSensorChannelCount
+}
 
 const firmwareNames = {
   sensor: {
@@ -42,14 +63,20 @@ const state = {
     sensor: "",
     actuator: "",
   },
-  calibration: {
-    dryRaw: null,
-    wetRaw: null,
-  },
+  channels: [],
   selectedCropProfileId: null,
-  sensorNodeId: "",
+  sensorDeviceId: "",
   actuatorNodeId: "",
 }
+
+const normalizeChannels = normalizeSensorChannels
+
+const channelNodeIds = () => state.channels.map((channel) => channel.nodeId)
+const primarySensorNodeId = () => channelNodeIds()[0] || state.bootstrap?.assigned_node?.channels?.[0]?.node_id || ""
+const allChannelsHave = (key) => state.channels.length > 0 && state.channels.every((channel) => Number.isFinite(channel[key]))
+const celsiusToFahrenheit = (value) => (value * 9 / 5) + 32
+const formatTemperatureF = (value) => Number.isFinite(value) ? `${celsiusToFahrenheit(value).toFixed(1)} F` : "—"
+const formatHumidity = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : "—"
 
 const elements = {
   wizardUrl: document.querySelector("#wizard-url"),
@@ -96,6 +123,7 @@ const elements = {
   calibrationStatus: document.querySelector("#calibration-status"),
   calibrationDrySummary: document.querySelector("#calibration-dry-summary"),
   calibrationWetSummary: document.querySelector("#calibration-wet-summary"),
+  calibrationChannelProgress: document.querySelector("#calibration-channel-progress"),
   startWatering: document.querySelector("#start-watering"),
   wateringStatus: document.querySelector("#watering-status"),
   wateringZoneSummary: document.querySelector("#watering-zone-summary"),
@@ -130,6 +158,8 @@ const elements = {
 const sleep = (milliseconds) => new Promise((resolve) => {
   window.setTimeout(resolve, milliseconds)
 })
+
+const browserOnline = () => (typeof navigator === "undefined" ? true : navigator.onLine !== false)
 
 const appendInstallerLog = async ({ level = "info", category, action, message, details = null }) => {
   try {
@@ -166,6 +196,28 @@ const buildStatus = ({ summary, detail = "", recovery = "", technicalDetail = ""
   technicalDetail,
 })
 
+const withTimeout = async (promise, timeoutMs, timeoutMessage) => {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return promise
+  }
+
+  let timerId = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timerId = window.setTimeout(() => {
+          reject(new Error(timeoutMessage))
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timerId !== null) {
+      window.clearTimeout(timerId)
+    }
+  }
+}
+
 const renderStatus = (element, status) => {
   if (!element) {
     return
@@ -196,163 +248,150 @@ const installerSetupState = () => ({
   bootstrap: state.bootstrap,
   devices: state.devices,
   selectedCropProfileId: state.selectedCropProfileId,
-  sensorNodeId: state.sensorNodeId,
+  sensorDeviceId: state.sensorDeviceId,
+  channels: state.channels.map((channel) => ({ ...channel })),
   actuatorNodeId: state.actuatorNodeId,
   completed: { ...state.completed },
   provisioned: { ...state.provisioned },
-  calibration: { ...state.calibration },
   messages: { ...state.messages },
 })
 
-const asErrorMessage = (error) => {
-  if (typeof error === "string") {
-    return error
+const piApiFailureStatus = (action, error, fallbackDetail, fallbackRecovery) => {
+  const classified = classifyPiConnectivityError(error, { online: typeof navigator === "undefined" ? true : navigator.onLine !== false })
+  if (classified.category !== "unknown") {
+    return buildStatus({
+      summary: `${action} could not be completed because the Pi is unavailable.`,
+      detail: `${classified.summary} ${classified.detail}`.trim(),
+      recovery: classified.recovery,
+      technicalDetail: asErrorMessage(error),
+    })
   }
 
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return String(error)
+  return buildStatus({
+    summary: `${action} failed.`,
+    detail: fallbackDetail,
+    recovery: fallbackRecovery,
+    technicalDetail: asErrorMessage(error),
+  })
 }
 
-const isPiConnectivityError = (error) => {
-  const message = asErrorMessage(error).toLowerCase()
-  return (
-    message.includes("could not connect to the pi over http") ||
-    message.includes("could not send http request") ||
-    message.includes("could not read http response") ||
-    message.includes("could not resolve") ||
-    message.includes("empty http response")
-  )
-}
-
-const classifyPiDiscoveryError = (error) => {
-  const message = asErrorMessage(error)
-  const lower = message.toLowerCase()
-
-  if (lower.includes("https probing is not supported")) {
-    return {
-      summary: "Use an http:// Pi address, not https://.",
-      detail: "This installer probes the local Pi over plain HTTP on port 3000 during setup.",
-      recovery: "Replace https:// with http:// and try again.",
-    }
-  }
-
-  if (lower.includes("missing host in pi url") || lower.includes("unsupported url") || lower.includes("invalid port in pi url")) {
-    return {
-      summary: "The Pi address is not valid.",
-      detail: "Enter a hostname like victory-garden.local or a URL like http://192.168.4.33:3000.",
-      recovery: "Correct the Pi address, then run Find Pi again.",
-    }
-  }
-
-  if (lower.includes("could not resolve")) {
-    return {
-      summary: "The Pi hostname could not be resolved on this network.",
-      detail: "Check the hostname you entered, confirm your computer is on the same network as the Pi, or use the Pi's IP address instead.",
-      recovery: "Use the Pi's IP address if the hostname does not resolve.",
-    }
-  }
-
-  if (lower.includes("connection refused") || lower.includes("actively refused")) {
-    return {
-      summary: "The Pi responded on the network, but the Victory Garden web service is not accepting connections.",
-      detail: "Wait for first boot to finish, then try again. If it stays down, the Pi app stack may not be running yet.",
-      recovery: "Give the Pi another minute, then run Find Pi again.",
-    }
-  }
-
-  if (lower.includes("timed out") || lower.includes("operation timed out") || lower.includes("no route to host") || lower.includes("network is unreachable")) {
-    return {
-      summary: "The Pi could not be reached over the network.",
-      detail: "Verify the Pi is powered on, joined the same network, and reachable at the hostname or IP you entered.",
-      recovery: "Confirm power and network, then retry with the Pi hostname or IP address.",
-    }
-  }
-
-  if (lower.includes("victory garden did not respond successfully")) {
-    return {
-      summary: "The Pi answered, but not with a healthy Victory Garden app response.",
-      detail: "The Pi web service may still be starting, or the URL may point at the wrong service or path.",
-      recovery: "Retry after first boot settles, or verify that the address points to the Pi's Victory Garden app.",
-    }
-  }
-
-  if (lower.includes("could not decode json response")) {
-    return {
-      summary: "The Pi responded, but the installer could not read valid setup data from it.",
-      detail: "Victory Garden may be running an unexpected build or serving an incomplete setup API response.",
-      recovery: "Verify the Pi is on the expected Victory Garden build, then retry.",
-    }
-  }
-
-  if (lower.includes("empty http response") || lower.includes("invalid http response") || lower.includes("could not read http response")) {
-    return {
-      summary: "The Pi accepted the connection, but the HTTP response was incomplete or unreadable.",
-      detail: "Retry after first boot settles. If it persists, the Pi web service may be crashing or restarting.",
-      recovery: "Wait briefly and retry. If it repeats, inspect the Pi web service.",
-    }
-  }
-
-  return {
-    summary: "The installer could not verify the Pi.",
-    detail: "Verify the Pi is booted, on the same network, and that Victory Garden first boot has finished.",
-    recovery: "Retry after confirming power, network, and the Pi address.",
-  }
-}
+const piRetryDetail = (classified, attempt, attempts, delayMs) => (
+  `${classified.summary} Retrying ${attempt}/${attempts} in ${(delayMs / 1000).toFixed(1)}s.`
+)
 
 const invokePiApiWithRetry = async (command, payload, options = {}) => {
-  const { attempts = 10, delayMs = 2000, onRetry = null } = options
-  let lastError = null
-
+  const {
+    attempts = 8,
+    delayMs = null,
+    baseDelayMs = 1000,
+    maxDelayMs = 8000,
+    timeoutMs = 10000,
+    jitterRatio = 0.2,
+    onRetry = null,
+    context = "Pi API request",
+  } = options
+  const effectiveBaseDelayMs = Number.isFinite(delayMs) && delayMs > 0 ? delayMs : baseDelayMs
   void logInstallerInfo("api", "request_start", `Starting ${command}.`, {
     command,
     attempts,
+    timeoutMs,
+    baseDelayMs: effectiveBaseDelayMs,
+    maxDelayMs,
     payload,
   })
 
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      const response = await invoke(command, payload)
+  return retryAsyncOperation({
+    attempts,
+    baseDelayMs: effectiveBaseDelayMs,
+    maxDelayMs,
+    jitterRatio,
+    classifyError: (error) => classifyPiConnectivityError(error, {
+      online: typeof navigator === "undefined" ? true : navigator.onLine !== false,
+    }),
+    errorContext: {},
+    sleepFn: sleep,
+    operation: async (attempt) => {
+      const response = await withTimeout(
+        invoke(command, payload),
+        timeoutMs,
+        `${context} timed out after ${timeoutMs}ms.`,
+      )
       void logInstallerInfo("api", "request_success", `${command} succeeded.`, {
         command,
         attempt,
       })
       return response
-    } catch (error) {
-      lastError = error
-
-      if (!isPiConnectivityError(error) || attempt === attempts) {
-        void logInstallerError("api", "request_failed", `${command} failed.`, {
-          command,
-          attempt,
-          error: asErrorMessage(error),
-        })
-        throw error
-      }
-
+    },
+    onRetry: ({ attempt, attempts: totalAttempts, error, delayMs: retryDelayMs, classified }) => {
       if (onRetry) {
         onRetry({
           attempt,
-          attempts,
+          attempts: totalAttempts,
           error: asErrorMessage(error),
+          delayMs: retryDelayMs,
+          classified,
         })
       }
 
       void logInstallerWarn("api", "request_retry", `${command} will retry after a Pi connectivity failure.`, {
         command,
         attempt,
-        attempts,
+        attempts: totalAttempts,
         error: asErrorMessage(error),
-        delayMs,
+        classified,
+        delayMs: retryDelayMs,
       })
+    },
+    onFailure: ({ attempt, error, classified }) => {
+      void logInstallerError("api", "request_failed", `${command} failed.`, {
+        command,
+        attempt,
+        error: asErrorMessage(error),
+        classified,
+      })
+    },
+  })
+}
 
-      await sleep(delayMs)
-    }
-  }
+const probePiWithRetry = async (url, options = {}) => {
+  const {
+    attempts = 6,
+    delayMs = null,
+    baseDelayMs = 1000,
+    maxDelayMs = 8000,
+    timeoutMs = 10000,
+    jitterRatio = 0.2,
+    onRetry = null,
+  } = options
+  const effectiveBaseDelayMs = Number.isFinite(delayMs) && delayMs > 0 ? delayMs : baseDelayMs
 
-  throw lastError
+  return retryAsyncOperation({
+    attempts,
+    baseDelayMs: effectiveBaseDelayMs,
+    maxDelayMs,
+    jitterRatio,
+    classifyError: (error) => classifyPiConnectivityError(error, {
+      online: typeof navigator === "undefined" ? true : navigator.onLine !== false,
+    }),
+    errorContext: {},
+    sleepFn: sleep,
+    operation: async () => withTimeout(
+        invoke("probe_victory_garden", { url }),
+        timeoutMs,
+        `Pi discovery probe timed out after ${timeoutMs}ms.`,
+      ),
+    onRetry: ({ attempt, attempts: totalAttempts, error, delayMs: retryDelayMs, classified }) => {
+      if (onRetry) {
+        onRetry({
+          attempt,
+          attempts: totalAttempts,
+          error: asErrorMessage(error),
+          delayMs: retryDelayMs,
+          classified,
+        })
+      }
+    },
+  })
 }
 
 const savePreferences = () => {
@@ -364,18 +403,19 @@ const hasRecoverableSessionState = () => (
   Boolean(state.piVerifiedUrl) ||
   Object.values(state.completed).some(Boolean) ||
   Object.values(state.provisioned).some(Boolean) ||
-  Boolean(state.sensorNodeId) ||
+  Boolean(state.sensorDeviceId) ||
+  state.channels.length > 0 ||
   Boolean(state.actuatorNodeId)
 )
 
 const sessionSnapshot = () => ({
   piVerifiedUrl: state.piVerifiedUrl,
   selectedCropProfileId: state.selectedCropProfileId,
-  sensorNodeId: state.sensorNodeId,
+  sensorDeviceId: state.sensorDeviceId,
+  channels: state.channels.map((channel) => ({ ...channel })),
   actuatorNodeId: state.actuatorNodeId,
   completed: { ...state.completed },
   provisioned: { ...state.provisioned },
-  calibration: { ...state.calibration },
   messages: { ...state.messages },
   savedAt: new Date().toISOString(),
 })
@@ -435,12 +475,9 @@ const resetInstallerState = () => {
     sensor: "",
     actuator: "",
   }
-  state.calibration = {
-    dryRaw: null,
-    wetRaw: null,
-  }
+  state.channels = []
   state.selectedCropProfileId = null
-  state.sensorNodeId = ""
+  state.sensorDeviceId = ""
   state.actuatorNodeId = ""
   clearSessionState()
 }
@@ -505,15 +542,7 @@ const loadPreferences = () => {
 }
 
 const normalizedPiUrl = () => {
-  const rawValue = elements.wizardUrl.value.trim() || "victory-garden.local"
-  const withScheme = /^https?:\/\//i.test(rawValue) ? rawValue : `http://${rawValue}`
-  const url = new URL(withScheme)
-
-  if (!url.port) {
-    url.port = "3000"
-  }
-
-  return url.toString()
+  return normalizePiUrl(elements.wizardUrl.value, "victory-garden.local")
 }
 
 const dashboardUrl = () => {
@@ -601,43 +630,16 @@ const validateZoneForm = () => {
 }
 
 const picoProvisioningPayload = (kind) => {
-  const zone = state.bootstrap?.first_zone
-  if (!zone || !zone.zone_id) {
-    throw new Error("The first zone has not been created yet.")
-  }
-
-  const wifiSsid = elements.picoWifiSsid.value.trim()
-  const wifiPassword = elements.picoWifiPassword.value
-
-  if (!wifiSsid) {
-    throw new Error("Enter the Pico Wi‑Fi SSID in Step 2 before flashing hardware.")
-  }
-
-  if (!wifiPassword) {
-    throw new Error("Enter the Pico Wi‑Fi password in Step 2 before flashing hardware.")
-  }
-
-  const connection = state.bootstrap?.connection_setting
-  const provisioningMqttUsername = connection?.provisioning_mqtt_username || connection?.mqtt_username || "victory_garden"
-  const provisioningMqttPassword = connection?.provisioning_mqtt_password
-
-  if (!provisioningMqttPassword) {
-    throw new Error("The Pi did not provide broker credentials for Pico provisioning. Find the Pi again before retrying.")
-  }
-
-  const url = new URL(state.piVerifiedUrl)
-  return {
+  return buildPicoProvisioningPayload({
+    bootstrap: state.bootstrap,
+    piVerifiedUrl: state.piVerifiedUrl,
+    form: {
+      wifiSsid: elements.picoWifiSsid.value,
+      wifiPassword: elements.picoWifiPassword.value,
+      mqttPort: elements.mqttPort.value,
+    },
     kind,
-    wifiSsid,
-    wifiPassword,
-    mqttHost: url.hostname,
-    mqttPort: Number(elements.mqttPort.value),
-    mqttUsername: provisioningMqttUsername,
-    mqttPassword: provisioningMqttPassword,
-    nodeId: `${kind}-${zone.zone_id}`,
-    zoneId: zone.zone_id,
-    publishIntervalMs: kind === "sensor" ? zone.publish_interval_ms : null,
-  }
+  })
 }
 
 const currentDetectedDevice = () => {
@@ -736,10 +738,18 @@ const restoreSessionState = (session) => {
 
   state.piVerifiedUrl = session.piVerifiedUrl || state.piVerifiedUrl
   state.selectedCropProfileId = session.selectedCropProfileId || state.selectedCropProfileId
-  state.sensorNodeId = session.sensorNodeId || state.sensorNodeId
+  state.sensorDeviceId = session.sensorDeviceId || session.sensorNodeId || state.sensorDeviceId
+  state.channels = normalizeChannels(session.channels)
+  if (state.channels.length === 0 && session.sensorNodeId) {
+    state.channels = normalizeChannels([{
+      nodeId: session.sensorNodeId,
+      dryRaw: session.calibration?.dryRaw,
+      wetRaw: session.calibration?.wetRaw,
+    }])
+  }
   state.actuatorNodeId = session.actuatorNodeId || state.actuatorNodeId
   state.provisioned = {
-    sensor: Boolean(session.provisioned?.sensor || state.provisioned.sensor || state.sensorNodeId),
+    sensor: Boolean(session.provisioned?.sensor || state.provisioned.sensor || state.sensorDeviceId),
     actuator: Boolean(session.provisioned?.actuator || state.provisioned.actuator || state.actuatorNodeId),
   }
   state.completed = {
@@ -749,10 +759,6 @@ const restoreSessionState = (session) => {
     calibration: Boolean(session.completed?.calibration || state.completed.calibration),
     watering: Boolean(session.completed?.watering || state.completed.watering),
   }
-  state.calibration = {
-    dryRaw: Number.isFinite(session.calibration?.dryRaw) ? session.calibration.dryRaw : state.calibration.dryRaw,
-    wetRaw: Number.isFinite(session.calibration?.wetRaw) ? session.calibration.wetRaw : state.calibration.wetRaw,
-  }
   state.messages = {
     sensor: session.messages?.sensor || state.messages.sensor,
     actuator: session.messages?.actuator || state.messages.actuator,
@@ -761,54 +767,34 @@ const restoreSessionState = (session) => {
 
 const applyBootstrap = (bootstrap) => {
   state.bootstrap = bootstrap
-  state.sensorNodeId = bootstrap.assigned_node?.node_id || bootstrap.detected_node?.node_id || state.sensorNodeId
+  const sensorDevice = bootstrap.assigned_node?.channels?.length ? bootstrap.assigned_node : bootstrap.detected_node
+  if (sensorDevice?.channels?.length) {
+    state.sensorDeviceId = sensorDevice.device_id || sensorDevice.node_id || state.sensorDeviceId
+    const existingByNode = new Map(state.channels.map((channel) => [channel.nodeId, channel]))
+    state.channels = normalizeChannels(sensorDevice.channels).map((channel) => ({
+      ...channel,
+      dryRaw: channel.dryRaw ?? existingByNode.get(channel.nodeId)?.dryRaw ?? null,
+      wetRaw: channel.wetRaw ?? existingByNode.get(channel.nodeId)?.wetRaw ?? null,
+    }))
+  }
   state.actuatorNodeId = bootstrap.detected_node?.node_id?.startsWith("actuator-")
     ? bootstrap.detected_node.node_id
     : state.actuatorNodeId
   state.completed.sensor = Boolean(bootstrap.status?.assigned_node_ready) || state.completed.sensor
   state.completed.reading = Boolean(bootstrap.status?.reading_ready)
-  state.completed.calibration = Boolean(bootstrap.status?.calibration_ready || bootstrap.assigned_node?.calibration_configured)
+  state.completed.calibration = Boolean(bootstrap.status?.calibration_ready)
   state.completed.watering = Boolean(bootstrap.status?.watering_ready)
-  state.calibration.dryRaw = Number.isFinite(bootstrap.assigned_node?.moisture_raw_dry)
-    ? bootstrap.assigned_node.moisture_raw_dry
-    : null
-  state.calibration.wetRaw = Number.isFinite(bootstrap.assigned_node?.moisture_raw_wet)
-    ? bootstrap.assigned_node.moisture_raw_wet
-    : null
   setConnectionForm(bootstrap.connection_setting)
   renderCropProfiles(bootstrap.crop_profiles)
   setZoneForm(bootstrap.first_zone)
 }
 
 const currentResumeStep = () => {
-  if (!state.piVerifiedUrl) {
-    return { id: "step-pi", label: "Step 1: Find The Pi" }
-  }
-  if (!connectionReady()) {
-    return { id: "step-connection", label: "Step 2: Configure Victory Garden" }
-  }
-  if (!state.bootstrap?.crop_profiles?.length) {
-    return { id: "step-crop", label: "Step 3: Create The First Crop Profile" }
-  }
-  if (!zoneReady()) {
-    return { id: "step-zone", label: "Step 4: Create The First Zone" }
-  }
-  if (!state.completed.sensor) {
-    return { id: "step-sensor", label: "Step 5: Flash The Sensor Pico" }
-  }
-  if (!state.completed.actuator) {
-    return { id: "step-actuator", label: "Step 6: Flash The Actuator Pico" }
-  }
-  if (!readingReady()) {
-    return { id: "step-reading", label: "Step 7: Confirm The First Reading" }
-  }
-  if (!calibrationReady()) {
-    return { id: "step-calibration", label: "Step 8: Calibrate The Sensor Node" }
-  }
-  if (!wateringReady()) {
-    return { id: "step-watering", label: "Step 9: Confirm The First Watering" }
-  }
-  return { id: "step-finish", label: "Finish: Open The Dashboard" }
+  return nextInstallerStep({
+    piVerifiedUrl: state.piVerifiedUrl,
+    bootstrap: state.bootstrap,
+    completed: state.completed,
+  })
 }
 
 const focusResumeStep = (step) => {
@@ -1030,8 +1016,22 @@ const updateCalibrationStep = () => {
   const calibrationDone = calibrationReady()
   const calibrationInFlight = state.flashing.calibration
 
-  elements.calibrationDrySummary.textContent = formatCalibrationSummary(state.calibration.dryRaw)
-  elements.calibrationWetSummary.textContent = formatCalibrationSummary(state.calibration.wetRaw)
+  elements.calibrationDrySummary.textContent = state.channels.length
+    ? state.channels.map((channel) => `${channel.nodeId}: ${formatCalibrationSummary(channel.dryRaw)}`).join(" · ")
+    : "Not captured yet"
+  elements.calibrationWetSummary.textContent = state.channels.length
+    ? state.channels.map((channel) => `${channel.nodeId}: ${formatCalibrationSummary(channel.wetRaw)}`).join(" · ")
+    : "Not captured yet"
+  elements.calibrationChannelProgress.replaceChildren(...state.channels.map((channel, index) => {
+    const fact = document.createElement("div")
+    fact.className = "fact"
+    const label = document.createElement("span")
+    label.textContent = `Channel ${index + 1}`
+    const value = document.createElement("strong")
+    value.textContent = `Dry ${formatCalibrationSummary(channel.dryRaw)} · Wet ${formatCalibrationSummary(channel.wetRaw)}`
+    fact.append(label, value)
+    return fact
+  }))
 
   if (!readyForCalibration) {
     elements.captureDryCalibration.disabled = true
@@ -1054,16 +1054,16 @@ const updateCalibrationStep = () => {
   }
 
   elements.captureDryCalibration.disabled = calibrationInFlight
-  elements.captureWetCalibration.disabled = calibrationInFlight || !Number.isFinite(state.calibration.dryRaw)
+  elements.captureWetCalibration.disabled = calibrationInFlight || !allChannelsHave("dryRaw")
 
   if (!calibrationInFlight && !elements.calibrationStatus.textContent.trim()) {
     elements.calibrationStatus.textContent = assignedNode
-      ? `Place ${assignedNode.node_id} in dry soil and capture the dry calibration first.`
-      : "Place the sensor in dry soil and capture the dry calibration first."
+      ? "Place all four probes in dry soil and capture one grouped reading."
+      : "Place all four probes in dry soil and capture one grouped reading."
   }
 
-  if (!calibrationDone && !calibrationInFlight && Number.isFinite(state.calibration.dryRaw) && !Number.isFinite(state.calibration.wetRaw)) {
-    elements.calibrationStatus.textContent = "Dry calibration captured. Move the sensor to saturated soil, then capture the wet calibration."
+  if (!calibrationDone && !calibrationInFlight && allChannelsHave("dryRaw") && !allChannelsHave("wetRaw")) {
+    elements.calibrationStatus.textContent = "All four dry values are captured. Move every probe to saturated soil, then capture the grouped wet reading."
   }
 
   if (calibrationDone && !calibrationInFlight) {
@@ -1218,7 +1218,10 @@ const refreshBootstrapFromPi = async () => {
     { baseUrl: state.piVerifiedUrl },
     {
       attempts: 5,
-      delayMs: 1500,
+      baseDelayMs: 1500,
+      maxDelayMs: 6000,
+      timeoutMs: 10000,
+      context: "Refreshing setup state from the Pi",
     },
   )
   applyBootstrap(bootstrap)
@@ -1250,14 +1253,22 @@ const resumeInstallerSession = async () => {
       { baseUrl: savedSession.piVerifiedUrl },
       {
         attempts: 5,
-        delayMs: 1500,
+        baseDelayMs: 1500,
+        maxDelayMs: 6000,
+        timeoutMs: 10000,
+        context: "Resuming installer state from the Pi",
+        onRetry: ({ attempt, attempts, delayMs, classified }) => {
+          renderStatus(elements.wizardStatus, buildStatus({
+            summary: `Found a previous installer session at ${savedSession.piVerifiedUrl}.`,
+            detail: piRetryDetail(classified, attempt, attempts, delayMs),
+          }))
+        },
       },
     )
 
     state.piVerifiedUrl = savedSession.piVerifiedUrl
     elements.wizardUrl.value = savedSession.piVerifiedUrl
     applyBootstrap(bootstrap)
-    restoreSessionState(savedSession)
 
     if (state.provisioned.sensor && !state.completed.sensor && !state.messages.sensor) {
       state.messages.sensor = "Sensor provisioning was restored from the previous installer session. Move the sensor Pico to the real probe hardware, then wait for it to appear on the Pi."
@@ -1281,7 +1292,7 @@ const resumeInstallerSession = async () => {
   } catch (error) {
     clearSessionState()
     state.piVerifiedUrl = ""
-    const classified = classifyPiDiscoveryError(error)
+    const classified = classifyPiDiscoveryError(error, { online: browserOnline() })
     renderStatus(elements.wizardStatus, buildStatus({
       summary: "A previous installer session was found, but the Pi could not be resumed automatically.",
       detail: classified.summary,
@@ -1466,45 +1477,39 @@ const fetchPiWateringDiagnostics = async (zoneId, idempotencyKey = "") => {
   }
 }
 
-const waitForSensorNodeReady = async (nodeId, statusElement) => {
+const waitForSensorNodeReady = async (channelIds, statusElement) => {
   const zone = state.bootstrap?.first_zone
   if (!zone) {
     throw new Error("The first zone is missing. Save the zone before provisioning the sensor.")
   }
+  const expectedChannelCount = await expectedSensorChannelCount()
+  if (channelIds.length !== expectedChannelCount) {
+    throw new Error(`The sensor Pico reported ${channelIds.length} channels; expected ${expectedChannelCount}.`)
+  }
 
   const deadline = Date.now() + 90000
   while (Date.now() < deadline) {
-    const response = await invokePiApiWithRetry(
+    const responses = await Promise.all(channelIds.map((nodeId) => invokePiApiWithRetry(
       "fetch_setup_node_status",
-      {
-        input: {
-          baseUrl: state.piVerifiedUrl,
-          nodeId,
-        },
-      },
-      {
-        attempts: 4,
-        delayMs: 2000,
-        onRetry: ({ attempt, attempts }) => {
-          statusElement.textContent = `Provisioned ${nodeId}. Waiting for the Pi to respond again (${attempt}/${attempts})...`
-        },
-      },
-    )
+      { input: { baseUrl: state.piVerifiedUrl, nodeId } },
+      { attempts: 4, delayMs: 2000 },
+    )))
 
-    if (!response.detected) {
-      statusElement.textContent = `Provisioned ${nodeId}. Waiting for it to join Wi‑Fi and report to the Pi...`
+    const detectedCount = responses.filter((response) => response.detected).length
+    if (detectedCount !== channelIds.length) {
+      statusElement.textContent = `Detected ${detectedCount} of ${channelIds.length} sensor channels. Waiting for the remaining state messages...`
       await sleep(2000)
       continue
     }
 
-    if (!response.assigned || response.node?.zone_id !== zone.id) {
-      statusElement.textContent = `Sensor ${nodeId} detected. Assigning it to ${zone.name || zone.zone_id}...`
-      const assigned = await invokePiApiWithRetry(
+    if (responses.some((response) => !response.assigned || response.node?.zone_id !== zone.id)) {
+      statusElement.textContent = `All four channels detected. Assigning device to ${zone.name || zone.zone_id}...`
+      await invokePiApiWithRetry(
         "assign_setup_node",
         {
           input: {
             baseUrl: state.piVerifiedUrl,
-            nodeId,
+            nodeId: channelIds[0],
             zoneId: zone.id,
           },
         },
@@ -1512,23 +1517,22 @@ const waitForSensorNodeReady = async (nodeId, statusElement) => {
           attempts: 4,
           delayMs: 2000,
           onRetry: ({ attempt, attempts }) => {
-            statusElement.textContent = `Sensor ${nodeId} was detected. Waiting for the Pi to respond so it can be assigned (${attempt}/${attempts})...`
+            statusElement.textContent = `Waiting for the Pi to assign the sensor device (${attempt}/${attempts})...`
           },
         },
       )
-      await refreshBootstrapFromPi()
-      state.sensorNodeId = assigned.node.node_id
-      return assigned.node
+      await sleep(500)
+      continue
     }
 
     await refreshBootstrapFromPi()
-    state.sensorNodeId = response.node?.node_id || nodeId
-    return response.node || { node_id: nodeId, zone_name: zone.name || zone.zone_id }
+    state.channels = normalizeChannels(responses.map((response) => response.node))
+    return responses.map((response) => response.node)
   }
 
   const diagnostics = await fetchRuntimeDiagnostics("sensor")
-  const piDiagnostics = await fetchPiNodeDiagnostics(nodeId, "sensor")
-  throw new Error(`Provisioned ${nodeId}, but it did not appear in Victory Garden within 90 seconds. ${piDiagnostics} ${describeRuntimeDiagnostics(diagnostics)}`)
+  const piDiagnostics = await fetchPiNodeDiagnostics(channelIds[0], "sensor")
+  throw new Error(`Provisioned sensor channels did not all appear in Victory Garden within 90 seconds. ${piDiagnostics} ${describeRuntimeDiagnostics(diagnostics)}`)
 }
 
 const waitForFreshReading = async (nodeId, requestedAt, { onWaiting } = {}) => {
@@ -1569,8 +1573,9 @@ const waitForFreshReading = async (nodeId, requestedAt, { onWaiting } = {}) => {
 }
 
 const requestFirstReading = async () => {
-  const nodeId = state.sensorNodeId || state.bootstrap?.assigned_node?.node_id
-  if (!nodeId) {
+  const nodeId = primarySensorNodeId()
+  const channelIds = channelNodeIds()
+  if (!nodeId || channelIds.length === 0) {
     renderStatus(elements.readingStatus, buildStatus({
       summary: "No assigned sensor node is available yet.",
       recovery: "Finish the sensor Pico step and wait for the node to appear on the Pi.",
@@ -1603,18 +1608,31 @@ const requestFirstReading = async () => {
         },
       },
     )
-    const reading = await waitForFreshReading(nodeId, queued.requested_at, {
-      onWaiting: (message) => {
-        elements.readingStatus.textContent = message
+    const readings = await Promise.all(channelIds.map((channelId) => waitForFreshReading(channelId, queued.requested_at, {
+      onWaiting: () => {
+        elements.readingStatus.textContent = `Waiting for fresh readings from all ${channelIds.length} channels...`
       },
-    })
+    })))
+    const readingsMissingEnvironment = readings.filter((reading) => (
+      !Number.isFinite(Number(reading.air_temperature_c)) ||
+      !Number.isFinite(Number(reading.humidity_percent)) ||
+      !reading.greenhouse_alert_status
+    ))
+    if (readingsMissingEnvironment.length > 0) {
+      const details = readingsMissingEnvironment
+        .map((reading) => `${reading.node_id}: ${reading.last_error || "missing SHT40 fields"}`)
+        .join(" · ")
+      throw new Error(`Fresh readings arrived, but SHT40 temperature/humidity was missing. ${details}`)
+    }
 
     state.completed.reading = true
-    elements.readingDetailSummary.textContent = `${reading.moisture_percent ?? "—"}% at ${reading.recorded_at || "unknown time"}`
-    elements.readingStatus.textContent = `Confirmed a fresh reading from ${nodeId}.`
-    void logInstallerInfo("reading", "request_success", "Confirmed a fresh reading from the sensor node.", {
-      nodeId,
-      reading,
+    elements.readingDetailSummary.textContent = readings
+      .map((reading) => `${reading.node_id}: ${reading.moisture_percent ?? "—"}%, air ${formatTemperatureF(Number(reading.air_temperature_c))}, RH ${formatHumidity(Number(reading.humidity_percent))}`)
+      .join(" · ")
+    elements.readingStatus.textContent = `Confirmed fresh readings and SHT40 data from all ${channelIds.length} channels.`
+    void logInstallerInfo("reading", "request_success", "Confirmed fresh readings from all sensor channels.", {
+      channelIds,
+      readings,
     })
     await refreshBootstrapFromPi()
   } catch (error) {
@@ -1623,12 +1641,23 @@ const requestFirstReading = async () => {
       nodeId,
       error: asErrorMessage(error),
     })
-    renderStatus(elements.readingStatus, buildStatus({
-      summary: "Reading validation failed.",
-      detail: "The installer could not confirm a fresh reading from the assigned sensor node.",
-      recovery: "Make sure the sensor Pico is on the real hardware and still online, then retry this step.",
-      technicalDetail: asErrorMessage(error),
-    }))
+    const classified = classifyPiConnectivityError(error, { online: browserOnline() })
+    renderStatus(
+      elements.readingStatus,
+      classified.category !== "unknown"
+        ? piApiFailureStatus(
+            "Reading validation",
+            error,
+            "The installer could not confirm a fresh reading from the assigned sensor node.",
+            "Make sure the Pi is reachable again, then retry this step.",
+          )
+        : buildStatus({
+            summary: "Reading validation failed.",
+            detail: "The installer could not confirm a fresh reading from the assigned sensor node.",
+            recovery: "Make sure the sensor Pico is on the real hardware and still online, then retry this step.",
+            technicalDetail: asErrorMessage(error),
+          }),
+    )
   } finally {
     state.flashing.reading = false
     updateUi()
@@ -1636,9 +1665,10 @@ const requestFirstReading = async () => {
 }
 
 const captureCalibration = async (target) => {
-  const nodeId = state.sensorNodeId || state.bootstrap?.assigned_node?.node_id
+  const nodeId = primarySensorNodeId()
+  const channelIds = channelNodeIds()
 
-  if (!nodeId) {
+  if (!nodeId || channelIds.length === 0) {
     renderStatus(elements.calibrationStatus, buildStatus({
       summary: "No assigned sensor node is available yet.",
       recovery: "Finish the sensor Pico step and confirm the first reading before calibration.",
@@ -1658,101 +1688,58 @@ const captureCalibration = async (target) => {
   state.completed.calibration = false
   updateUi()
   void logInstallerInfo("calibration", "capture_start", "Starting calibration capture.", {
-    nodeId,
+    channelIds,
     target,
   })
 
   const targetLabel = target === "dry" ? "dry soil" : "saturated soil"
   try {
-    const samples = []
-    const seenReadingIdentities = new Set()
-    let staleSampleCount = 0
-
-    for (let index = 0; index < 10; index += 1) {
-      elements.calibrationStatus.textContent = `Requesting ${targetLabel} calibration reading ${index + 1} of 10 from ${nodeId}...`
-
-      const queued = await invokePiApiWithRetry(
-        "request_setup_reading",
-        {
-          input: {
-            baseUrl: state.piVerifiedUrl,
-            nodeId,
-          },
+    elements.calibrationStatus.textContent = `Requesting one ${targetLabel} reading from all ${channelIds.length} channels...`
+    const queued = await invokePiApiWithRetry(
+      "request_setup_reading",
+      { input: { baseUrl: state.piVerifiedUrl, nodeId } },
+      {
+        attempts: 4,
+        delayMs: 2000,
+        onRetry: ({ attempt, attempts }) => {
+          elements.calibrationStatus.textContent = `Waiting for the Pi to queue the grouped reading (${attempt}/${attempts})...`
         },
-        {
-          attempts: 4,
-          delayMs: 2000,
-          onRetry: ({ attempt, attempts }) => {
-            elements.calibrationStatus.textContent = `Waiting for the Pi to respond so it can queue ${targetLabel} reading ${index + 1} of 10 (${attempt}/${attempts})...`
-          },
-        },
-      )
+      },
+    )
+    const readings = await Promise.all(channelIds.map((channelId) => waitForFreshReading(channelId, queued.requested_at, {
+      onWaiting: () => {
+        elements.calibrationStatus.textContent = `Waiting for ${targetLabel} readings from all ${channelIds.length} channels...`
+      },
+    })))
+    const readingsByNode = new Map(readings.map((reading) => [reading.node_id, reading]))
+    const rawKey = target === "dry" ? "dryRaw" : "wetRaw"
+    state.channels = state.channels.map((channel) => ({
+      ...channel,
+      [rawKey]: readingsByNode.get(channel.nodeId)?.moisture_raw ?? channel[rawKey],
+    }))
+    saveSessionState()
 
-      const reading = await waitForFreshReading(nodeId, queued.requested_at, {
-        onWaiting: (message) => {
-          elements.calibrationStatus.textContent = `${target === "dry" ? "Dry" : "Wet"} calibration ${index + 1}/10: ${message}`
-        },
-      })
+    void logInstallerInfo("calibration", `${target}_captured`, `Captured grouped ${target} calibration readings.`, {
+      readings,
+    })
 
-      const identity = readingIdentity(reading)
-      if (identity && seenReadingIdentities.has(identity)) {
-        staleSampleCount += 1
-
-        if (staleSampleCount >= 2) {
-          throw new Error(
-            `Calibration returned stale readings across multiple samples. The Pi repeated reading ${identity}. Check that the sensor node is still publishing fresh readings before retrying.`,
-          )
-        }
-
-        elements.calibrationStatus.textContent = `Warning: calibration reading ${index + 1} looked stale (${identity}). The installer will retry this step, but repeated stale readings will stop calibration.`
-        void logInstallerWarn("calibration", "stale_sample", "Calibration sample looked stale.", {
-          nodeId,
-          target,
-          sample: index + 1,
-          identity,
-        })
-      }
-
-      if (identity) {
-        seenReadingIdentities.add(identity)
-      }
-
-      samples.push(reading.moisture_raw)
-    }
-
-    const averageRaw = Math.round(samples.reduce((sum, value) => sum + value, 0) / samples.length)
     if (target === "dry") {
-      state.calibration.dryRaw = averageRaw
-      elements.calibrationStatus.textContent = `Captured the dry calibration at ${averageRaw} raw from 10 readings. Move the sensor to saturated soil, then capture the wet calibration.`
-      void logInstallerInfo("calibration", "dry_captured", "Captured dry calibration readings.", {
-        nodeId,
-        averageRaw,
-        sampleCount: samples.length,
-      })
-    } else {
-      state.calibration.wetRaw = averageRaw
-      elements.calibrationStatus.textContent = `Captured the wet calibration at ${averageRaw} raw from 10 readings. Saving both calibration points to Victory Garden...`
-      void logInstallerInfo("calibration", "wet_captured", "Captured wet calibration readings.", {
-        nodeId,
-        averageRaw,
-        sampleCount: samples.length,
-      })
+      elements.calibrationStatus.textContent = "Captured all four dry values. Move every probe to saturated soil, then capture wet."
     }
 
-    if (!Number.isFinite(state.calibration.dryRaw) || !Number.isFinite(state.calibration.wetRaw)) {
+    if (!allChannelsHave("dryRaw") || !allChannelsHave("wetRaw")) {
       return
     }
 
-    const response = await invokePiApiWithRetry(
+    elements.calibrationStatus.textContent = "Saving calibration for all four channels..."
+    const responses = await Promise.all(state.channels.map((channel) => invokePiApiWithRetry(
       "save_setup_calibration",
-      {
-        input: {
-          baseUrl: state.piVerifiedUrl,
-          nodeId,
-          moistureRawDry: state.calibration.dryRaw,
-          moistureRawWet: state.calibration.wetRaw,
-        },
-      },
+      { input: {
+        baseUrl: state.piVerifiedUrl,
+        nodeId: channel.nodeId,
+        moistureRawDry: channel.dryRaw,
+        moistureRawWet: channel.wetRaw,
+      } },
       {
         attempts: 4,
         delayMs: 2000,
@@ -1760,22 +1747,12 @@ const captureCalibration = async (target) => {
           elements.calibrationStatus.textContent = `Waiting for the Pi to respond so it can save the calibration (${attempt}/${attempts})...`
         },
       },
-    )
+    )))
 
-    state.bootstrap = {
-      ...(state.bootstrap || {}),
-      status: response.status,
-      assigned_node: response.node,
-      detected_node: state.bootstrap?.detected_node || response.node,
-    }
-    state.calibration.dryRaw = response.node.moisture_raw_dry ?? state.calibration.dryRaw
-    state.calibration.wetRaw = response.node.moisture_raw_wet ?? state.calibration.wetRaw
-    state.completed.calibration = Boolean(response.status.calibration_ready || response.node.calibration_configured)
-    elements.calibrationStatus.textContent = `Saved dry calibration at ${state.calibration.dryRaw} raw and wet calibration at ${state.calibration.wetRaw} raw. You can recalibrate later anytime in the Victory Garden app.`
-    void logInstallerInfo("calibration", "save_success", "Saved sensor calibration to the Pi.", {
-      nodeId,
-      dryRaw: state.calibration.dryRaw,
-      wetRaw: state.calibration.wetRaw,
+    state.completed.calibration = responses.every((response) => response.node.calibration_configured)
+    elements.calibrationStatus.textContent = "Saved individual dry and wet calibration for all four channels."
+    void logInstallerInfo("calibration", "save_success", "Saved all channel calibrations to the Pi.", {
+      channels: state.channels,
     })
     await refreshBootstrapFromPi()
   } catch (error) {
@@ -1785,12 +1762,23 @@ const captureCalibration = async (target) => {
       target,
       error: asErrorMessage(error),
     })
-    renderStatus(elements.calibrationStatus, buildStatus({
-      summary: "Calibration failed.",
-      detail: "The installer could not capture or save a full dry and wet calibration set.",
-      recovery: "Verify the sensor node is still online and publishing fresh readings, then retry the current calibration target.",
-      technicalDetail: asErrorMessage(error),
-    }))
+    const classified = classifyPiConnectivityError(error, { online: browserOnline() })
+    renderStatus(
+      elements.calibrationStatus,
+      classified.category !== "unknown"
+        ? piApiFailureStatus(
+            "Calibration",
+            error,
+            "The installer could not capture or save a full dry and wet calibration set.",
+            "Wait for the Pi to respond again, then retry the current calibration target.",
+          )
+        : buildStatus({
+            summary: "Calibration failed.",
+            detail: "The installer could not capture or save a full dry and wet calibration set.",
+            recovery: "Verify the sensor node is still online and publishing fresh readings, then retry the current calibration target.",
+            technicalDetail: asErrorMessage(error),
+          }),
+    )
   } finally {
     state.flashing.calibration = false
     updateUi()
@@ -1909,12 +1897,23 @@ const runFirstWatering = async () => {
       actuatorNodeDiagnostics,
       runtimeDiagnostics: diagnostics,
     })
-    renderStatus(elements.wateringStatus, buildStatus({
-      summary: "Watering validation failed.",
-      detail: "The installer could not confirm a completed watering cycle for the first zone.",
-      recovery: "Make sure the actuator Pico is on the real actuator hardware, online, and still visible to the Pi, then retry watering validation.",
-      technicalDetail: [asErrorMessage(error), piDiagnostics, actuatorNodeDiagnostics, describeRuntimeDiagnostics(diagnostics)].filter(Boolean).join(" "),
-    }))
+    const classified = classifyPiConnectivityError(error, { online: browserOnline() })
+    renderStatus(
+      elements.wateringStatus,
+      classified.category !== "unknown"
+        ? piApiFailureStatus(
+            "Watering validation",
+            error,
+            "The installer could not confirm a completed watering cycle for the first zone.",
+            "Wait for the Pi to respond again, then retry watering validation.",
+          )
+        : buildStatus({
+            summary: "Watering validation failed.",
+            detail: "The installer could not confirm a completed watering cycle for the first zone.",
+            recovery: "Make sure the actuator Pico is on the real actuator hardware, online, and still visible to the Pi, then retry watering validation.",
+            technicalDetail: [asErrorMessage(error), piDiagnostics, actuatorNodeDiagnostics, describeRuntimeDiagnostics(diagnostics)].filter(Boolean).join(" "),
+          }),
+    )
   } finally {
     state.flashing.watering = false
     updateUi()
@@ -1936,8 +1935,31 @@ const findPi = async () => {
 
   try {
     const url = normalizedPiUrl()
-    const probe = await invoke("probe_victory_garden", { url })
-    const bootstrap = await invoke("fetch_setup_bootstrap", { baseUrl: probe.url })
+    const probe = await probePiWithRetry(url, {
+      attempts: 6,
+      baseDelayMs: 1000,
+      maxDelayMs: 8000,
+      timeoutMs: 10000,
+      onRetry: ({ attempt, attempts, delayMs, classified }) => {
+        renderStatus(elements.wizardStatus, buildStatus({
+          summary: "Looking for the Victory Garden app on the Pi...",
+          detail: piRetryDetail(classified, attempt, attempts, delayMs),
+        }))
+      },
+    })
+    const bootstrap = await invokePiApiWithRetry("fetch_setup_bootstrap", { baseUrl: probe.url }, {
+      attempts: 6,
+      baseDelayMs: 1000,
+      maxDelayMs: 8000,
+      timeoutMs: 10000,
+      context: "Loading setup state from the Pi",
+      onRetry: ({ attempt, attempts, delayMs, classified }) => {
+        renderStatus(elements.wizardStatus, buildStatus({
+          summary: `Pi found at ${probe.url}, but setup data is not ready yet.`,
+          detail: piRetryDetail(classified, attempt, attempts, delayMs),
+        }))
+      },
+    })
     state.piVerifiedUrl = probe.url
     elements.wizardUrl.value = probe.url
     applyBootstrap(bootstrap)
@@ -1965,7 +1987,7 @@ const findPi = async () => {
         : "Save the first zone here.",
     }))
   } catch (error) {
-    const classified = classifyPiDiscoveryError(error)
+    const classified = classifyPiDiscoveryError(error, { online: browserOnline() })
     renderStatus(elements.wizardStatus, buildStatus({
       summary: classified.summary,
       detail: classified.detail,
@@ -2017,11 +2039,14 @@ const saveConnection = async () => {
       },
     }, {
       attempts: 4,
-      delayMs: 2000,
-      onRetry: ({ attempt, attempts }) => {
+      baseDelayMs: 2000,
+      maxDelayMs: 8000,
+      timeoutMs: 10000,
+      context: "Saving connection settings to the Pi",
+      onRetry: ({ attempt, attempts, delayMs, classified }) => {
         renderStatus(elements.connectionStatus, buildStatus({
           summary: "Saving connection settings...",
-          detail: `Waiting for the Pi to respond (${attempt}/${attempts}).`,
+          detail: piRetryDetail(classified, attempt, attempts, delayMs),
         }))
       },
     })
@@ -2040,12 +2065,15 @@ const saveConnection = async () => {
       detail: "The installer can now create crop and zone data for the Pi.",
     }))
   } catch (error) {
-    renderStatus(elements.connectionStatus, buildStatus({
-      summary: "Could not save connection settings.",
-      detail: "The Pi did not accept the setup connection update.",
-      recovery: "Verify the Pi is still reachable, then retry this step.",
-      technicalDetail: asErrorMessage(error),
-    }))
+    renderStatus(
+      elements.connectionStatus,
+      piApiFailureStatus(
+        "Saving connection settings",
+        error,
+        "The Pi did not accept the setup connection update.",
+        "Verify the Pi is still reachable, then retry this step.",
+      ),
+    )
   } finally {
     updateUi()
   }
@@ -2085,11 +2113,14 @@ const createCropProfile = async () => {
       },
     }, {
       attempts: 4,
-      delayMs: 2000,
-      onRetry: ({ attempt, attempts }) => {
+      baseDelayMs: 2000,
+      maxDelayMs: 8000,
+      timeoutMs: 10000,
+      context: "Creating the crop profile on the Pi",
+      onRetry: ({ attempt, attempts, delayMs, classified }) => {
         renderStatus(elements.cropStatus, buildStatus({
           summary: "Creating crop profile...",
-          detail: `Waiting for the Pi to respond (${attempt}/${attempts}).`,
+          detail: piRetryDetail(classified, attempt, attempts, delayMs),
         }))
       },
     })
@@ -2110,12 +2141,15 @@ const createCropProfile = async () => {
       detail: "You can now use it when saving the first zone.",
     }))
   } catch (error) {
-    renderStatus(elements.cropStatus, buildStatus({
-      summary: "Could not create crop profile.",
-      detail: "The Pi rejected the crop profile request.",
-      recovery: "Verify the values and Pi connectivity, then retry this step.",
-      technicalDetail: asErrorMessage(error),
-    }))
+    renderStatus(
+      elements.cropStatus,
+      piApiFailureStatus(
+        "Creating the crop profile",
+        error,
+        "The Pi rejected the crop profile request.",
+        "Verify the values and Pi connectivity, then retry this step.",
+      ),
+    )
   } finally {
     updateUi()
   }
@@ -2155,11 +2189,14 @@ const saveZone = async () => {
       },
     }, {
       attempts: 4,
-      delayMs: 2000,
-      onRetry: ({ attempt, attempts }) => {
+      baseDelayMs: 2000,
+      maxDelayMs: 8000,
+      timeoutMs: 10000,
+      context: "Saving the first zone to the Pi",
+      onRetry: ({ attempt, attempts, delayMs, classified }) => {
         renderStatus(elements.zoneStatus, buildStatus({
           summary: "Saving first zone...",
-          detail: `Waiting for the Pi to respond (${attempt}/${attempts}).`,
+          detail: piRetryDetail(classified, attempt, attempts, delayMs),
         }))
       },
     })
@@ -2178,12 +2215,15 @@ const saveZone = async () => {
       detail: "The installer can now move on to Pico hardware setup.",
     }))
   } catch (error) {
-    renderStatus(elements.zoneStatus, buildStatus({
-      summary: "Could not save the first zone.",
-      detail: "The Pi rejected the zone setup request.",
-      recovery: "Verify the zone fields and Pi connectivity, then retry this step.",
-      technicalDetail: asErrorMessage(error),
-    }))
+    renderStatus(
+      elements.zoneStatus,
+      piApiFailureStatus(
+        "Saving the first zone",
+        error,
+        "The Pi rejected the zone setup request.",
+        "Verify the zone fields and Pi connectivity, then retry this step.",
+      ),
+    )
   } finally {
     updateUi()
   }
@@ -2225,8 +2265,9 @@ const flashBoard = async (kind) => {
     void logInstallerInfo("hardware", "provision_complete", `${kind} Pico provisioning completed.`, provisioned)
     state.provisioned[kind] = true
     if (kind === "sensor") {
-      state.sensorNodeId = provisioned.node_id
-      state.messages.sensor = `Sensor ${provisioned.node_id} was provisioned. Move it to the real probe hardware while the installer waits for it to appear on the Pi.`
+      state.sensorDeviceId = provisioned.node_id
+      state.channels = normalizeChannels(provisioned.channels)
+      state.messages.sensor = `Sensor ${provisioned.node_id} was provisioned with ${state.channels.length} channels. Move it to the real probe hardware while the installer waits for all channels to appear on the Pi.`
     } else {
       state.actuatorNodeId = provisioned.node_id
       state.messages.actuator = `Actuator ${provisioned.node_id} was provisioned. Move it to the real actuator hardware while the installer waits for it to appear on the Pi.`
@@ -2234,14 +2275,13 @@ const flashBoard = async (kind) => {
     saveSessionState()
 
     if (kind === "sensor") {
-      const onlineNode = await waitForSensorNodeReady(provisioned.node_id, statusElement)
-      state.sensorNodeId = onlineNode.node_id || provisioned.node_id
+      const onlineNodes = await waitForSensorNodeReady(channelNodeIds(), statusElement)
       state.completed[kind] = true
-      state.messages[kind] = `Sensor ${onlineNode.node_id || provisioned.node_id} is online and assigned to ${onlineNode.zone_name || state.bootstrap?.first_zone?.name || state.bootstrap?.first_zone?.zone_id}.`
+      state.messages[kind] = `All ${onlineNodes.length} channels for ${provisioned.node_id} are online and assigned to ${onlineNodes[0]?.zone_name || state.bootstrap?.first_zone?.name || state.bootstrap?.first_zone?.zone_id}.`
       saveSessionState()
-      void logInstallerInfo("hardware", "sensor_online", "Sensor Pico is online and assigned.", {
-        nodeId: onlineNode.node_id || provisioned.node_id,
-        zoneName: onlineNode.zone_name || state.bootstrap?.first_zone?.name || state.bootstrap?.first_zone?.zone_id,
+      void logInstallerInfo("hardware", "sensor_online", "All sensor channels are online and assigned.", {
+        channelIds: channelNodeIds(),
+        zoneName: onlineNodes[0]?.zone_name || state.bootstrap?.first_zone?.name || state.bootstrap?.first_zone?.zone_id,
       })
       statusElement.textContent = state.messages[kind]
     } else {

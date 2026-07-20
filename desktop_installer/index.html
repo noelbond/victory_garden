@@ -278,7 +278,7 @@
           <div class="step-pill" id="calibration-step-pill">Waiting</div>
         </div>
         <p class="step-copy">
-          Prepare two containers of soil before you continue. One container should have dry soil. The other should have saturated soil. Place the sensor probe in the dry soil first, then capture ten readings for the dry calibration. After that, move the sensor into the saturated soil and capture ten readings for the wet calibration. You can recalibrate this sensor later anytime in the Victory Garden app.
+          Prepare dry and saturated soil for all four probes. Each capture wakes the Pico once and records one value per ADS1115 channel.
         </p>
         <div class="facts">
           <div class="fact">
@@ -290,6 +290,7 @@
             <strong id="calibration-wet-summary">Not captured yet</strong>
           </div>
         </div>
+        <div class="facts" id="calibration-channel-progress"></div>
         <div class="actions">
           <button id="capture-dry-calibration" class="btn primary">Capture Dry Calibration</button>
           <button id="capture-wet-calibration" class="btn subtle">Capture Wet Calibration</button>
