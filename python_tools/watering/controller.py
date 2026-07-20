@@ -228,6 +228,35 @@ def zone_moisture_snapshot(
     )
 
 
+def maybe_publish_skip(
+    zone_runtime: dict[str, Any],
+    zone: ZoneConfig | SystemZoneConfig,
+    signature: Any,
+    reason: str,
+    controller: mqtt.Client,
+    now: datetime,
+    **extra_log_fields: Any,
+) -> None:
+    """Logs and publishes a zone-tick skip decision, unless it's identical to
+    the last skip recorded for this zone (same reason and reading signature).
+    """
+    if (
+        zone_runtime.get("last_skip_reason") == reason and
+        signatures_equal(signature, zone_runtime.get("last_skip_signature"))
+    ):
+        return
+
+    log_event(
+        "controller",
+        "decision_skipped",
+        zone_id=zone.zone_id,
+        reason=reason,
+        **extra_log_fields,
+    )
+    publish_skip(controller, zone.zone_id, now, reason)
+    remember_skip(zone_runtime, signature, reason)
+
+
 def process_zone_tick(
     zone: ZoneConfig | SystemZoneConfig,
     profile: CropProfile,
@@ -259,16 +288,8 @@ def process_zone_tick(
         elif snapshot.null_moisture_node_ids and not snapshot.stale_node_ids:
             reason = "incomplete-reading"
 
-        if (
-            zone_runtime.get("last_skip_reason") == reason and
-            signatures_equal(signature, zone_runtime.get("last_skip_signature"))
-        ):
-            return zone_runtime, states
-        log_event(
-            "controller",
-            "decision_skipped",
-            zone_id=zone.zone_id,
-            reason=reason,
+        maybe_publish_skip(
+            zone_runtime, zone, signature, reason, controller, now,
             valid_sensor_count=snapshot.valid_sensor_count,
             expected_sensor_count=snapshot.expected_sensor_count,
             min_zone_sensor_readings=required_sensor_count,
@@ -277,21 +298,11 @@ def process_zone_tick(
             stale_node_ids=snapshot.stale_node_ids,
             null_moisture_node_ids=snapshot.null_moisture_node_ids,
         )
-        publish_skip(controller, zone.zone_id, now, reason)
-        remember_skip(zone_runtime, signature, reason)
         return zone_runtime, states
 
     if snapshot.valid_sensor_count < required_sensor_count:
-        if (
-            zone_runtime.get("last_skip_reason") == "insufficient_sensor_quorum" and
-            signatures_equal(signature, zone_runtime.get("last_skip_signature"))
-        ):
-            return zone_runtime, states
-        log_event(
-            "controller",
-            "decision_skipped",
-            zone_id=zone.zone_id,
-            reason="insufficient_sensor_quorum",
+        maybe_publish_skip(
+            zone_runtime, zone, signature, "insufficient_sensor_quorum", controller, now,
             valid_sensor_count=snapshot.valid_sensor_count,
             expected_sensor_count=snapshot.expected_sensor_count,
             min_zone_sensor_readings=required_sensor_count,
@@ -300,24 +311,10 @@ def process_zone_tick(
             stale_node_ids=snapshot.stale_node_ids,
             null_moisture_node_ids=snapshot.null_moisture_node_ids,
         )
-        publish_skip(controller, zone.zone_id, now, "insufficient_sensor_quorum")
-        remember_skip(zone_runtime, signature, "insufficient_sensor_quorum")
         return zone_runtime, states
 
     if not allowed_now(zone, now, local_tz=local_tz):
-        if (
-            zone_runtime.get("last_skip_reason") == "outside_allowed_hours" and
-            signatures_equal(signature, zone_runtime.get("last_skip_signature"))
-        ):
-            return zone_runtime, states
-        log_event(
-            "controller",
-            "decision_skipped",
-            zone_id=zone.zone_id,
-            reason="outside_allowed_hours",
-        )
-        publish_skip(controller, zone.zone_id, now, "outside_allowed_hours")
-        remember_skip(zone_runtime, signature, "outside_allowed_hours")
+        maybe_publish_skip(zone_runtime, zone, signature, "outside_allowed_hours", controller, now)
         return zone_runtime, states
 
     moisture = float(reading.moisture_percent)
@@ -353,22 +350,12 @@ def process_zone_tick(
         last_watering_at = datetime.fromisoformat(last_watering_at_raw.replace("Z", "+00:00"))
         seconds_since_watering = (now - last_watering_at).total_seconds()
         if seconds_since_watering < args.min_seconds_between_watering:
-            if (
-                zone_runtime.get("last_skip_reason") == "cooldown" and
-                signatures_equal(signature, zone_runtime.get("last_skip_signature"))
-            ):
-                return zone_runtime, states
             remaining = int(args.min_seconds_between_watering - seconds_since_watering)
-            log_event(
-                "controller",
-                "decision_skipped",
-                zone_id=zone.zone_id,
+            maybe_publish_skip(
+                zone_runtime, zone, signature, "cooldown", controller, now,
                 moisture_percent=moisture,
-                reason="cooldown",
                 remaining_seconds=remaining,
             )
-            publish_skip(controller, zone.zone_id, now, "cooldown")
-            remember_skip(zone_runtime, signature, "cooldown")
             states[zone.zone_id] = state
             return zone_runtime, states
 
@@ -762,63 +749,6 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1) from exc
 
     app.run()
-
-
-__all__ = [
-    "CANONICAL_NODE_STATE_TOPIC",
-    "CONTROLLER_HEALTH",
-    "CONTROLLER_RUNTIME",
-    "ControllerApp",
-    "ControllerRuntime",
-    "LATEST_STATE",
-    "LATEST_ZONE_READINGS",
-    "LIVE_CROPS",
-    "LIVE_ZONES",
-    "SYSTEM_CONFIG_TOPIC",
-    "SUBSCRIBED_STATE_TOPICS",
-    "ZoneMoistureSnapshot",
-    "aggregate_signature",
-    "allowed_now",
-    "build_parser",
-    "clear_skip_memory",
-    "configure_mqtt_auth",
-    "controller_health_snapshot",
-    "effective_zone_configs",
-    "expected_node_ids_for_zone",
-    "have_latest_state_for_any",
-    "iso_now",
-    "latest_reading",
-    "latest_readings_for_zone",
-    "live_config_snapshot",
-    "load_controller_runtime",
-    "main",
-    "mqtt_reason_code_value",
-    "new_controller_health",
-    "new_zone_runtime",
-    "on_message",
-    "parse_sensor_message",
-    "profile_for_zone",
-    "publish_actuator_command",
-    "publish_event",
-    "publish_skip",
-    "process_zone_tick",
-    "reading_age_seconds",
-    "reading_signature",
-    "reading_ready_for_control",
-    "remember_skip",
-    "save_controller_runtime",
-    "serialize_controller_health",
-    "serialize_controller_runtime",
-    "signatures_equal",
-    "set_subscriber_context",
-    "store_latest_reading",
-    "sync_zone_state_subscriptions",
-    "update_system_config",
-    "update_controller_health",
-    "validate_controller_args",
-    "write_text_if_changed",
-    "zone_moisture_snapshot",
-]
 
 
 if __name__ == "__main__":

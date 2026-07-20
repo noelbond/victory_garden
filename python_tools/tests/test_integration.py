@@ -1,9 +1,6 @@
-import json
 import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-
-import pytest
 
 from watering.calibration import CalibrationProfile, raw_to_percent
 from watering.config import load_crops, load_zones
@@ -196,7 +193,6 @@ class TestMultiZoneWorkflow:
 
     def test_multi_zone_state_persistence(self):
         today = date(2026, 2, 6)
-        now = datetime(2026, 2, 6, 10, 0, tzinfo=timezone.utc)
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             state_file = Path(f.name)

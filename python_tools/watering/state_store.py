@@ -40,10 +40,6 @@ def quarantine_invalid_json_file(path: Path) -> Path:
     return quarantined
 
 
-def quarantine_invalid_state_store(path: Path) -> Path:
-    return quarantine_invalid_json_file(path)
-
-
 def load_state_store_resilient(path: Path) -> tuple[Dict[str, ZoneState], Path | None, str | None]:
     if not path.exists():
         return {}, None, None
@@ -51,7 +47,7 @@ def load_state_store_resilient(path: Path) -> tuple[Dict[str, ZoneState], Path |
     try:
         return load_state_store(path), None, None
     except (json.JSONDecodeError, ValueError) as exc:
-        quarantined = quarantine_invalid_state_store(path)
+        quarantined = quarantine_invalid_json_file(path)
         return {}, quarantined, str(exc)
 
 
