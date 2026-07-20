@@ -9,6 +9,10 @@
 
 static bool wifi_initialized = false;
 
+bool wifi_is_initialized(void) {
+    return wifi_initialized;
+}
+
 static bool wifi_has_ip_locked(void) {
     if (!netif_default) {
         return false;
@@ -46,21 +50,6 @@ bool wifi_init_and_connect(const node_config_t *config, char *error, size_t erro
         return false;
     }
     return true;
-}
-
-void wifi_poll(void) {
-    (void)wifi_initialized;
-}
-
-int wifi_link_status(void) {
-    if (!wifi_initialized) {
-        return CYW43_LINK_DOWN;
-    }
-    int status = CYW43_LINK_DOWN;
-    cyw43_arch_lwip_begin();
-    status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
-    cyw43_arch_lwip_end();
-    return status;
 }
 
 bool wifi_is_connected(void) {

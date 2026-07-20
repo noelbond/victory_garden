@@ -1,8 +1,9 @@
 #include "mqtt_node.h"
 
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "lwip/ip.h"
 #include "lwip/apps/mqtt.h"
@@ -13,13 +14,14 @@
 #include "lwip/udp.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
+#include "json_lite.h"
 #include "time_sync.h"
 #include "topics.h"
 #include "wifi.h"
 
 #define MQTT_RX_TOPIC_MAX 128
-#define MQTT_RX_PAYLOAD_MAX 1024
-#define MQTT_TX_PAYLOAD_MAX 1024
+#define MQTT_RX_PAYLOAD_MAX 2048
+#define MQTT_TX_PAYLOAD_MAX 2048
 #define MQTT_DISCOVERY_PORT 44737u
 #define MQTT_DISCOVERY_INTERVAL_MS 10000u
 #define MQTT_DISCOVERY_TIMEOUT_MS 2000u
@@ -75,6 +77,26 @@ static const struct mqtt_connect_client_info_t g_client_info_template = {
 
 static void mqtt_request_cb(void *arg, err_t err);
 static void mqtt_state_publish_cb(void *arg, err_t err);
+static void set_error(mqtt_node_t *node, const char *message);
+
+static bool format_tx_payload(mqtt_node_t *node, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(g_runtime.tx_payload, sizeof(g_runtime.tx_payload), fmt, args);
+    va_end(args);
+
+    if (written < 0) {
+        set_error(node, "mqtt payload format failed");
+        return false;
+    }
+
+    if ((size_t)written >= sizeof(g_runtime.tx_payload)) {
+        set_error(node, "mqtt payload buffer too small");
+        return false;
+    }
+
+    return true;
+}
 
 static void set_error(mqtt_node_t *node, const char *message) {
     snprintf(node->last_error, sizeof(node->last_error), "%s", message ? message : "none");
@@ -110,81 +132,6 @@ static err_t mqtt_client_connect_locked(mqtt_client_t *client, const ip_addr_t *
     return err;
 }
 
-static bool decode_json_string(const char *start, char *out, size_t out_size, const char **end_out) {
-    size_t out_len = 0;
-    const char *cursor = start;
-
-    if (!start || !out || out_size == 0) {
-        return false;
-    }
-
-    while (*cursor != '\0') {
-        char ch = *cursor++;
-        if (ch == '"') {
-            out[out_len] = '\0';
-            if (end_out) {
-                *end_out = cursor;
-            }
-            return true;
-        }
-
-        if (ch == '\\') {
-            ch = *cursor++;
-            switch (ch) {
-                case '"':
-                case '\\':
-                case '/':
-                    break;
-                case 'b':
-                    ch = '\b';
-                    break;
-                case 'f':
-                    ch = '\f';
-                    break;
-                case 'n':
-                    ch = '\n';
-                    break;
-                case 'r':
-                    ch = '\r';
-                    break;
-                case 't':
-                    ch = '\t';
-                    break;
-                default:
-                    return false;
-            }
-        }
-
-        if (out_len + 1 < out_size) {
-            out[out_len++] = ch;
-        }
-    }
-
-    return false;
-}
-
-static bool extract_json_string(const char *payload, const char *key, char *out, size_t out_size) {
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
-    const char *start = strstr(payload, pattern);
-    if (!start) {
-        return false;
-    }
-    start += strlen(pattern);
-    return decode_json_string(start, out, out_size, NULL);
-}
-
-static bool extract_json_int(const char *payload, const char *key, int *out) {
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    const char *start = strstr(payload, pattern);
-    if (!start) {
-        return false;
-    }
-    start += strlen(pattern);
-    *out = (int)strtol(start, NULL, 10);
-    return true;
-}
 
 static void mqtt_close_broker_discovery(void) {
     if (!g_runtime.discovery_pcb) {
@@ -421,6 +368,24 @@ static bool topic_equals(const char *a, const char *b) {
     return strcmp(a, b) == 0;
 }
 
+static bool node_id_matches_config(const node_config_t *config, const char *node_id) {
+    if (!config || !node_id || node_id[0] == '\0') {
+        return false;
+    }
+
+    if (strcmp(node_id, config->node_id) == 0) {
+        return true;
+    }
+
+    for (uint8_t channel = 0; channel < VG_ADS1115_CHANNEL_COUNT; ++channel) {
+        if (strcmp(node_id, config->channel_node_id[channel]) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static void config_ack_timestamp(const mqtt_node_t *node, char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return;
@@ -464,16 +429,16 @@ static bool clear_retained_command(mqtt_node_t *node) {
 static bool publish_command_ack(mqtt_node_t *node, const char *command, const char *command_id, const char *status) {
     topic_command_ack(node->config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
 
-    snprintf(
-        g_runtime.tx_payload,
-        sizeof(g_runtime.tx_payload),
-        "{\"schema_version\":\"node-command-ack/v1\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"command\":\"%s\",\"command_id\":\"%s\",\"status\":\"%s\"}",
-        node->config->zone_id,
-        node->config->node_id,
-        command,
-        command_id,
-        status
-    );
+    if (!format_tx_payload(
+            node,
+            "{\"schema_version\":\"node-command-ack/v1\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"command\":\"%s\",\"command_id\":\"%s\",\"status\":\"%s\"}",
+            node->config->zone_id,
+            node->config->node_id,
+            command,
+            command_id,
+            status)) {
+        return false;
+    }
     err_t err = mqtt_publish_locked(
         g_runtime.client,
         g_runtime.tx_topic,
@@ -500,31 +465,31 @@ static void publish_config_ack(mqtt_node_t *node, const char *status, const char
     config_ack_timestamp(node, g_runtime.tx_timestamp, sizeof(g_runtime.tx_timestamp));
 
     if (node->config->assigned) {
-        snprintf(
-            g_runtime.tx_payload,
-            sizeof(g_runtime.tx_payload),
-            "{\"schema_version\":\"node-config-ack/v1\",\"node_id\":\"%s\",\"config_version\":\"%s\",\"status\":\"%s\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"applied_config\":{\"assigned\":true,\"zone_id\":\"%s\",\"crop_id\":\"%s\"},\"error\":%s}",
-            node->config->node_id,
-            node->config->config_version,
-            status,
-            g_runtime.tx_timestamp,
-            node->config->zone_id,
-            node->config->zone_id,
-            node->config->crop_id,
-            error_message ? error_message : "null"
-        );
+        if (!format_tx_payload(
+                node,
+                "{\"schema_version\":\"node-config-ack/v1\",\"node_id\":\"%s\",\"config_version\":\"%s\",\"status\":\"%s\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"applied_config\":{\"assigned\":true,\"zone_id\":\"%s\",\"crop_id\":\"%s\"},\"error\":%s}",
+                node->config->node_id,
+                node->config->config_version,
+                status,
+                g_runtime.tx_timestamp,
+                node->config->zone_id,
+                node->config->zone_id,
+                node->config->crop_id,
+                error_message ? error_message : "null")) {
+            return;
+        }
     } else {
-        snprintf(
-            g_runtime.tx_payload,
-            sizeof(g_runtime.tx_payload),
-            "{\"schema_version\":\"node-config-ack/v1\",\"node_id\":\"%s\",\"config_version\":\"%s\",\"status\":\"%s\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"applied_config\":{\"assigned\":false},\"error\":%s}",
-            node->config->node_id,
-            node->config->config_version,
-            status,
-            g_runtime.tx_timestamp,
-            node->config->zone_id,
-            error_message ? error_message : "null"
-        );
+        if (!format_tx_payload(
+                node,
+                "{\"schema_version\":\"node-config-ack/v1\",\"node_id\":\"%s\",\"config_version\":\"%s\",\"status\":\"%s\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"applied_config\":{\"assigned\":false},\"error\":%s}",
+                node->config->node_id,
+                node->config->config_version,
+                status,
+                g_runtime.tx_timestamp,
+                node->config->zone_id,
+                error_message ? error_message : "null")) {
+            return;
+        }
     }
 
     mqtt_publish_locked(
@@ -569,7 +534,7 @@ static void handle_command_message(mqtt_node_t *node, const char *payload) {
         return;
     }
 
-    if (targeted && target_node_id[0] != '\0' && strcmp(target_node_id, node->config->node_id) != 0) {
+    if (targeted && target_node_id[0] != '\0' && !node_id_matches_config(node->config, target_node_id)) {
         return;
     }
 
@@ -825,6 +790,53 @@ void mqtt_node_poll(mqtt_node_t *node) {
     mqtt_flush_deferred_actions(g_runtime.node);
 }
 
+void mqtt_node_disconnect(mqtt_node_t *node) {
+    if (g_runtime.discovery_in_progress || g_runtime.discovery_pcb) {
+        mqtt_close_broker_discovery();
+    }
+
+    if (g_runtime.client) {
+        if (mqtt_client_is_connected(g_runtime.client)) {
+            cyw43_arch_lwip_begin();
+            mqtt_disconnect(g_runtime.client);
+            cyw43_arch_lwip_end();
+        }
+
+        cyw43_arch_lwip_begin();
+        mqtt_client_free(g_runtime.client);
+        cyw43_arch_lwip_end();
+    }
+
+    g_runtime.client = NULL;
+    g_runtime.connected = false;
+    g_runtime.subscriptions_pending = false;
+    g_runtime.discovery_in_progress = false;
+    g_runtime.discovery_resolved = false;
+    g_runtime.discovery_pcb = NULL;
+    g_runtime.discovered_mqtt_host[0] = '\0';
+    g_runtime.discovered_mqtt_port = 0;
+    g_runtime.pending_command_ack = false;
+    g_runtime.pending_clear_retained_command = false;
+    g_runtime.pending_publish_request = false;
+    g_runtime.publish_request_needs_command_clear = false;
+    g_runtime.pending_config_apply = false;
+    g_runtime.pending_reboot = false;
+    g_runtime.incoming_payload_len = 0;
+    g_runtime.incoming_topic[0] = '\0';
+    g_runtime.incoming_payload[0] = '\0';
+    g_runtime.pending_config_payload[0] = '\0';
+    g_runtime.pending_command[0] = '\0';
+    g_runtime.pending_command_id[0] = '\0';
+    g_runtime.pending_command_status[0] = '\0';
+    g_runtime.next_reconnect_at = get_absolute_time();
+    g_runtime.discovery_next_attempt_at = get_absolute_time();
+    g_runtime.discovery_deadline = get_absolute_time();
+
+    if (node) {
+        set_error(node, "none");
+    }
+}
+
 bool mqtt_node_is_connected(const mqtt_node_t *node) {
     (void)node;
     return g_runtime.connected && g_runtime.client && mqtt_client_is_connected(g_runtime.client);
@@ -850,55 +862,79 @@ bool mqtt_node_publish_canary(mqtt_node_t *node) {
     return false;
 }
 
-bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapshot, const char *reason) {
+bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapshot, const char *reason, uint32_t wake_count, const char *node_id) {
     if (!mqtt_node_is_connected(node)) {
         set_error(node, "mqtt not connected");
         return false;
     }
 
+    const char *publish_node_id = (node_id && node_id[0] != '\0') ? node_id : node->config->node_id;
+    node_config_t topic_config = *node->config;
+    snprintf(topic_config.node_id, sizeof(topic_config.node_id), "%s", publish_node_id);
+
     int32_t rssi = wifi_rssi();
     bool has_ip = wifi_ip_string(g_runtime.tx_ip, sizeof(g_runtime.tx_ip));
-    topic_state(node->config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
-    time_sync_format_iso8601(g_runtime.tx_timestamp, sizeof(g_runtime.tx_timestamp));
-
-    if (has_ip) {
+    char soil_fields[128];
+    char environment_fields[160];
+    char ip_field[80];
+    if (snapshot->soil_moisture_read) {
         snprintf(
-            g_runtime.tx_payload,
-            sizeof(g_runtime.tx_payload),
-            "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_temp_c\":null,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,\"ip\":\"%s\",\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
-            g_runtime.tx_timestamp,
-            node->config->zone_id,
-            node->config->node_id,
+            soil_fields,
+            sizeof(soil_fields),
+            "\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_moisture_read\":true",
             snapshot->moisture_raw,
-            snapshot->moisture_percent,
-            (long)rssi,
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            g_runtime.tx_ip,
-            snapshot->healthy ? "ok" : "degraded",
-            node->last_error,
-            reason
+            snapshot->moisture_percent
         );
     } else {
         snprintf(
-            g_runtime.tx_payload,
-            sizeof(g_runtime.tx_payload),
-            "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_temp_c\":null,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,\"ip\":null,\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
-            g_runtime.tx_timestamp,
-            node->config->zone_id,
-            node->config->node_id,
-            snapshot->moisture_raw,
-            snapshot->moisture_percent,
-            (long)rssi,
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            snapshot->healthy ? "ok" : "degraded",
-            node->last_error,
-            reason
+            soil_fields,
+            sizeof(soil_fields),
+            "\"moisture_raw\":null,\"moisture_percent\":null,\"soil_moisture_read\":false"
         );
     }
+    if (has_ip) {
+        snprintf(ip_field, sizeof(ip_field), "\"ip\":\"%s\"", g_runtime.tx_ip);
+    } else {
+        snprintf(ip_field, sizeof(ip_field), "\"ip\":null");
+    }
+    if (snapshot->environment_valid) {
+        snprintf(
+            environment_fields,
+            sizeof(environment_fields),
+            "\"air_temperature_c\":%.2f,\"humidity_percent\":%.2f",
+            (double)snapshot->air_temperature_c,
+            (double)snapshot->humidity_percent
+        );
+    } else {
+        snprintf(
+            environment_fields,
+            sizeof(environment_fields),
+            "\"air_temperature_c\":null,\"humidity_percent\":null"
+        );
+    }
+    topic_state(&topic_config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
+    time_sync_format_iso8601(g_runtime.tx_timestamp, sizeof(g_runtime.tx_timestamp));
 
-    topic_state(node->config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
+    if (!format_tx_payload(
+            node,
+            "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"device_id\":\"%s\",%s,%s,\"soil_temp_c\":null,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,%s,\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
+            g_runtime.tx_timestamp,
+            node->config->zone_id,
+            publish_node_id,
+            node->config->node_id,
+            soil_fields,
+            environment_fields,
+            (long)rssi,
+            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
+            (unsigned long)wake_count,
+            ip_field,
+            snapshot->healthy ? "ok" : "degraded",
+            node->last_error,
+            reason)) {
+        return false;
+    }
+
+    topic_state(&topic_config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
     size_t payload_len = strlen(g_runtime.tx_payload);
     err_t err = mqtt_publish_locked(
         g_runtime.client,

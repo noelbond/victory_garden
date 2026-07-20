@@ -44,6 +44,16 @@ void time_sync_init(void) {
     g_time_sync.initialized = true;
 }
 
+void time_sync_deinit(void) {
+    if (g_time_sync.initialized) {
+        cyw43_arch_lwip_begin();
+        sntp_stop();
+        cyw43_arch_lwip_end();
+    }
+
+    memset(&g_time_sync, 0, sizeof(g_time_sync));
+}
+
 void time_sync_poll(void) {
     if (!g_time_sync.initialized && wifi_is_connected()) {
         time_sync_init();

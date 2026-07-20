@@ -1,20 +1,45 @@
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 #include "config.h"
+#include "hardware/xosc.h"
 #include "hardware/watchdog.h"
 #include "mqtt_node.h"
+#include "pico/aon_timer.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "sensors.h"
+#include "sht40.h"
 #include "time_sync.h"
 #include "wifi.h"
 
-static const uint32_t VG_PUBLISH_RETRY_MS = 5000u;
-static const uint32_t VG_TIME_SYNC_RETRY_MS = 1000u;
-static const uint32_t VG_WIFI_STABILIZE_MS = 5000u;
-static const uint32_t VG_WIFI_IP_WAIT_MS = 30000u;
+static const uint32_t VG_WIFI_CONNECT_TIMEOUT_MS = 35000u;
+static const uint32_t VG_WIFI_RETRY_DELAY_MS = 1000u;
+static const uint32_t VG_TIME_SYNC_TIMEOUT_MS = 30000u;
+static const uint32_t VG_MQTT_CONNECT_TIMEOUT_MS = 15000u;
+static const uint32_t VG_MQTT_CANARY_TIMEOUT_MS = 5000u;
+static const uint32_t VG_MQTT_RETAINED_WINDOW_MS = 5000u;
+static const uint32_t VG_IDLE_POLL_MS = 100u;
 static const uint32_t VG_PROVISIONING_ANNOUNCE_MS = 2000u;
 static const uint32_t VG_REPROVISION_WINDOW_MS = 8000u;
+static const uint32_t VG_TIME_SYNC_LOG_INTERVAL_MS = 5000u;
+static const uint32_t VG_MQTT_LOG_INTERVAL_MS = 5000u;
+static const uint32_t VG_CANARY_LOG_INTERVAL_MS = 2000u;
+static const uint32_t VG_RETAINED_LOG_INTERVAL_MS = 2000u;
+static const uint32_t VG_DRAIN_LOG_INTERVAL_MS = 2000u;
+static const size_t VG_PROVISION_LINE_MAX = 2048u;
+
+#define VG_WAKE_COUNT_MAGIC 0x56474301u
+
+static volatile bool g_sleep_alarm_fired = false;
+static bool g_aon_timer_seeded = false;
+
+static void sleep_alarm_handler(void) {
+    g_sleep_alarm_fired = true;
+}
 
 static void provisioning_announce(const node_config_t *config, bool requires_provisioning) {
     printf("VG_READY {\"role\":\"sensor\",\"node_id\":\"%s\",\"zone_id\":\"%s\",\"requires_provisioning\":%s}\n",
@@ -30,7 +55,7 @@ static void wait_for_usb_provisioning(node_config_t *config) {
         return;
     }
 
-    char line[768];
+    char line[VG_PROVISION_LINE_MAX];
     size_t line_len = 0;
     absolute_time_t next_announce_at = get_absolute_time();
     absolute_time_t reprovision_deadline = make_timeout_time_ms(VG_REPROVISION_WINDOW_MS);
@@ -83,186 +108,580 @@ static void wait_for_usb_provisioning(node_config_t *config) {
             continue;
         }
 
-        printf("VG_PROVISION_OK {\"node_id\":\"%s\",\"zone_id\":\"%s\",\"rebooting\":true}\n",
+        printf("VG_PROVISION_OK {\"node_id\":\"%s\",\"zone_id\":\"%s\",\"channels\":[\"%s\",\"%s\",\"%s\",\"%s\"],\"rebooting\":true}\n",
             config->node_id,
-            config->zone_id);
+            config->zone_id,
+            config->channel_node_id[0],
+            config->channel_node_id[1],
+            config->channel_node_id[2],
+            config->channel_node_id[3]);
         stdio_flush();
         sleep_ms(200);
         watchdog_reboot(0, 0, 100);
     }
 }
 
-static bool wifi_link_needs_reconnect(int link_status, absolute_time_t reconnect_allowed_at,
-                                      absolute_time_t ip_wait_started_at) {
-    if (wifi_is_connected()) {
-        return false;
+static uint32_t init_wake_count(void) {
+    if (watchdog_hw->scratch[1] != VG_WAKE_COUNT_MAGIC) {
+        watchdog_hw->scratch[1] = VG_WAKE_COUNT_MAGIC;
+        watchdog_hw->scratch[0] = 0;
     }
 
-    if (link_status == CYW43_LINK_DOWN || link_status == CYW43_LINK_FAIL ||
-        link_status == CYW43_LINK_NONET || link_status == CYW43_LINK_BADAUTH) {
-        return absolute_time_diff_us(get_absolute_time(), reconnect_allowed_at) <= 0;
-    }
+    return ++watchdog_hw->scratch[0];
+}
 
-    if (link_status == CYW43_LINK_JOIN || link_status == CYW43_LINK_NOIP) {
-        return absolute_time_diff_us(get_absolute_time(),
-                                     delayed_by_ms(ip_wait_started_at, VG_WIFI_IP_WAIT_MS)) <= 0;
+static void wifi_leave_station(void) {
+    cyw43_arch_lwip_begin();
+    cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+    cyw43_arch_lwip_end();
+}
+
+static void cleanup_cycle(mqtt_node_t *node) {
+    mqtt_node_disconnect(node);
+    time_sync_deinit();
+    if (wifi_is_initialized()) {
+        wifi_leave_station();
+    }
+}
+
+static bool wifi_connect_with_timeout(const node_config_t *config, char *error, size_t error_size, uint32_t timeout_ms) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+
+    printf("[wifi] connecting ssid=%s\n", config->wifi_ssid);
+    stdio_flush();
+
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        if (wifi_init_and_connect(config, error, error_size)) {
+            printf("[wifi] connected\n");
+            stdio_flush();
+            return true;
+        }
+
+        printf("[wifi] failed: %s\n", error);
+        stdio_flush();
+
+        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            break;
+        }
+
+        sleep_ms(VG_WIFI_RETRY_DELAY_MS);
     }
 
     return false;
 }
 
-static bool wifi_connect_with_retry(const node_config_t *config, char *error, size_t error_size) {
-    printf("[wifi] connecting ssid=%s\n", config->wifi_ssid);
+static bool wait_for_time_sync(uint32_t timeout_ms) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    absolute_time_t next_log_at = get_absolute_time();
+
+    printf("[time] waiting for NTP sync timeout=%lums\n", (unsigned long)timeout_ms);
     stdio_flush();
-    while (!wifi_init_and_connect(config, error, error_size)) {
-        printf("[wifi] failed: %s - retry in 5s\n", error);
-        stdio_flush();
-        sleep_ms(5000);
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        time_sync_poll();
+        if (time_sync_ready()) {
+            printf("[time] sync ready epoch=%lu\n", (unsigned long)time_sync_epoch_sec());
+            stdio_flush();
+            return true;
+        }
+
+        if (absolute_time_diff_us(get_absolute_time(), next_log_at) <= 0) {
+            printf("[time] still waiting for NTP sync\n");
+            stdio_flush();
+            next_log_at = make_timeout_time_ms(VG_TIME_SYNC_LOG_INTERVAL_MS);
+        }
+
+        sleep_ms(VG_IDLE_POLL_MS);
     }
-    printf("[wifi] connected\n");
+
+    printf("[time] sync timed out after %lums\n", (unsigned long)timeout_ms);
     stdio_flush();
-    return true;
+    return false;
+}
+
+static bool wait_for_mqtt_connection(mqtt_node_t *node, uint32_t timeout_ms) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    absolute_time_t next_log_at = get_absolute_time();
+
+    printf("[mqtt] waiting for broker connect timeout=%lums host=%s port=%d\n",
+        (unsigned long)timeout_ms,
+        node->config->mqtt_host,
+        node->config->mqtt_port);
+    stdio_flush();
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        mqtt_node_poll(node);
+        if (mqtt_node_is_connected(node)) {
+            printf("[mqtt] broker connected\n");
+            stdio_flush();
+            return true;
+        }
+
+        if (absolute_time_diff_us(get_absolute_time(), next_log_at) <= 0) {
+            printf("[mqtt] still waiting err=%s\n", node->last_error);
+            stdio_flush();
+            next_log_at = make_timeout_time_ms(VG_MQTT_LOG_INTERVAL_MS);
+        }
+
+        sleep_ms(VG_IDLE_POLL_MS);
+    }
+
+    printf("[mqtt] connect timed out err=%s\n", node->last_error);
+    stdio_flush();
+    return false;
+}
+
+static bool wait_for_canary_publish(mqtt_node_t *node, uint32_t timeout_ms) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    absolute_time_t next_log_at = get_absolute_time();
+
+    printf("[mqtt] publishing canary timeout=%lums\n", (unsigned long)timeout_ms);
+    stdio_flush();
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        mqtt_node_poll(node);
+        if (mqtt_node_publish_canary(node)) {
+            printf("[mqtt] canary published\n");
+            stdio_flush();
+            return true;
+        }
+
+        if (absolute_time_diff_us(get_absolute_time(), next_log_at) <= 0) {
+            printf("[mqtt] canary retry err=%s\n", node->last_error);
+            stdio_flush();
+            next_log_at = make_timeout_time_ms(VG_CANARY_LOG_INTERVAL_MS);
+        }
+
+        sleep_ms(VG_IDLE_POLL_MS);
+    }
+
+    printf("[mqtt] canary timed out err=%s\n", node->last_error);
+    stdio_flush();
+    return false;
+}
+
+static void poll_retained_window(mqtt_node_t *node, uint32_t timeout_ms,
+                                 bool *reconnect_requested, bool *reboot_requested) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    absolute_time_t next_log_at = get_absolute_time();
+
+    printf("[mqtt] retained command/config window open for %lums\n", (unsigned long)timeout_ms);
+    stdio_flush();
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        mqtt_node_poll(node);
+
+        if (mqtt_node_take_reconnect_request(node)) {
+            printf("[mqtt] retained config requested reconnect\n");
+            stdio_flush();
+            *reconnect_requested = true;
+            return;
+        }
+
+        if (mqtt_node_take_reboot_request(node)) {
+            printf("[mqtt] retained command requested reboot\n");
+            stdio_flush();
+            *reboot_requested = true;
+            return;
+        }
+
+        if (absolute_time_diff_us(get_absolute_time(), next_log_at) <= 0) {
+            printf("[mqtt] retained window still open publish_requested=%s\n",
+                mqtt_node_has_publish_request(node) ? "true" : "false");
+            stdio_flush();
+            next_log_at = make_timeout_time_ms(VG_RETAINED_LOG_INTERVAL_MS);
+        }
+
+        sleep_ms(VG_IDLE_POLL_MS);
+    }
+
+    printf("[mqtt] retained window closed publish_requested=%s\n",
+        mqtt_node_has_publish_request(node) ? "true" : "false");
+    stdio_flush();
+}
+
+static void drain_mqtt_window(mqtt_node_t *node, uint32_t timeout_ms) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    absolute_time_t next_log_at = get_absolute_time();
+
+    printf("[mqtt] draining deferred MQTT work for %lums\n", (unsigned long)timeout_ms);
+    stdio_flush();
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        mqtt_node_poll(node);
+
+        if (absolute_time_diff_us(get_absolute_time(), next_log_at) <= 0) {
+            printf("[mqtt] drain in progress\n");
+            stdio_flush();
+            next_log_at = make_timeout_time_ms(VG_DRAIN_LOG_INTERVAL_MS);
+        }
+
+        sleep_ms(VG_IDLE_POLL_MS);
+    }
+
+    printf("[mqtt] drain complete\n");
+    stdio_flush();
+}
+
+static void service_mqtt_window(mqtt_node_t *node, uint32_t timeout_ms) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        mqtt_node_poll(node);
+        sleep_ms(10);
+    }
+}
+
+static uint32_t local_seconds_today(uint32_t epoch_sec, int8_t utc_offset_hours) {
+    int64_t local_epoch = (int64_t)epoch_sec + ((int64_t)utc_offset_hours * 3600ll);
+    int32_t seconds_today = (int32_t)(local_epoch % 86400ll);
+    return (uint32_t)(seconds_today < 0 ? seconds_today + 86400 : seconds_today);
+}
+
+static bool is_active_window(uint32_t epoch_sec, int8_t utc_offset_hours) {
+    const uint32_t hour = local_seconds_today(epoch_sec, utc_offset_hours) / 3600u;
+    return hour >= VG_DAY_START_HOUR && hour < VG_DAY_END_HOUR;
+}
+
+static bool should_read_soil_moisture(uint32_t epoch_sec, int8_t utc_offset_hours) {
+    const uint32_t minute = (local_seconds_today(epoch_sec, utc_offset_hours) / 60u) % 60u;
+    return minute % VG_SOIL_INTERVAL_MINUTES == 0u;
+}
+
+static uint32_t seconds_until_next_wake(uint32_t epoch_sec, int8_t utc_offset_hours) {
+    const uint32_t now = local_seconds_today(epoch_sec, utc_offset_hours);
+    const uint32_t start = VG_DAY_START_HOUR * 3600u;
+    const uint32_t end = VG_DAY_END_HOUR * 3600u;
+    const uint32_t interval = VG_TEMP_INTERVAL_MINUTES * 60u;
+
+    if (now < start) {
+        return start - now;
+    }
+    if (now >= end) {
+        return (86400u - now) + start;
+    }
+
+    const uint32_t next = ((now / interval) + 1u) * interval;
+    return next >= end ? (86400u - now) + start : next - now;
+}
+
+static uint32_t normalize_sleep_sec(uint32_t sleep_sec) {
+    return sleep_sec == 0u ? 1u : sleep_sec;
+}
+
+static bool aon_timer_sync_from_epoch(uint32_t epoch_sec) {
+    if (epoch_sec == 0u) {
+        return false;
+    }
+
+    struct timespec ts = {
+        .tv_sec = (time_t)epoch_sec,
+        .tv_nsec = 0,
+    };
+
+    bool ok = g_aon_timer_seeded ? aon_timer_set_time(&ts) : aon_timer_start(&ts);
+    if (ok) {
+        g_aon_timer_seeded = true;
+    }
+
+    return ok;
+}
+
+static void sleep_until_next_cycle(uint32_t sleep_sec) {
+    sleep_sec = normalize_sleep_sec(sleep_sec);
+
+    if (!VG_ENABLE_AON_DORMANT_SLEEP || !g_aon_timer_seeded) {
+        printf("[cycle] sleeping with delay=%lus mode=sleep_ms\n", (unsigned long)sleep_sec);
+        stdio_flush();
+        sleep_ms(sleep_sec * 1000u);
+        return;
+    }
+
+    struct timespec now_ts;
+    if (!aon_timer_get_time(&now_ts) || now_ts.tv_sec <= 0) {
+        printf("[cycle] aon timer unavailable, sleeping with mode=sleep_ms delay=%lus\n",
+            (unsigned long)sleep_sec);
+        stdio_flush();
+        sleep_ms(sleep_sec * 1000u);
+        return;
+    }
+
+    struct timespec wake_ts = now_ts;
+    wake_ts.tv_sec += (time_t)sleep_sec;
+    g_sleep_alarm_fired = false;
+
+    aon_timer_alarm_handler_t previous_handler =
+        aon_timer_enable_alarm(&wake_ts, sleep_alarm_handler, true);
+    if ((intptr_t)previous_handler == PICO_ERROR_INVALID_ARG) {
+        printf("[cycle] aon alarm setup failed, sleeping with mode=sleep_ms delay=%lus\n",
+            (unsigned long)sleep_sec);
+        stdio_flush();
+        sleep_ms(sleep_sec * 1000u);
+        return;
+    }
+
+    printf("[cycle] sleeping with delay=%lus mode=aon_dormant\n", (unsigned long)sleep_sec);
+    stdio_flush();
+    xosc_dormant();
+    aon_timer_disable_alarm();
+
+    if (!g_sleep_alarm_fired) {
+        printf("[cycle] woke before rtc alarm fired\n");
+        stdio_flush();
+    }
 }
 
 int main(void) {
     stdio_init_all();
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
     sleep_ms(3000);
     printf("[main] boot\n");
     stdio_flush();
 
     node_config_t config;
     mqtt_node_t node;
-    sensor_snapshot_t snapshot;
     char wifi_error[128] = {0};
 
     node_config_load(&config);
     wait_for_usb_provisioning(&config);
-    printf("[main] config: node=%s zone=%s broker=%s:%d\n",
-        config.node_id, config.zone_id, config.mqtt_host, config.mqtt_port);
-    printf("[main] seesaw: sda=GP%u scl=GP%u addr=0x%02X channel=%u dry=%u wet=%u\n",
-        (unsigned)config.seesaw_i2c_sda_gpio,
-        (unsigned)config.seesaw_i2c_scl_gpio,
-        (unsigned)config.seesaw_i2c_address,
-        (unsigned)config.seesaw_touch_channel,
-        (unsigned)config.moisture_raw_dry,
-        (unsigned)config.moisture_raw_wet);
+    printf("[main] config: node=%s zone=%s broker=%s:%d utc_offset_hours=%d\n",
+        config.node_id, config.zone_id, config.mqtt_host, config.mqtt_port, (int)config.utc_offset_hours);
+    printf("[main] ads1115: sda=GP%u scl=GP%u addr=0x%02X channels=%u\n",
+        (unsigned)config.ads1115_i2c_sda_gpio,
+        (unsigned)config.ads1115_i2c_scl_gpio,
+        (unsigned)config.ads1115_i2c_address,
+        (unsigned)VG_ADS1115_CHANNEL_COUNT);
+    for (uint8_t ch = 0; ch < VG_ADS1115_CHANNEL_COUNT; ++ch) {
+        printf("[main] ads1115 ch%u: node=%s dry=%u wet=%u\n",
+            (unsigned)ch,
+            config.channel_node_id[ch],
+            (unsigned)config.channel_moisture_raw_dry[ch],
+            (unsigned)config.channel_moisture_raw_wet[ch]);
+    }
     stdio_flush();
-    sensors_init(&config);
-    wifi_connect_with_retry(&config, wifi_error, sizeof(wifi_error));
-    time_sync_init();
-    mqtt_node_init(&node, &config);
-
-    absolute_time_t next_publish_at = get_absolute_time();
-    absolute_time_t next_publish_attempt_at = get_absolute_time();
-    absolute_time_t wifi_reconnect_allowed_at = make_timeout_time_ms(VG_WIFI_STABILIZE_MS);
-    absolute_time_t wifi_ip_wait_started_at = get_absolute_time();
-    bool canary_published = false;
-    bool initial_synced_publish_pending = true;
-    bool mqtt_was_connected = false;
 
     while (true) {
-        wifi_poll();
-        time_sync_poll();
+        const uint32_t wake_count = init_wake_count();
+        bool reconnect_requested = false;
+        bool reboot_requested = false;
+        bool publish_requested = false;
+        uint32_t sleep_sec = VG_TEMP_INTERVAL_MINUTES * 60u;
+        uint32_t epoch_sec = 0u;
+        bool time_synced = false;
 
-        int link_status = wifi_link_status();
-        if (link_status == CYW43_LINK_UP) {
-            wifi_ip_wait_started_at = get_absolute_time();
-        }
+        mqtt_node_init(&node, &config);
 
-        if (wifi_link_needs_reconnect(link_status, wifi_reconnect_allowed_at, wifi_ip_wait_started_at)) {
-            printf("[wifi] reconnecting link=%d\n", link_status);
-            wifi_deinit();
-            wifi_connect_with_retry(&config, wifi_error, sizeof(wifi_error));
-            mqtt_node_take_reconnect_request(&node);
-            next_publish_at = get_absolute_time();
-            next_publish_attempt_at = get_absolute_time();
-            wifi_reconnect_allowed_at = make_timeout_time_ms(VG_WIFI_STABILIZE_MS);
-            wifi_ip_wait_started_at = get_absolute_time();
-            canary_published = false;
-            initial_synced_publish_pending = true;
-        }
+        printf("[cycle] start wake_count=%lu node=%s zone=%s interval_ms=%lu\n",
+            (unsigned long)wake_count,
+            config.node_id,
+            config.zone_id,
+            (unsigned long)config.publish_interval_ms);
+        stdio_flush();
 
-        mqtt_node_poll(&node);
-
-        bool mqtt_now = mqtt_node_is_connected(&node);
-        if (mqtt_now && !mqtt_was_connected) {
-            printf("[mqtt] connected\n");
+        printf("[cycle] connecting Wi-Fi\n");
+        stdio_flush();
+        if (!wifi_connect_with_timeout(&config, wifi_error, sizeof(wifi_error), VG_WIFI_CONNECT_TIMEOUT_MS)) {
+            printf("[main] wifi failed: %s, sleeping\n", wifi_error);
             stdio_flush();
-        } else if (!mqtt_now && mqtt_was_connected) {
-            printf("[mqtt] disconnected err=%s\n", node.last_error);
+            cleanup_cycle(&node);
+            sleep_until_next_cycle(sleep_sec);
+            continue;
+        }
+
+        printf("[cycle] starting time sync\n");
+        stdio_flush();
+        time_sync_init();
+        if (!wait_for_time_sync(VG_TIME_SYNC_TIMEOUT_MS)) {
+            printf("[main] ntp timeout, continuing without synced time\n");
             stdio_flush();
-        }
-        mqtt_was_connected = mqtt_now;
-
-        if (mqtt_node_take_reconnect_request(&node)) {
-            sensors_init(&config);
-            next_publish_at = get_absolute_time();
-            next_publish_attempt_at = get_absolute_time();
-            canary_published = false;
-            initial_synced_publish_pending = true;
+        } else {
+            epoch_sec = time_sync_epoch_sec();
+            time_synced = epoch_sec != 0u;
+            (void)aon_timer_sync_from_epoch(epoch_sec);
         }
 
-        if (mqtt_node_take_reboot_request(&node)) {
+        if (time_synced) {
+            sleep_sec = seconds_until_next_wake(epoch_sec, config.utc_offset_hours);
+        }
+
+        printf("[cycle] connecting MQTT\n");
+        stdio_flush();
+        if (!wait_for_mqtt_connection(&node, VG_MQTT_CONNECT_TIMEOUT_MS)) {
+            printf("[main] mqtt timeout err=%s, sleeping\n", node.last_error);
+            stdio_flush();
+            cleanup_cycle(&node);
+            sleep_until_next_cycle(sleep_sec);
+            continue;
+        }
+
+        poll_retained_window(&node, VG_MQTT_RETAINED_WINDOW_MS, &reconnect_requested, &reboot_requested);
+        if (reboot_requested) {
             printf("[main] reboot requested\n");
             stdio_flush();
+            cleanup_cycle(&node);
             sleep_ms(100);
             watchdog_reboot(0, 0, 100);
         }
 
-        if (mqtt_node_is_connected(&node) && !canary_published) {
-            if (mqtt_node_publish_canary(&node)) {
-                canary_published = true;
-            } else {
-                printf("[mqtt] canary failed err=%s\n", node.last_error);
+        if (reconnect_requested) {
+            printf("[main] config changed, reconnecting immediately\n");
+            stdio_flush();
+            cleanup_cycle(&node);
+            continue;
+        }
+
+        if (time_synced) {
+            sleep_sec = seconds_until_next_wake(epoch_sec, config.utc_offset_hours);
+            if (!is_active_window(epoch_sec, config.utc_offset_hours)) {
+                const uint32_t local_sec = local_seconds_today(epoch_sec, config.utc_offset_hours);
+                printf("[cycle] inactive local=%02lu:%02lu utc_offset_hours=%d no sensor reads next_wake=%lus\n",
+                    (unsigned long)(local_sec / 3600u),
+                    (unsigned long)((local_sec / 60u) % 60u),
+                    (int)config.utc_offset_hours,
+                    (unsigned long)sleep_sec);
                 stdio_flush();
-            }
-        }
-
-        if (mqtt_node_is_connected(&node) && canary_published && time_sync_ready() && initial_synced_publish_pending) {
-            node.publish_requested = true;
-            initial_synced_publish_pending = false;
-        }
-
-        bool publish_due = absolute_time_diff_us(get_absolute_time(), next_publish_at) <= 0;
-        bool publish_allowed = absolute_time_diff_us(get_absolute_time(), next_publish_attempt_at) <= 0;
-        bool publish_requested = mqtt_node_has_publish_request(&node);
-        bool mqtt_ready = mqtt_node_is_connected(&node);
-        bool publish_ready = mqtt_ready && (canary_published || publish_requested);
-
-        if ((publish_due || publish_requested) && publish_allowed && publish_ready) {
-            if (publish_requested) {
-                mqtt_node_take_publish_request(&node);
-            }
-            if (!time_sync_ready() && !publish_requested) {
-                next_publish_attempt_at = make_timeout_time_ms(VG_TIME_SYNC_RETRY_MS);
-                tight_loop_contents();
+                cleanup_cycle(&node);
+                sleep_until_next_cycle(sleep_sec);
                 continue;
             }
-
-            const char *reason = publish_requested ? "request_reading" : "interval";
-            if (sensors_read(&config, &snapshot)) {
-                if (mqtt_node_publish_state(&node, &snapshot, reason)) {
-                    if (publish_requested) {
-                        mqtt_node_mark_publish_request_handled(&node);
-                    }
-                    next_publish_at = make_timeout_time_ms(config.publish_interval_ms);
-                    next_publish_attempt_at = get_absolute_time();
-                } else {
-                    printf("[main] publish failed err=%s\n", node.last_error);
-                    if (publish_requested) {
-                        node.publish_requested = true;
-                    }
-                    next_publish_attempt_at = make_timeout_time_ms(VG_PUBLISH_RETRY_MS);
-                }
-            } else {
-                if (publish_requested) {
-                    node.publish_requested = true;
-                }
-                next_publish_at = make_timeout_time_ms(config.publish_interval_ms);
-                next_publish_attempt_at = make_timeout_time_ms(VG_PUBLISH_RETRY_MS);
-            }
         }
 
-        cyw43_arch_wait_for_work_until(make_timeout_time_ms(100));
+        if (!wait_for_canary_publish(&node, VG_MQTT_CANARY_TIMEOUT_MS)) {
+            printf("[main] canary failed err=%s, continuing to state publish\n", node.last_error);
+            stdio_flush();
+        }
+
+        publish_requested = mqtt_node_has_publish_request(&node);
+        if (publish_requested) {
+            mqtt_node_take_publish_request(&node);
+        }
+
+        if (VG_ENABLE_I2C_DIAGNOSTIC_SCAN) {
+            sht40_scan_bus(&config);
+        }
+        float air_temperature_c = 0.0f;
+        float humidity_percent = 0.0f;
+        bool environment_valid = sht40_read(&config, &air_temperature_c, &humidity_percent);
+        bool sht40_present = true;
+        if (!environment_valid) {
+            sht40_present = sht40_probe(&config);
+            snprintf(
+                node.last_error,
+                sizeof(node.last_error),
+                "sht40 read failed; 0x44 %s",
+                sht40_present ? "present" : "missing"
+            );
+            printf("[main] %s; continuing with degraded publish\n", node.last_error);
+            stdio_flush();
+        }
+
+        const bool read_soil = publish_requested ||
+            (time_synced ? should_read_soil_moisture(epoch_sec, config.utc_offset_hours)
+                         : (wake_count % (VG_SOIL_INTERVAL_MINUTES / VG_TEMP_INTERVAL_MINUTES)) == 0u);
+        if (read_soil) {
+            sensors_init(&config);
+        }
+        printf("[cycle] sensors temp_c=%.2f humidity=%.2f soil=%s publish_requested=%s\n",
+            (double)air_temperature_c,
+            (double)humidity_percent,
+            read_soil ? "yes" : "no",
+            publish_requested ? "true" : "false");
+        stdio_flush();
+
+        const char *reason = publish_requested ? "request_reading" : "interval";
+        uint8_t successful_soil_reads = 0;
+        bool all_mqtt_published = true;
+        for (uint8_t ch = 0; ch < VG_ADS1115_CHANNEL_COUNT; ++ch) {
+            sensor_snapshot_t ch_snapshot = {0};
+            ch_snapshot.air_temperature_c = air_temperature_c;
+            ch_snapshot.humidity_percent = humidity_percent;
+            ch_snapshot.environment_valid = environment_valid;
+            ch_snapshot.healthy = environment_valid;
+            if (read_soil) {
+                ch_snapshot.soil_moisture_read = sensors_read(&config, ch, &ch_snapshot);
+                if (ch_snapshot.soil_moisture_read) {
+                    successful_soil_reads++;
+                } else {
+                    printf("[main] channel %u soil read failed, publishing environment only\n", (unsigned)ch);
+                    stdio_flush();
+                    ch_snapshot.healthy = false;
+                }
+            }
+
+            if (!environment_valid) {
+                snprintf(
+                    node.last_error,
+                    sizeof(node.last_error),
+                    "sht40 read failed; 0x44 %s",
+                    sht40_present ? "present" : "missing"
+                );
+            } else if (read_soil && !ch_snapshot.soil_moisture_read) {
+                snprintf(
+                    node.last_error,
+                    sizeof(node.last_error),
+                    "channel %u soil read failed",
+                    (unsigned)ch
+                );
+            } else if (read_soil && !ch_snapshot.healthy) {
+                snprintf(
+                    node.last_error,
+                    sizeof(node.last_error),
+                    "channel %u raw outside calibration",
+                    (unsigned)ch
+                );
+            } else {
+                snprintf(node.last_error, sizeof(node.last_error), "%s", "none");
+            }
+            printf("[cycle] publishing channel %u node=%s reason=%s soil_read=%s moisture_raw=%u moisture_percent=%d\n",
+                (unsigned)ch,
+                config.channel_node_id[ch],
+                reason,
+                ch_snapshot.soil_moisture_read ? "true" : "false",
+                ch_snapshot.moisture_raw,
+                ch_snapshot.moisture_percent);
+            stdio_flush();
+            bool published = mqtt_node_publish_state(
+                &node,
+                &ch_snapshot,
+                reason,
+                wake_count,
+                config.channel_node_id[ch]
+            );
+            if (!published) {
+                service_mqtt_window(&node, 250u);
+                published = mqtt_node_publish_state(
+                    &node,
+                    &ch_snapshot,
+                    reason,
+                    wake_count,
+                    config.channel_node_id[ch]
+                );
+            }
+            if (!published) {
+                all_mqtt_published = false;
+                printf("[main] channel %u publish failed err=%s\n", (unsigned)ch, node.last_error);
+                stdio_flush();
+            }
+            service_mqtt_window(&node, 100u);
+        }
+
+        if (read_soil && successful_soil_reads == 0) {
+            printf("[main] all soil channel reads failed; environment readings were still published\n");
+            stdio_flush();
+        }
+
+        if (publish_requested && all_mqtt_published) {
+            mqtt_node_mark_publish_request_handled(&node);
+            drain_mqtt_window(&node, 1000u);
+        } else if (publish_requested) {
+            printf("[main] publish request incomplete, leaving command pending\n");
+            stdio_flush();
+        }
+
+        sleep_sec = time_synced ? seconds_until_next_wake(epoch_sec, config.utc_offset_hours) : VG_TEMP_INTERVAL_MINUTES * 60u;
+
+        printf("[main] published reason=%s wake_count=%lu next_sleep=%lus\n",
+            reason,
+            (unsigned long)wake_count,
+            (unsigned long)sleep_sec);
+        stdio_flush();
+
+        cleanup_cycle(&node);
+        sleep_until_next_cycle(sleep_sec);
     }
 }

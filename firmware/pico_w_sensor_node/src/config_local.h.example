@@ -3,22 +3,32 @@
 #define VG_DEFAULT_WIFI_SSID "your-ssid"
 #define VG_DEFAULT_WIFI_PASSWORD "your-password"
 /* Last known Pi broker IP. The Pico will rediscover the current Pi IP over UDP if this changes. */
-#define VG_DEFAULT_MQTT_HOST "192.168.4.41"
+#define VG_DEFAULT_MQTT_HOST "victory-garden.local"
 #define VG_DEFAULT_MQTT_PORT 1883
 #define VG_DEFAULT_MQTT_USERNAME "victory_garden"
 #define VG_DEFAULT_MQTT_PASSWORD "broker-password"
 #define VG_DEFAULT_NTP_SERVER "pool.ntp.org"
 #define VG_DEFAULT_NODE_ID "pico-w-zone1"
 #define VG_DEFAULT_ZONE_ID "zone1"
-#define VG_DEFAULT_PUBLISH_INTERVAL_MS 60000u
-/* UTC offset for your timezone (e.g. -5 for EST, -4 for EDT, -7 for PDT, -8 for PST) */
+#define VG_DEFAULT_PUBLISH_INTERVAL_MS 900000u
+/* Fallback until retained node config supplies the current local offset. */
 #define VG_DEFAULT_UTC_OFFSET_HOURS 0
-/* Publish schedule: local-time hours (24h), must be sorted ascending */
-#define VG_DEFAULT_PUBLISH_SCHEDULE_HOURS {6, 9, 12, 14, 16, 19}
-#define VG_DEFAULT_PUBLISH_SCHEDULE_COUNT 6
-#define VG_DEFAULT_SEESAW_I2C_SDA_GPIO 4u
-#define VG_DEFAULT_SEESAW_I2C_SCL_GPIO 5u
-#define VG_DEFAULT_SEESAW_I2C_ADDRESS 0x36u
-#define VG_DEFAULT_SEESAW_TOUCH_CHANNEL 0u
-#define VG_DEFAULT_MOISTURE_RAW_DRY 0u
-#define VG_DEFAULT_MOISTURE_RAW_WET 0u
+#define VG_DAY_START_HOUR 6u
+#define VG_DAY_END_HOUR 20u
+#define VG_TEMP_INTERVAL_MINUTES 15u
+#define VG_SOIL_INTERVAL_MINUTES 60u
+#define VG_DEFAULT_ADS1115_I2C_SDA_GPIO 14u
+#define VG_DEFAULT_ADS1115_I2C_SCL_GPIO 15u
+#define VG_DEFAULT_ADS1115_I2C_ADDRESS 0x48u
+#define VG_DEFAULT_CHANNEL0_NODE_ID "pico-w-zone1-ch0"
+#define VG_DEFAULT_CHANNEL1_NODE_ID "pico-w-zone1-ch1"
+#define VG_DEFAULT_CHANNEL2_NODE_ID "pico-w-zone1-ch2"
+#define VG_DEFAULT_CHANNEL3_NODE_ID "pico-w-zone1-ch3"
+#define VG_DEFAULT_CHANNEL0_MOISTURE_RAW_DRY 0u
+#define VG_DEFAULT_CHANNEL0_MOISTURE_RAW_WET 0u
+#define VG_DEFAULT_CHANNEL1_MOISTURE_RAW_DRY 0u
+#define VG_DEFAULT_CHANNEL1_MOISTURE_RAW_WET 0u
+#define VG_DEFAULT_CHANNEL2_MOISTURE_RAW_DRY 0u
+#define VG_DEFAULT_CHANNEL2_MOISTURE_RAW_WET 0u
+#define VG_DEFAULT_CHANNEL3_MOISTURE_RAW_DRY 0u
+#define VG_DEFAULT_CHANNEL3_MOISTURE_RAW_WET 0u

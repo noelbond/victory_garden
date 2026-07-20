@@ -10,12 +10,12 @@
 #define __has_include(x) 0
 #endif
 
-#if __has_include("config_local.h")
+#if !defined(VG_BUNDLED_BUILD) && __has_include("config_local.h")
 #include "config_local.h"
 #endif
 
 #define VG_CONFIG_MAGIC 0x56474E31u
-#define VG_CONFIG_VERSION 12u
+#define VG_CONFIG_VERSION 17u
 
 #define VG_MAX_SSID_LEN 64
 #define VG_MAX_PASSWORD_LEN 64
@@ -79,28 +79,100 @@
 #define VG_DEFAULT_PUBLISH_SCHEDULE_COUNT 6
 #endif
 
-#ifndef VG_DEFAULT_SEESAW_I2C_SDA_GPIO
-#define VG_DEFAULT_SEESAW_I2C_SDA_GPIO 4u
+#ifndef VG_DISABLE_PUBLISH_SCHEDULE
+#define VG_DISABLE_PUBLISH_SCHEDULE false
 #endif
 
-#ifndef VG_DEFAULT_MOISTURE_RAW_DRY
-#define VG_DEFAULT_MOISTURE_RAW_DRY 0u
+#ifndef VG_FORCE_DEFAULT_CONFIG
+#define VG_FORCE_DEFAULT_CONFIG false
 #endif
 
-#ifndef VG_DEFAULT_MOISTURE_RAW_WET
-#define VG_DEFAULT_MOISTURE_RAW_WET 0u
+#ifndef VG_ENABLE_AON_DORMANT_SLEEP
+#define VG_ENABLE_AON_DORMANT_SLEEP true
 #endif
 
-#ifndef VG_DEFAULT_SEESAW_I2C_SCL_GPIO
-#define VG_DEFAULT_SEESAW_I2C_SCL_GPIO 5u
+#ifndef VG_ENABLE_I2C_DIAGNOSTIC_SCAN
+#define VG_ENABLE_I2C_DIAGNOSTIC_SCAN false
 #endif
 
-#ifndef VG_DEFAULT_SEESAW_I2C_ADDRESS
-#define VG_DEFAULT_SEESAW_I2C_ADDRESS 0x36u
+#ifndef VG_DEFAULT_ADS1115_I2C_SDA_GPIO
+#define VG_DEFAULT_ADS1115_I2C_SDA_GPIO 14u
 #endif
 
-#ifndef VG_DEFAULT_SEESAW_TOUCH_CHANNEL
-#define VG_DEFAULT_SEESAW_TOUCH_CHANNEL 0u
+#ifndef VG_DEFAULT_ADS1115_I2C_SCL_GPIO
+#define VG_DEFAULT_ADS1115_I2C_SCL_GPIO 15u
+#endif
+
+#ifndef VG_DEFAULT_ADS1115_I2C_ADDRESS
+#define VG_DEFAULT_ADS1115_I2C_ADDRESS 0x48u
+#endif
+
+#ifndef VG_ADS1115_CHANNEL_COUNT
+#define VG_ADS1115_CHANNEL_COUNT 4u
+#endif
+
+#ifndef VG_DAY_START_HOUR
+#define VG_DAY_START_HOUR 6u
+#endif
+
+#ifndef VG_DAY_END_HOUR
+#define VG_DAY_END_HOUR 20u
+#endif
+
+#ifndef VG_TEMP_INTERVAL_MINUTES
+#define VG_TEMP_INTERVAL_MINUTES 15u
+#endif
+
+#ifndef VG_SOIL_INTERVAL_MINUTES
+#define VG_SOIL_INTERVAL_MINUTES 60u
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL0_NODE_ID
+#define VG_DEFAULT_CHANNEL0_NODE_ID "pico-w-zone1-ch0"
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL1_NODE_ID
+#define VG_DEFAULT_CHANNEL1_NODE_ID "pico-w-zone1-ch1"
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL2_NODE_ID
+#define VG_DEFAULT_CHANNEL2_NODE_ID "pico-w-zone1-ch2"
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL3_NODE_ID
+#define VG_DEFAULT_CHANNEL3_NODE_ID "pico-w-zone1-ch3"
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL0_MOISTURE_RAW_DRY
+#define VG_DEFAULT_CHANNEL0_MOISTURE_RAW_DRY 0u
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL0_MOISTURE_RAW_WET
+#define VG_DEFAULT_CHANNEL0_MOISTURE_RAW_WET 0u
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL1_MOISTURE_RAW_DRY
+#define VG_DEFAULT_CHANNEL1_MOISTURE_RAW_DRY 0u
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL1_MOISTURE_RAW_WET
+#define VG_DEFAULT_CHANNEL1_MOISTURE_RAW_WET 0u
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL2_MOISTURE_RAW_DRY
+#define VG_DEFAULT_CHANNEL2_MOISTURE_RAW_DRY 0u
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL2_MOISTURE_RAW_WET
+#define VG_DEFAULT_CHANNEL2_MOISTURE_RAW_WET 0u
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL3_MOISTURE_RAW_DRY
+#define VG_DEFAULT_CHANNEL3_MOISTURE_RAW_DRY 0u
+#endif
+
+#ifndef VG_DEFAULT_CHANNEL3_MOISTURE_RAW_WET
+#define VG_DEFAULT_CHANNEL3_MOISTURE_RAW_WET 0u
 #endif
 
 #ifndef VG_DEFAULT_ACTUATOR_RELAY_GPIO
@@ -132,12 +204,13 @@ typedef struct {
     uint16_t daily_max_runtime_sec;
     char config_version[VG_MAX_CONFIG_VERSION_LEN];
     uint32_t publish_interval_ms;
-    uint16_t moisture_raw_dry;
-    uint16_t moisture_raw_wet;
-    uint8_t seesaw_i2c_sda_gpio;
-    uint8_t seesaw_i2c_scl_gpio;
-    uint8_t seesaw_i2c_address;
-    uint8_t seesaw_touch_channel;
+    int8_t utc_offset_hours;
+    uint8_t ads1115_i2c_sda_gpio;
+    uint8_t ads1115_i2c_scl_gpio;
+    uint8_t ads1115_i2c_address;
+    char channel_node_id[VG_ADS1115_CHANNEL_COUNT][VG_MAX_NODE_ID_LEN];
+    uint16_t channel_moisture_raw_dry[VG_ADS1115_CHANNEL_COUNT];
+    uint16_t channel_moisture_raw_wet[VG_ADS1115_CHANNEL_COUNT];
     uint8_t actuator_relay_gpio;
     bool actuator_relay_active_high;
 } node_config_t;

@@ -17,9 +17,10 @@ typedef struct {
 
 void mqtt_node_init(mqtt_node_t *node, node_config_t *config);
 void mqtt_node_poll(mqtt_node_t *node);
+void mqtt_node_disconnect(mqtt_node_t *node);
 bool mqtt_node_is_connected(const mqtt_node_t *node);
 bool mqtt_node_publish_canary(mqtt_node_t *node);
-bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapshot, const char *reason);
+bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapshot, const char *reason, uint32_t wake_count, const char *node_id);
 bool mqtt_node_has_publish_request(const mqtt_node_t *node);
 bool mqtt_node_take_publish_request(mqtt_node_t *node);
 bool mqtt_node_take_reconnect_request(mqtt_node_t *node);

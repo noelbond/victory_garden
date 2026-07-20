@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 void time_sync_init(void);
+void time_sync_deinit(void);
 void time_sync_poll(void);
 bool time_sync_ready(void);
 uint32_t time_sync_epoch_sec(void);

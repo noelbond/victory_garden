@@ -2,6 +2,8 @@
 
 Native Raspberry Pi Pico W firmware for the Victory Garden sensor node.
 
+The sensor is active from 06:00 through 19:59 local time. It publishes SHT40 air temperature and humidity every 15 minutes, samples all four ADS1115 soil channels at minute 0 each hour, and sleeps from 20:00 until 06:00. A manual reading request forces a fresh soil sample on the next active wake. Without synchronized time it retries at a battery-friendly 15-minute interval.
+
 Current scope:
 - boot and serial logging
 - persisted node config stored in flash
@@ -13,12 +15,14 @@ Current scope:
 - publishes `node-command-ack/v1`
 - publishes `node-config-ack/v1`
 - syncs UTC time over SNTP after Wi-Fi is up
+- reads SHT40 temperature/humidity at I2C address `0x44`
+- reads four ADS1115 soil channels at I2C address `0x48`
 
 Current limitations:
 - no provisioning AP yet
 - no battery or soil temperature driver yet
 - MQTT broker host must currently be an IPv4 address, not a hostname
-- the Pico moisture path now expects an Adafruit seesaw I2C soil sensor
+- the Pico moisture path now expects one ADS1115 I2C ADC with up to four analog capacitive probes
 - if `raw_dry` / `raw_wet` are not configured yet, `moisture_percent` uses a rough fallback range until calibration is completed
 
 Build prerequisites:
@@ -71,9 +75,9 @@ before flashing:
 - NTP server
 - node ID
 - zone ID
-- seesaw SDA/SCL pins
-- seesaw I2C address / touch channel
-- dry/wet calibration bounds
+- ADS1115 SDA/SCL pins
+- ADS1115 I2C address
+- per-channel node IDs and dry/wet calibration bounds
 
 Example:
 
