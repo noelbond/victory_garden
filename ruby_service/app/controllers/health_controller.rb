@@ -166,7 +166,7 @@ class HealthController < ApplicationController
   def node_seen_freshness_state(node)
     return "offline" if node.last_seen_at.blank?
 
-    freshness_state_for(node.last_seen_at, expected_interval_for(node.zone))
+    Zone.freshness_for(node.last_seen_at, node.expected_publish_interval_seconds)
   end
 
   def reading_freshness_state_for(zone)
@@ -175,21 +175,6 @@ class HealthController < ApplicationController
     reading = @latest_readings[zone.id]
     return "offline" if reading.blank? || reading.recorded_at.blank?
 
-    freshness_state_for(reading.recorded_at, expected_interval_for(zone))
-  end
-
-  def expected_interval_for(zone)
-    interval_ms = zone&.publish_interval_ms.presence || Zone::DEFAULT_PUBLISH_INTERVAL_MS
-
-    [interval_ms.to_i / 1000.0, 1.0].max
-  end
-
-  def freshness_state_for(recorded_at, interval)
-    age = Time.current - recorded_at
-
-    return "ok" if age <= interval
-    return "stale" if age <= interval * 2
-
-    "offline"
+    zone.reading_freshness(reading.recorded_at)
   end
 end

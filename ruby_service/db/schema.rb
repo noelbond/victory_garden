@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_05_26_120000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_20_090000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -95,6 +95,9 @@ ActiveRecord::Schema[8.0].define(version: 2026_05_26_120000) do
     t.text "config_error"
     t.integer "moisture_raw_dry"
     t.integer "moisture_raw_wet"
+    t.string "device_id"
+    t.string "name"
+    t.index ["device_id"], name: "index_nodes_on_device_id"
     t.index ["node_id"], name: "index_nodes_on_node_id", unique: true
     t.index ["zone_id"], name: "index_nodes_on_zone_id"
   end
@@ -103,7 +106,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_05_26_120000) do
     t.bigint "zone_id", null: false
     t.string "node_id", null: false
     t.datetime "recorded_at", null: false
-    t.integer "moisture_raw", null: false
+    t.integer "moisture_raw"
     t.decimal "moisture_percent", precision: 5, scale: 2
     t.decimal "battery_voltage", precision: 4, scale: 2
     t.integer "wifi_rssi"
@@ -119,6 +122,10 @@ ActiveRecord::Schema[8.0].define(version: 2026_05_26_120000) do
     t.text "last_error"
     t.string "publish_reason"
     t.jsonb "raw_payload", default: {}, null: false
+    t.decimal "air_temperature_c", precision: 5, scale: 2
+    t.decimal "humidity_percent", precision: 5, scale: 2
+    t.boolean "soil_moisture_read", default: false, null: false
+    t.string "greenhouse_alert_status", default: "normal", null: false
     t.index ["node_id", "recorded_at"], name: "index_sensor_readings_on_node_id_and_recorded_at"
     t.index ["zone_id", "recorded_at"], name: "index_sensor_readings_on_zone_id_and_recorded_at"
     t.index ["zone_id"], name: "index_sensor_readings_on_zone_id"
@@ -150,8 +157,6 @@ ActiveRecord::Schema[8.0].define(version: 2026_05_26_120000) do
     t.string "name"
     t.integer "irrigation_line"
     t.integer "publish_interval_ms", default: 3600000, null: false
-    t.integer "moisture_raw_dry"
-    t.integer "moisture_raw_wet"
     t.index ["crop_profile_id"], name: "index_zones_on_crop_profile_id"
     t.index ["irrigation_line"], name: "index_zones_on_irrigation_line", unique: true, where: "(irrigation_line IS NOT NULL)"
     t.index ["zone_id"], name: "index_zones_on_zone_id", unique: true

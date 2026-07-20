@@ -40,10 +40,6 @@ class ZonesCrudTest < ActionDispatch::IntegrationTest
   end
 
   test "creating a zone with invalid params renders new with error" do
-    # zone_id uniqueness is the one validation we can deliberately break
-    existing = create(:zone, zone_id: "dup-zone")
-    # simulate the controller path: pass an explicit zone_id via the model
-    # using a malformed crop_profile_id triggers the belongs_to validation
     post zones_path, params: {
       zone: { name: "X" * 101, crop_profile_id: @crop.id }
     }

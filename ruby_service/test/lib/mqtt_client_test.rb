@@ -1,12 +1,8 @@
 require "test_helper"
 
 class MqttClientTest < ActiveSupport::TestCase
-  def with_publish_stub(callable)
-    original = MqttClient.method(:publish)
-    MqttClient.define_singleton_method(:publish, &callable)
-    yield
-  ensure
-    MqttClient.define_singleton_method(:publish, &original)
+  def with_publish_stub(callable, &block)
+    stub_singleton_method(MqttClient, :publish, callable, &block)
   end
 
   test "publish_command requires a zone id" do

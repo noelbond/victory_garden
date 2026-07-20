@@ -32,14 +32,21 @@
   <h3>Unassigned Nodes</h3>
   <% if @unassigned_nodes.any? %>
     <ul class="list node-directory-list">
-      <% @unassigned_nodes.each do |node| %>
+      <% @unassigned_node_groups.each do |device_key, nodes| %>
+        <% primary = nodes.first %>
         <li class="node-directory-item">
-          <strong><%= link_to node.node_id, node_path(node) %></strong>
+          <strong><%= primary.device_id.presence || primary.display_name %></strong>
           <div class="node-directory-meta">
-            <div class="node-directory-line">Reported Zone ID: <%= node.reported_zone_id.presence || "—" %></div>
-            <div class="node-directory-line">Last Seen: <%= node.last_seen_at %></div>
-            <div class="node-directory-line">Health: <%= node.health.presence || "—" %></div>
-            <div class="node-directory-line">Config Status: <%= node.config_status.presence || "—" %></div>
+            <div class="node-directory-line">Device ID: <%= primary.device_id.presence || "—" %></div>
+            <div class="node-directory-line">Reported Zone ID: <%= nodes.map(&:reported_zone_id).compact_blank.uniq.presence&.join(", ") || "—" %></div>
+            <div class="node-directory-line">Last Seen: <%= nodes.map(&:last_seen_at).compact.max || "—" %></div>
+            <div class="node-directory-line">Channels: <%= nodes.count %></div>
+            <div class="node-directory-line">
+              <% sorted_nodes = nodes.sort_by(&:node_id) %>
+              <% sorted_nodes.each do |node| %>
+                <%= link_to node.display_name, node_path(node) %> (<%= node.node_id %>, <%= node.health.presence || "—" %>, <%= node.config_status.presence || "—" %>)<%= ", " unless node == sorted_nodes.last %>
+              <% end %>
+            </div>
           </div>
         </li>
       <% end %>
@@ -59,14 +66,21 @@
   <h3>Assigned Nodes</h3>
   <% if @assigned_nodes.any? %>
     <ul class="list node-directory-list">
-      <% @assigned_nodes.each do |node| %>
+      <% @assigned_node_groups.each do |device_key, nodes| %>
+        <% primary = nodes.first %>
         <li class="node-directory-item">
-          <strong><%= link_to node.node_id, node_path(node) %></strong>
+          <strong><%= primary.device_id.presence || primary.display_name %></strong>
           <div class="node-directory-meta">
-            <div class="node-directory-line">Zone: <%= node.zone&.name.presence || node.zone&.zone_id || "—" %></div>
-            <div class="node-directory-line">Last Seen: <%= node.last_seen_at %></div>
-            <div class="node-directory-line">Health: <%= node.health.presence || "—" %></div>
-            <div class="node-directory-line">Config Status: <%= node.config_status.presence || "—" %></div>
+            <div class="node-directory-line">Zone: <%= primary.zone&.name.presence || primary.zone&.zone_id || "—" %></div>
+            <div class="node-directory-line">Device ID: <%= primary.device_id.presence || "—" %></div>
+            <div class="node-directory-line">Last Seen: <%= nodes.map(&:last_seen_at).compact.max || "—" %></div>
+            <div class="node-directory-line">Channels: <%= nodes.count %></div>
+            <div class="node-directory-line">
+              <% sorted_nodes = nodes.sort_by(&:node_id) %>
+              <% sorted_nodes.each do |node| %>
+                <%= link_to node.display_name, node_path(node) %> (<%= node.node_id %>, <%= node.health.presence || "—" %>, <%= node.config_status.presence || "—" %>)<%= ", " unless node == sorted_nodes.last %>
+              <% end %>
+            </div>
           </div>
         </li>
       <% end %>

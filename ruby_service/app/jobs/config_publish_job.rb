@@ -17,8 +17,9 @@ class ConfigPublishJob < ApplicationJob
       irrigation_line_count: ConnectionSetting.first&.irrigation_line_count.to_i,
       zones: assigned_lines.map { |z| actuator_zone_payload(z) }
     )
-    Node.where.not(zone_id: nil).find_each do |node|
-      PublishNodeConfigJob.perform_later(node.id)
+    nodes_by_device = Node.group_by_device(Node.where.not(zone_id: nil).order(:node_id))
+    nodes_by_device.each_value do |nodes|
+      PublishNodeConfigJob.perform_later(nodes.first.id)
     end
   end
 

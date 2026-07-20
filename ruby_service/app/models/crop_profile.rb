@@ -62,8 +62,9 @@ class CropProfile < ApplicationRecord
                   saved_change_to_time_to_harvest_days? ||
                   saved_change_to_active?
 
-    zones.includes(:nodes).find_each do |zone|
-      zone.nodes.find_each { |node| PublishNodeConfigJob.perform_later(node.id) }
+    device_nodes = zones.includes(:nodes).flat_map(&:nodes)
+    Node.group_by_device(device_nodes).each_value do |nodes|
+      PublishNodeConfigJob.perform_later(nodes.first.id)
     end
   end
 

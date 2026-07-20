@@ -1,5 +1,7 @@
 module PayloadContracts
   class ActuatorStatus
+    include Validation
+
     STATES = %w[ACKNOWLEDGED RUNNING COMPLETED STOPPED FAULT].freeze
     REQUIRED_KEYS = %w[zone_id state timestamp].freeze
     OPTIONAL_KEYS = %w[
@@ -50,27 +52,6 @@ module PayloadContracts
 
     def allowed_keys
       REQUIRED_KEYS + OPTIONAL_KEYS
-    end
-
-    def validate_integer!(payload, key, min:, max:)
-      return if payload[key].nil?
-
-      value = Integer(payload[key])
-    rescue ArgumentError, TypeError
-      raise ArgumentError, "invalid #{key}: #{payload[key].inspect}"
-    else
-      raise ArgumentError, "#{key} out of range" unless value.between?(min, max)
-
-      payload[key] = value
-    end
-
-    def validate_length!(payload, key, max:)
-      return if payload[key].nil?
-
-      value = payload[key].to_s
-      raise ArgumentError, "#{key} too long" if value.length > max
-
-      payload[key] = value
     end
   end
 end

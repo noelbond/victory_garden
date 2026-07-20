@@ -14,12 +14,8 @@ class CommandPublishJobTest < ActiveSupport::TestCase
     clear_performed_jobs
   end
 
-  def with_publish_command_stub(callable)
-    original = MqttClient.method(:publish_command)
-    MqttClient.define_singleton_method(:publish_command, &callable)
-    yield
-  ensure
-    MqttClient.define_singleton_method(:publish_command, &original)
+  def with_publish_command_stub(callable, &block)
+    stub_singleton_method(MqttClient, :publish_command, callable, &block)
   end
 
   test "publishes actuator command and schedules timeout watchdog for start_watering" do

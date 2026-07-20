@@ -35,6 +35,29 @@ module PayloadContracts
       assert_nil normalized["moisture_percent"]
     end
 
+    test "accepts an optional physical device id" do
+      payload = load_fixture("node-state-v1.json").merge("device_id" => "sensor-zone1")
+
+      normalized = NodeState.normalize!(payload)
+
+      assert_equal "sensor-zone1", normalized["device_id"]
+    end
+
+    test "accepts an environmental reading without soil moisture" do
+      payload = load_fixture("node-state-v1.json").except("moisture_raw", "moisture_percent").merge(
+        "air_temperature_c" => 24.5,
+        "humidity_percent" => 61.2,
+        "soil_moisture_read" => false,
+        "greenhouse_alert_status" => "normal"
+      )
+
+      normalized = NodeState.normalize!(payload)
+
+      assert_nil normalized["moisture_raw"]
+      assert_equal 24.5, normalized["air_temperature_c"]
+      assert_equal false, normalized["soil_moisture_read"]
+    end
+
     test "accepts optional metadata nulls" do
       payload = load_fixture("node-state-optional-nulls.json")
 

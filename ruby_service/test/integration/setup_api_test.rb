@@ -126,11 +126,30 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal zone.id, body.dig("node", "zone_id")
   end
 
-  test "assign node binds detected node to first zone and queues node config publish" do
+  test "bootstrap groups the latest sensor channels by physical device" do
+    channels = 4.times.map do |channel|
+      Node.create!(
+        node_id: "sensor-zone1-ch#{channel}",
+        device_id: "sensor-zone1",
+        last_seen_at: Time.current + channel.seconds,
+        provisioned: true
+      )
+    end
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    detected = response.parsed_body.fetch("detected_node")
+    assert_equal "sensor-zone1", detected.fetch("node_id")
+    assert_equal "sensor-zone1", detected.fetch("device_id")
+    assert_equal channels.map(&:node_id), detected.fetch("channels").map { |channel| channel.fetch("node_id") }
+  end
+
+  test "assign node binds detected node to first zone and queues global config publish" do
     zone = create(:zone)
     node = Node.create!(node_id: "sensor-zone1", last_seen_at: Time.current)
 
-    assert_enqueued_with(job: PublishNodeConfigJob, args: [node.id]) do
+    assert_enqueued_with(job: ConfigPublishJob) do
       post "/setup_api/assign_node",
            params: { node_id: node.node_id, zone_id: zone.id },
            as: :json
@@ -144,9 +163,33 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal zone.zone_id, body.dig("first_zone", "zone_id")
   end
 
-  test "request reading queues a targeted reading command and reports reading status" do
+  test "assigning one channel assigns all physical device siblings" do
     zone = create(:zone)
+    channels = 4.times.map do |channel|
+      Node.create!(
+        node_id: "sensor-zone1-ch#{channel}",
+        device_id: "sensor-zone1",
+        last_seen_at: Time.current
+      )
+    end
+
+    post "/setup_api/assign_node",
+         params: { node_id: channels.fetch(1).node_id, zone_id: zone.id },
+         as: :json
+
+    assert_response :success
+    assert_equal [zone.id], Node.where(device_id: "sensor-zone1").distinct.pluck(:zone_id)
+  end
+
+  test "request reading queues a targeted reading command and reports reading status" do
+    zone = create(:zone, publish_interval_ms: 3_600_000)
     node = Node.create!(node_id: "sensor-zone1", last_seen_at: Time.current, zone: zone)
+    SensorReading.create!(
+      zone: zone,
+      node_id: node.node_id,
+      recorded_at: 30.minutes.ago,
+      moisture_raw: 500
+    )
 
     response_body = nil
     assert_enqueued_with(job: RequestReadingJob) do
@@ -159,6 +202,9 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_equal true, response_body.fetch("queued")
     assert_equal node.node_id, response_body.dig("node", "node_id")
+    assert_nil response_body.fetch("next_expected_wake_at")
+    assert_includes response_body.fetch("message"), "Reading request queued"
+    assert_includes response_body.fetch("message"), "Restart the Pico"
 
     get "/setup_api/reading_status",
         params: { node_id: node.node_id, since: response_body.fetch("requested_at") },

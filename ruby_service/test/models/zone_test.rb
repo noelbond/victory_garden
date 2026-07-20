@@ -90,6 +90,21 @@ class ZoneTest < ActiveSupport::TestCase
     assert_equal 2, zone.reading_frequency_hours
   end
 
+  test "renaming zone refreshes assigned channel display names" do
+    zone = create(:zone, name: "Original Zone")
+    channel = Node.create!(
+      node_id: "sensor-zone1-ch0",
+      device_id: "sensor-zone1",
+      zone: zone,
+      last_seen_at: Time.current
+    )
+    Node.sync_default_names_for_zone!(zone)
+
+    zone.update!(name: "Greenhouse Zone 1")
+
+    assert_equal "Greenhouse Zone 1 node 1", channel.reload.name
+  end
+
   test "publish_interval_ms rejects zero" do
     zone = build(:zone, publish_interval_ms: 0)
     assert_not zone.valid?
@@ -108,13 +123,16 @@ class ZoneTest < ActiveSupport::TestCase
     assert_includes zone.errors[:publish_interval_ms], "must be an integer"
   end
 
-  test "enqueues node config publish when zone policy changes" do
+  test "enqueues one node config publish per device when zone policy changes" do
     zone = create(:zone, allowed_hours: { "start_hour" => 6, "end_hour" => 20 })
-    node = Node.create!(node_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+    channels = 4.times.map do |channel|
+      Node.create!(node_id: "sensor-zone1-ch#{channel}", device_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+    end
 
-    assert_enqueued_with(job: PublishNodeConfigJob, args: [node.id]) do
+    assert_enqueued_jobs 1, only: PublishNodeConfigJob do
       zone.update!(allowed_hours: { "start_hour" => 7, "end_hour" => 19 })
     end
+    assert_enqueued_with(job: PublishNodeConfigJob, args: [channels.first.id])
   end
 
 end

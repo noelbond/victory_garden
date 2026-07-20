@@ -115,17 +115,11 @@ module HistoryFiltering
   end
 
   def freshness_state_for(reading)
-    age = Time.current - reading.recorded_at
-    interval_seconds = freshness_interval_seconds_for(reading)
-
-    return "ok" if age <= interval_seconds
-    return "stale" if age <= interval_seconds * 2
-
-    "offline"
+    Zone.freshness_for(reading.recorded_at, freshness_interval_seconds_for(reading))
   end
 
   def freshness_interval_seconds_for(reading)
-    [(reading.zone&.publish_interval_ms.presence || Zone::DEFAULT_PUBLISH_INTERVAL_MS).to_i / 1000.0, 1.0].max
+    reading.zone.expected_publish_interval_seconds
   end
 
   def csv_string_for_scope(scope, tie_breaker:, trailing_newline: false)

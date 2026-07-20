@@ -2,41 +2,51 @@ class PublishNodeConfigJob < ApplicationJob
   queue_as :default
   retry_on StandardError, attempts: 3, wait: 5.seconds
 
+  def self.current_utc_offset_hours
+    Time.now.getlocal.utc_offset / 3600
+  end
+
   def perform(node_id)
     node = Node.includes(zone: :crop_profile).find(node_id)
-    payload = build_payload(node)
+    device_id = node.device_id.presence || node.node_id
+    siblings = node.device_siblings.includes(zone: :crop_profile).order(:node_id).to_a
+    payload = build_payload(node, siblings: siblings, device_id: device_id)
+    published_at = Time.current
 
-    node.update!(
+    Node.where(id: siblings.map(&:id)).update_all(
       desired_config: payload,
       config_version: payload[:config_version],
       config_status: node.assigned? ? "pending" : "unassigned",
-      config_published_at: Time.current,
-      config_error: nil
+      config_published_at: published_at,
+      config_error: nil,
+      updated_at: published_at
     )
 
-    MqttClient.publish_node_config(node_id: node.node_id, payload: payload)
+    MqttClient.publish_node_config(node_id: device_id, payload: payload)
   rescue StandardError => e
-    node&.update!(config_status: "error", config_error: e.message)
+    error_node_ids = siblings.present? ? siblings.map(&:id) : Array(node&.id)
+    Node.where(id: error_node_ids).update_all(
+      config_status: "error",
+      config_error: e.message,
+      updated_at: Time.current
+    )
     raise
   end
 
   private
 
-  def build_payload(node)
+  def build_payload(node, siblings:, device_id:)
     issued_at = Time.current.utc.iso8601
 
     if node.zone.present?
       crop = node.zone.crop_profile
-      sensor_payload = {}
-      sensor_payload[:moisture_raw_dry] = node.moisture_raw_dry if node.moisture_raw_dry.present?
-      sensor_payload[:moisture_raw_wet] = node.moisture_raw_wet if node.moisture_raw_wet.present?
-
-      {
+      payload = {
         schema_version: "node-config/v1",
         config_version: issued_at,
         issued_at: issued_at,
-        node_id: node.node_id,
+        node_id: device_id,
         assigned: true,
+        utc_offset_hours: current_utc_offset_hours,
         zone: {
           zone_id: node.zone.zone_id,
           active: node.zone.active,
@@ -51,19 +61,44 @@ class PublishNodeConfigJob < ApplicationJob
           daily_max_runtime_sec: crop.daily_max_runtime_sec,
           climate_preference: crop.climate_preference,
           time_to_harvest_days: crop.time_to_harvest_days
-        },
-        sensor: sensor_payload
+        }
       }
+
+      if node.device_id.present?
+        payload[:channels] = siblings.map { |sibling| channel_payload(sibling) }
+      else
+        payload[:sensor] = calibration_payload(node)
+      end
+      payload
     else
       {
         schema_version: "node-config/v1",
         config_version: issued_at,
         issued_at: issued_at,
-        node_id: node.node_id,
+        node_id: device_id,
         assigned: false,
+        utc_offset_hours: current_utc_offset_hours,
         zone: nil,
-        crop: nil
-      }
+        crop: nil,
+        channels: node.device_id.present? ? siblings.map { |sibling| channel_payload(sibling) } : nil
+      }.compact
     end
+  end
+
+  def channel_payload(node)
+    { node_id: node.node_id }.merge(calibration_payload(node))
+  end
+
+  def calibration_payload(node)
+    return {} unless node.calibration_configured?
+
+    {
+      moisture_raw_dry: node.moisture_raw_dry,
+      moisture_raw_wet: node.moisture_raw_wet
+    }
+  end
+
+  def current_utc_offset_hours
+    self.class.current_utc_offset_hours
   end
 end

@@ -47,16 +47,12 @@ class MqttConsumerTest < ActiveSupport::TestCase
     consumer = MqttConsumer.new(dedupe_window_seconds: 60, monotonic_clock: -> { now }, status_path: @status_path)
     payload = { zone_id: "zone1", node_id: "node-1", moisture_raw: 321, timestamp: "2026-04-06T18:00:00Z" }.to_json
     enqueued = []
-    original = SensorIngestJob.method(:perform_later)
 
-    SensorIngestJob.define_singleton_method(:perform_later, ->(data) { enqueued << data })
-    begin
+    stub_singleton_method(SensorIngestJob, :perform_later, ->(data) { enqueued << data }) do
       consumer.send(:handle_message, "greenhouse/zones/zone1/nodes/node-1/state", payload)
       consumer.send(:handle_message, "greenhouse/zones/zone1/nodes/node-1/state", payload)
       now += 61
       consumer.send(:handle_message, "greenhouse/zones/zone1/nodes/node-1/state", payload)
-    ensure
-      SensorIngestJob.define_singleton_method(:perform_later, &original)
     end
 
     assert_equal 2, enqueued.length
@@ -71,13 +67,9 @@ class MqttConsumerTest < ActiveSupport::TestCase
     consumer = MqttConsumer.new(status_path: @status_path)
     payload = { zone_id: "zone1", node_id: "node-1", moisture_raw: 321, timestamp: "2026-04-06T18:00:00Z" }.to_json
     enqueued = []
-    original = SensorIngestJob.method(:perform_later)
 
-    SensorIngestJob.define_singleton_method(:perform_later, ->(data) { enqueued << data })
-    begin
+    stub_singleton_method(SensorIngestJob, :perform_later, ->(data) { enqueued << data }) do
       consumer.send(:handle_message, "greenhouse/zones/zone1/nodes/node-1/state", payload)
-    ensure
-      SensorIngestJob.define_singleton_method(:perform_later, &original)
     end
 
     assert_equal 1, enqueued.length
@@ -88,13 +80,9 @@ class MqttConsumerTest < ActiveSupport::TestCase
     consumer = MqttConsumer.new(status_path: @status_path)
     payload = { zone_id: "zone1", state: "COMPLETED", timestamp: "2026-04-06T18:00:00Z" }.to_json
     enqueued = []
-    original = ActuatorStatusIngestJob.method(:perform_later)
 
-    ActuatorStatusIngestJob.define_singleton_method(:perform_later, ->(data) { enqueued << data })
-    begin
+    stub_singleton_method(ActuatorStatusIngestJob, :perform_later, ->(data) { enqueued << data }) do
       consumer.send(:handle_message, "greenhouse/zones/zone1/actuator/status", payload)
-    ensure
-      ActuatorStatusIngestJob.define_singleton_method(:perform_later, &original)
     end
 
     assert_equal 1, enqueued.length
@@ -105,13 +93,8 @@ class MqttConsumerTest < ActiveSupport::TestCase
     consumer = MqttConsumer.new(status_path: @status_path)
     payload = { node_id: "pico-w-zone1", status: "applied", config_version: "abc123" }.to_json
     enqueued = []
-    original = NodeConfigAckIngestJob.method(:perform_later)
-
-    NodeConfigAckIngestJob.define_singleton_method(:perform_later, ->(data) { enqueued << data })
-    begin
+    stub_singleton_method(NodeConfigAckIngestJob, :perform_later, ->(data) { enqueued << data }) do
       consumer.send(:handle_message, "greenhouse/nodes/pico-w-zone1/config_ack", payload)
-    ensure
-      NodeConfigAckIngestJob.define_singleton_method(:perform_later, &original)
     end
 
     assert_equal 1, enqueued.length
@@ -129,14 +112,10 @@ class MqttConsumerTest < ActiveSupport::TestCase
       idempotency_key: "zone1-20260406T180000Z-abc12345"
     }.to_json
     enqueued = []
-    original = ControllerEventIngestJob.method(:perform_later)
 
-    ControllerEventIngestJob.define_singleton_method(:perform_later, ->(data) { enqueued << data })
-    begin
+    stub_singleton_method(ControllerEventIngestJob, :perform_later, ->(data) { enqueued << data }) do
       consumer.send(:handle_message, "greenhouse/zones/zone1/controller/event", payload)
       consumer.send(:handle_message, "greenhouse/zones/zone1/controller/event", payload)
-    ensure
-      ControllerEventIngestJob.define_singleton_method(:perform_later, &original)
     end
 
     assert_equal 1, enqueued.length
@@ -148,13 +127,8 @@ class MqttConsumerTest < ActiveSupport::TestCase
     fake_client.define_singleton_method(:subscribe) { |*topics| subscribed_topics = topics }
     fake_client.define_singleton_method(:get) { |_block = nil| }
     consumer = MqttConsumer.new(status_path: @status_path, wall_clock: -> { Time.zone.parse("2026-05-26T15:00:00Z") })
-    original_connect = MQTT::Client.method(:connect)
-
-    MQTT::Client.define_singleton_method(:connect, ->(_options, &block) { block.call(fake_client) })
-    begin
+    stub_singleton_method(MQTT::Client, :connect, ->(_options, &block) { block.call(fake_client) }) do
       consumer.send(:connect_and_subscribe)
-    ensure
-      MQTT::Client.define_singleton_method(:connect, &original_connect)
     end
 
     status = JSON.parse(File.read(@status_path))

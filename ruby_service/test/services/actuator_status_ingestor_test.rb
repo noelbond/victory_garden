@@ -17,16 +17,21 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     clear_performed_jobs
   end
 
-  test "completed actuator status marks event completed and schedules a reread" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-001",
-      status: "queued"
+  def create_watering_event(idempotency_key:, status:, zone: @zone, command: "start_watering",
+                             runtime_seconds: 45, reason: "below_dry_threshold", issued_at: Time.current)
+    WateringEvent.create!(
+      zone: zone,
+      command: command,
+      runtime_seconds: runtime_seconds,
+      reason: reason,
+      issued_at: issued_at,
+      idempotency_key: idempotency_key,
+      status: status
     )
+  end
+
+  test "completed actuator status marks event completed and schedules a reread" do
+    event = create_watering_event(idempotency_key: "zone1-run-001", status: "queued")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -51,15 +56,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "fault actuator status marks the event fault and records a fault" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-002",
-      status: "running"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-002", status: "running")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -82,14 +79,9 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "stopped actuator status marks the event stopped without scheduling reread" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "stop_watering",
-      runtime_seconds: nil,
-      reason: "manual_stop",
-      issued_at: Time.current,
-      idempotency_key: "zone1-stop-001",
-      status: "running"
+    event = create_watering_event(
+      idempotency_key: "zone1-stop-001", status: "running",
+      command: "stop_watering", runtime_seconds: nil, reason: "manual_stop"
     )
 
     payload = {
@@ -109,23 +101,13 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "stopped stop command also marks the active start event stopped" do
-    started = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "manual_trigger",
-      issued_at: 10.seconds.ago,
-      idempotency_key: "zone1-run-006",
-      status: "running"
+    started = create_watering_event(
+      idempotency_key: "zone1-run-006", status: "running",
+      reason: "manual_trigger", issued_at: 10.seconds.ago
     )
-    stopped = WateringEvent.create!(
-      zone: @zone,
-      command: "stop_watering",
-      runtime_seconds: nil,
-      reason: "manual_stop",
-      issued_at: Time.current,
-      idempotency_key: "zone1-stop-006",
-      status: "command_sent"
+    stopped = create_watering_event(
+      idempotency_key: "zone1-stop-006", status: "command_sent",
+      command: "stop_watering", runtime_seconds: nil, reason: "manual_stop"
     )
 
     payload = {
@@ -145,25 +127,13 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "completed status does not schedule reread when daily runtime cap is already met" do
-    WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
+    create_watering_event(
+      idempotency_key: "zone1-run-cap", status: "completed",
       runtime_seconds: @zone.crop_profile.daily_max_runtime_sec,
-      reason: "earlier_run",
-      issued_at: Time.current.beginning_of_day + 1.hour,
-      idempotency_key: "zone1-run-cap",
-      status: "completed"
+      reason: "earlier_run", issued_at: Time.current.beginning_of_day + 1.hour
     )
 
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-003",
-      status: "running"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-003", status: "running")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -180,25 +150,13 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "daily runtime cap ignores non-completed events" do
-    WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
+    create_watering_event(
+      idempotency_key: "zone1-run-cap-fault", status: "fault",
       runtime_seconds: @zone.crop_profile.daily_max_runtime_sec,
-      reason: "earlier_run",
-      issued_at: Time.current.beginning_of_day + 1.hour,
-      idempotency_key: "zone1-run-cap-fault",
-      status: "fault"
+      reason: "earlier_run", issued_at: Time.current.beginning_of_day + 1.hour
     )
 
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-cap-after-fault",
-      status: "running"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-cap-after-fault", status: "running")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -217,15 +175,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "duplicate completed status is idempotent" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-004",
-      status: "queued"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-004", status: "queued")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -247,15 +197,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "acknowledged actuator status creates status record and marks event acknowledged" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-007",
-      status: "command_sent"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-007", status: "command_sent")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -273,15 +215,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "running actuator status creates status record and marks event running" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-008",
-      status: "acknowledged"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-008", status: "acknowledged")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -327,15 +261,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "duplicate fault status does not create duplicate faults" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-005",
-      status: "running"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-005", status: "running")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -355,23 +281,9 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "repeated unresolved fault does not create a second fault row" do
-    first_event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-009",
-      status: "running"
-    )
-    second_event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: 1.minute.from_now,
-      idempotency_key: "zone1-run-009b",
-      status: "running"
+    first_event = create_watering_event(idempotency_key: "zone1-run-009", status: "running")
+    second_event = create_watering_event(
+      idempotency_key: "zone1-run-009b", status: "running", issued_at: 1.minute.from_now
     )
 
     first_payload = {
@@ -395,15 +307,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "out of order acknowledged status does not roll event back from completed" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-010",
-      status: "completed"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-010", status: "completed")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -419,15 +323,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "status create rolls back if fault persistence fails" do
-    event = WateringEvent.create!(
-      zone: @zone,
-      command: "start_watering",
-      runtime_seconds: 45,
-      reason: "below_dry_threshold",
-      issued_at: Time.current,
-      idempotency_key: "zone1-run-011",
-      status: "running"
-    )
+    event = create_watering_event(idempotency_key: "zone1-run-011", status: "running")
 
     payload = {
       "zone_id" => @zone.zone_id,
@@ -439,21 +335,16 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     }
 
     error = nil
-    original_find_by = Fault.method(:find_by)
-    original_create = Fault.method(:create!)
-    Fault.define_singleton_method(:find_by) { |*_args, **_kwargs| nil }
-    Fault.define_singleton_method(:create!) { |*_args, **_kwargs| raise ActiveRecord::ActiveRecordError, "boom" }
-
-    error = assert_raises(ActiveRecord::ActiveRecordError) { ActuatorStatusIngestor.new(payload).call }
-  ensure
-    Fault.define_singleton_method(:find_by, original_find_by)
-    Fault.define_singleton_method(:create!, original_create)
-    if error
-      assert_equal "boom", error.message
-      assert_equal "running", event.reload.status
-      assert_equal 0, ActuatorStatus.where(zone: @zone, idempotency_key: event.idempotency_key, state: "FAULT").count
-      assert_equal 0, Fault.where(zone: @zone, fault_code: "NO_FLOW").count
+    stub_singleton_method(Fault, :find_by, ->(*_args, **_kwargs) { nil }) do
+      stub_singleton_method(Fault, :create!, ->(*_args, **_kwargs) { raise ActiveRecord::ActiveRecordError, "boom" }) do
+        error = assert_raises(ActiveRecord::ActiveRecordError) { ActuatorStatusIngestor.new(payload).call }
+      end
     end
+
+    assert_equal "boom", error.message
+    assert_equal "running", event.reload.status
+    assert_equal 0, ActuatorStatus.where(zone: @zone, idempotency_key: event.idempotency_key, state: "FAULT").count
+    assert_equal 0, Fault.where(zone: @zone, fault_code: "NO_FLOW").count
   end
 
   test "rejects payloads with unknown keys at ingestor boundary" do

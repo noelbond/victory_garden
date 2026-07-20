@@ -15,14 +15,23 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
   end
 
   test "request reading enqueues a targeted request for an assigned node" do
-    zone = create(:zone, zone_id: "zone1")
+    zone = create(:zone, zone_id: "zone1", publish_interval_ms: 3_600_000)
     node = Node.create!(node_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+    SensorReading.create!(
+      zone: zone,
+      node_id: node.node_id,
+      recorded_at: 30.minutes.ago,
+      moisture_raw: 500
+    )
 
     assert_enqueued_with(job: RequestReadingJob) do
       post request_reading_node_path(node)
     end
 
     assert_redirected_to node_path(node)
+    assert_includes flash[:notice], "Reading request queued"
+    assert_includes flash[:notice], "next scheduled wake"
+    assert_includes flash[:notice], "Restart the Pico"
     payload = enqueued_jobs.last[:args].first.with_indifferent_access
     assert_equal "zone1", payload[:zone_id]
     assert_equal "sensor-zone1", payload[:node_id]
@@ -140,7 +149,7 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal "text/csv", response.media_type
-    assert_includes response.body, "Recorded At,Moisture %,Moisture Raw,Soil Temp C,Battery %,Health,Last Error,Publish Reason,Wi-Fi RSSI,Wake Count,Uptime"
+    assert_includes response.body, "Recorded At,Moisture %,Moisture Raw,Air Temp F,Humidity %,Greenhouse Alert,Health,Last Error,Publish Reason,Wi-Fi RSSI,Wake Count,Uptime"
     assert_includes response.body, "2026-05-11T10:47:40Z,29.0,542"
     assert_includes response.body, "request_reading"
   end

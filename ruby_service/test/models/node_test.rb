@@ -91,6 +91,31 @@ class NodeTest < ActiveSupport::TestCase
     end
   end
 
+  test "display name falls back to stable node id" do
+    node = Node.new(valid_attrs)
+
+    assert_equal "pico-w-test-001", node.display_name
+  end
+
+  test "sync_default_names_for_zone names device channels from zone label" do
+    zone = create(:zone, name: "Greenhouse Zone 1")
+    channels = 4.times.map do |channel|
+      Node.create!(
+        node_id: "sensor-zone1-ch#{channel}",
+        device_id: "sensor-zone1",
+        zone: zone,
+        last_seen_at: Time.current
+      )
+    end
+
+    Node.sync_default_names_for_zone!(zone)
+
+    assert_equal(
+      ["Greenhouse Zone 1 node 1", "Greenhouse Zone 1 node 2", "Greenhouse Zone 1 node 3", "Greenhouse Zone 1 node 4"],
+      channels.map { |node| node.reload.name }
+    )
+  end
+
   test "accepts nil config_status" do
     assert Node.new(valid_attrs.merge(config_status: nil)).valid?
   end
@@ -134,6 +159,25 @@ class NodeTest < ActiveSupport::TestCase
     assert_not_includes Node.assigned, unassigned
   end
 
+  test "next expected wake is unknown when firmware schedule mode is not persisted" do
+    zone = create(:zone, publish_interval_ms: 3_600_000)
+    node = Node.create!(valid_attrs.merge(node_id: "wake-node", zone: zone))
+    SensorReading.create!(
+      zone: zone,
+      node_id: node.node_id,
+      recorded_at: Time.zone.parse("2026-06-23 08:00:00 UTC"),
+      moisture_raw: 500
+    )
+
+    assert_nil node.next_expected_wake_at(reference_time: Time.zone.parse("2026-06-23 09:15:00 UTC"))
+  end
+
+  test "next expected wake is unknown without readings" do
+    node = Node.create!(valid_attrs.merge(node_id: "wake-node-no-readings"))
+
+    assert_nil node.next_expected_wake_at
+  end
+
   test "assigned? returns true when zone is assigned" do
     zone = create(:zone)
     node = Node.create!(valid_attrs.merge(zone: zone))
@@ -152,6 +196,21 @@ class NodeTest < ActiveSupport::TestCase
     assert_enqueued_with(job: ConfigPublishJob) do
       node.update!(zone: zone)
     end
+  end
+
+  test "zone assignment cascades to physical device siblings" do
+    zone = create(:zone)
+    channels = 4.times.map do |channel|
+      Node.create!(
+        node_id: "sensor-zone1-ch#{channel}",
+        device_id: "sensor-zone1",
+        last_seen_at: Time.current
+      )
+    end
+
+    channels.fetch(2).update!(zone: zone)
+
+    assert_equal [zone.id], Node.where(device_id: "sensor-zone1").distinct.pluck(:zone_id)
   end
 
   test "enqueues node config publish when assigned node calibration changes" do

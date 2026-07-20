@@ -23,6 +23,7 @@ class Zone < ApplicationRecord
   after_commit :enqueue_config_publish, on: :create
   after_commit :enqueue_config_publish_if_relevant_update, on: :update
   after_commit :enqueue_node_config_publish_if_relevant_update, on: :update
+  after_commit :sync_node_names_if_label_changed, on: :update
   after_commit :enqueue_config_publish, on: :destroy
 
   validates :zone_id, presence: true, uniqueness: true
@@ -34,6 +35,26 @@ class Zone < ApplicationRecord
     return nil if publish_interval_ms.blank?
 
     publish_interval_ms / 3_600_000
+  end
+
+  def expected_publish_interval_seconds
+    [(publish_interval_ms.presence || DEFAULT_PUBLISH_INTERVAL_MS).to_i / 1000.0, 1.0].max
+  end
+
+  def reading_freshness(recorded_at)
+    self.class.freshness_for(recorded_at, expected_publish_interval_seconds)
+  end
+
+  # ok: within one expected interval. stale: within two. offline: beyond that (or never recorded).
+  def self.freshness_for(recorded_at, interval_seconds)
+    return "offline" if recorded_at.blank?
+
+    age = Time.current - recorded_at
+
+    return "ok" if age <= interval_seconds
+    return "stale" if age <= interval_seconds * 2
+
+    "offline"
   end
 
   private
@@ -145,10 +166,18 @@ class Zone < ApplicationRecord
                   saved_change_to_allowed_hours? ||
                   saved_change_to_irrigation_line?
 
-    nodes.find_each { |node| PublishNodeConfigJob.perform_later(node.id) }
+    Node.group_by_device(nodes).each_value do |device_nodes|
+      PublishNodeConfigJob.perform_later(device_nodes.first.id)
+    end
   end
 
   def enqueue_config_publish
     ConfigPublishJob.perform_later
+  end
+
+  def sync_node_names_if_label_changed
+    return unless saved_change_to_name? || saved_change_to_zone_id?
+
+    Node.sync_default_names_for_zone!(self)
   end
 end

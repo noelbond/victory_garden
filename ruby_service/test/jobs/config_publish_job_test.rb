@@ -14,20 +14,12 @@ class ConfigPublishJobTest < ActiveSupport::TestCase
     clear_performed_jobs
   end
 
-  def with_publish_config_stub(callable)
-    original = MqttClient.method(:publish_config)
-    MqttClient.define_singleton_method(:publish_config, &callable)
-    yield
-  ensure
-    MqttClient.define_singleton_method(:publish_config, &original)
+  def with_publish_config_stub(callable, &block)
+    stub_singleton_method(MqttClient, :publish_config, callable, &block)
   end
 
-  def with_publish_actuator_config_stub(callable)
-    original = MqttClient.method(:publish_actuator_config)
-    MqttClient.define_singleton_method(:publish_actuator_config, &callable)
-    yield
-  ensure
-    MqttClient.define_singleton_method(:publish_actuator_config, &original)
+  def with_publish_actuator_config_stub(callable, &block)
+    stub_singleton_method(MqttClient, :publish_actuator_config, callable, &block)
   end
 
   test "publishes crops referenced by active zones even when the crop is inactive" do
@@ -79,5 +71,27 @@ class ConfigPublishJobTest < ActiveSupport::TestCase
       ],
       actuator_payload[:zones]
     )
+  end
+
+  test "enqueues one node config publish per physical sensor device" do
+    zone = create(:zone, zone_id: "zone1")
+    channels = 4.times.map do |channel|
+      Node.create!(
+        node_id: "sensor-zone1-ch#{channel}",
+        device_id: "sensor-zone1",
+        zone: zone,
+        last_seen_at: Time.current
+      )
+    end
+
+    with_publish_config_stub(->(_payload) {}) do
+      with_publish_actuator_config_stub(->(_payload) {}) do
+        assert_enqueued_jobs 1, only: PublishNodeConfigJob do
+          ConfigPublishJob.perform_now
+        end
+      end
+    end
+
+    assert_enqueued_with(job: PublishNodeConfigJob, args: [channels.first.id])
   end
 end

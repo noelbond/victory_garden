@@ -85,6 +85,10 @@ class ApplicationController < ActionController::Base
     @firstboot_status
   end
 
+  def reading_request_notice_for(node)
+    "Reading request queued. The sleeping Pico will receive it on its next scheduled wake. Restart the Pico if you need a reading immediately."
+  end
+
   def connection_settings_complete?(setting)
     return false unless setting.present? && setting.mqtt_host.present? && setting.mqtt_port.present?
 

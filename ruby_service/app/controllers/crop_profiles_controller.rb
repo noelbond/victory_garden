@@ -1,4 +1,6 @@
 class CropProfilesController < ApplicationController
+  include SharedParams
+
   def index
     @crop_profiles = CropProfile.order(:crop_name)
   end
@@ -40,15 +42,7 @@ class CropProfilesController < ApplicationController
   private
 
   def crop_profile_params
-    params.require(:crop_profile).permit(
-      :crop_name,
-      :dry_threshold,
-      :max_pulse_runtime_sec,
-      :daily_max_runtime_sec,
-      :climate_preference,
-      :time_to_harvest_days,
-      :notes
-    )
+    permitted_crop_profile_params
   end
 
   def resolved_return_path(crop_profile)

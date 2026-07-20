@@ -116,7 +116,7 @@
       <li>
         Assigned Nodes (<%= @assigned_nodes.count %>):
         <% if @assigned_nodes.any? %>
-          <%= @assigned_nodes.map(&:node_id).join(", ") %>
+          <%= @assigned_nodes.map(&:display_name).join(", ") %>
           (<%= link_to "view", zone_nodes_path(@zone) %>)
         <% else %>
           —
@@ -149,36 +149,45 @@
         </div>
 
         <div class="col card">
-          <h3>Latest Reading Detail</h3>
-          <% if @latest_reading %>
-            <% reading_guidance = reading_error_guidance(@latest_reading) %>
+          <h3>Latest Channel Readings</h3>
+          <% if @assigned_nodes.any? %>
             <ul class="list">
-        <li>Freshness: <span class="health-pill <%= @reading_freshness %>"><%= freshness_label(@reading_freshness) %></span></li>
-        <li>Schema: <%= @latest_reading.schema_version || "—" %></li>
-        <li>Moisture: <%= @latest_reading.moisture_percent || "—" %>%</li>
-        <li>Raw: <%= @latest_reading.moisture_raw %></li>
-        <li>Soil Temp: <%= @latest_reading.soil_temp_c || "—" %> C</li>
-        <li>Battery: <%= @latest_reading.battery_voltage || "—" %> V</li>
-        <li>Battery Percent: <%= @latest_reading.battery_percent || "—" %>%</li>
-        <li>Wi-Fi RSSI: <%= @latest_reading.wifi_rssi || "—" %> dBm</li>
-        <li>Wake Count: <%= @latest_reading.wake_count || "—" %></li>
-        <li>Health: <%= @latest_reading.health || "—" %></li>
-        <li>
-          Last Error: <%= @latest_reading.last_error.presence || "—" %>
-          <% if @latest_reading.last_error.present? && @latest_reading.last_error != "none" %>
-            <%= render "shared/issue_guidance",
-                       summary: "Description and fix",
-                       description_label: "Description",
-                       description: reading_guidance[:description],
-                       fix_label: "Suggested fix",
-                       fix: reading_guidance[:fix] %>
-          <% end %>
-        </li>
-        <li>Publish Reason: <%= @latest_reading.publish_reason || "—" %></li>
-        <li>Recorded: <%= @latest_reading.recorded_at %></li>
+              <% @assigned_nodes.each do |node| %>
+                <% reading = @latest_readings_by_node_id[node.node_id] %>
+                <% freshness = reading_freshness(reading) %>
+                <li>
+                  <strong><%= node.display_name %></strong>
+                  <div class="muted"><%= node.node_id %></div>
+                  <% if reading.present? %>
+                    <div>
+                      <span class="health-pill <%= freshness %>"><%= freshness_label(freshness) %></span>
+                      moisture: <%= reading.moisture_percent.present? ? "#{reading.moisture_percent}%" : "—" %>,
+                      raw: <%= reading.moisture_raw || "—" %>,
+                      air: <%= reading.air_temperature_f.present? ? "#{reading.air_temperature_f.round(1)} F" : "—" %>,
+                      humidity: <%= reading.humidity_percent.present? ? "#{reading.humidity_percent}%" : "—" %>,
+                      health: <%= reading.health || "—" %>
+                    </div>
+                    <% if reading.last_error.present? && reading.last_error != "none" %>
+                      <% reading_guidance = reading_error_guidance(reading) %>
+                      <div>
+                        Last Error: <%= reading.last_error %>
+                        <%= render "shared/issue_guidance",
+                                   summary: "Description and fix",
+                                   description_label: "Description",
+                                   description: reading_guidance[:description],
+                                   fix_label: "Suggested fix",
+                                   fix: reading_guidance[:fix] %>
+                      </div>
+                    <% end %>
+                    <div class="muted">Recorded: <%= reading.recorded_at %></div>
+                  <% else %>
+                    <div><span class="health-pill offline">Offline</span> no reading yet</div>
+                  <% end %>
+                </li>
+              <% end %>
             </ul>
           <% else %>
-            <p class="muted">No readings yet.</p>
+            <p class="muted">No assigned sensor nodes yet.</p>
           <% end %>
         </div>
 
@@ -251,8 +260,8 @@
                 <span class="health-pill <%= reading_state %>"><%= time_ago_in_words(reading.recorded_at) %> ago</span>
                 —
                 moisture: <%= reading.moisture_percent || "—" %>%,
-                temp: <%= reading.soil_temp_c || "—" %> C,
-                battery: <%= reading.battery_percent || "—" %>%,
+                air: <%= reading.air_temperature_f.present? ? "#{reading.air_temperature_f.round(1)} F" : "—" %>,
+                humidity: <%= reading.humidity_percent.present? ? "#{reading.humidity_percent}%" : "—" %>,
                 Wi-Fi RSSI: <%= reading.wifi_rssi || "—" %> dBm,
                 node: <%= reading.node_id %>,
                 health: <%= reading.health || "—" %>

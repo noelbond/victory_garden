@@ -11,8 +11,9 @@
     "recorded_at" => "210px",
     "moisture_percent" => "130px",
     "moisture_raw" => "130px",
-    "soil_temp_c" => "130px",
-    "battery_percent" => "130px",
+    "air_temperature_f" => "130px",
+    "humidity_percent" => "130px",
+    "greenhouse_alert_status" => "170px",
     "health" => "120px",
     "last_error" => "220px",
     "publish_reason" => "170px",
@@ -21,27 +22,16 @@
     "uptime_seconds" => "130px"
   }
   column_value_for = lambda do |reading, column|
-    case column
-    when "recorded_at" then reading.recorded_at.utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-    when "moisture_percent" then reading.moisture_percent.present? ? "#{reading.moisture_percent}%" : "—"
-    when "moisture_raw" then reading.moisture_raw || "—"
-    when "soil_temp_c" then reading.soil_temp_c || "—"
-    when "battery_percent" then reading.battery_percent.present? ? "#{reading.battery_percent}%" : "—"
-    when "health" then reading.health || "—"
-    when "last_error" then reading.last_error.presence || "none"
-    when "publish_reason" then reading.publish_reason || "—"
-    when "wifi_rssi" then reading.wifi_rssi || "—"
-    when "wake_count" then reading.wake_count || "—"
-    when "uptime_seconds" then reading.uptime_seconds || "—"
-    else "—"
-    end
+    reading.display_value(column)
   end
 %>
 
 <div class="page-header">
   <div>
-    <h1 class="page-title"><%= @node.node_id %> Node Readings</h1>
+    <h1 class="page-title"><%= @node.display_name %> Node Readings</h1>
     <div class="muted">
+      <%= @node.node_id %>
+      •
       <%= @total_readings %> reading<%= "s" unless @total_readings == 1 %>
       • <%= @from.utc.strftime("%Y-%m-%d %H:%M UTC") %> to <%= @to.utc.strftime("%Y-%m-%d %H:%M UTC") %>
       • <%= @active_filter_count %> active filter<%= "s" unless @active_filter_count == 1 %>

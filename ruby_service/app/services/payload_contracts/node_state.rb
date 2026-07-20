@@ -1,10 +1,18 @@
 module PayloadContracts
   class NodeState
+    include Validation
+
     SCHEMA_VERSION = "node-state/v1"
-    REQUIRED_KEYS = %w[node_id zone_id timestamp moisture_raw].freeze
+    REQUIRED_KEYS = %w[node_id zone_id timestamp].freeze
     OPTIONAL_KEYS = %w[
       schema_version
+      device_id
+      moisture_raw
       moisture_percent
+      air_temperature_c
+      humidity_percent
+      soil_moisture_read
+      greenhouse_alert_status
       soil_temp_c
       battery_voltage
       battery_percent
@@ -52,12 +60,17 @@ module PayloadContracts
       normalized["recorded_at"] = Time.iso8601(normalized.fetch("timestamp")).utc
       validate_integer!(normalized, "moisture_raw", min: 0, max: 65_535)
       validate_float!(normalized, "moisture_percent", min: 0.0, max: 100.0)
+      validate_float!(normalized, "air_temperature_c", min: -40.0, max: 125.0)
+      validate_float!(normalized, "humidity_percent", min: 0.0, max: 100.0)
+      validate_boolean!(normalized, "soil_moisture_read")
+      validate_enum!(normalized, "greenhouse_alert_status", %w[normal warning critical])
       validate_float!(normalized, "battery_voltage", min: 0.0, max: 10.0)
       validate_integer!(normalized, "battery_percent", min: 0, max: 100)
       validate_integer!(normalized, "wifi_rssi", min: -130, max: 0)
       validate_integer!(normalized, "uptime_seconds", min: 0)
       validate_integer!(normalized, "wake_count", min: 0)
       validate_length!(normalized, "ip", max: 50)
+      validate_length!(normalized, "device_id", max: 64)
       validate_length!(normalized, "health", max: 50)
       validate_length!(normalized, "last_error", max: 300)
       validate_length!(normalized, "publish_reason", max: 50)
@@ -72,39 +85,6 @@ module PayloadContracts
 
     def allowed_keys
       REQUIRED_KEYS + OPTIONAL_KEYS
-    end
-
-    def validate_integer!(payload, key, min:, max: nil)
-      return if payload[key].nil?
-
-      value = Integer(payload[key])
-    rescue ArgumentError, TypeError
-      raise ArgumentError, "invalid #{key}: #{payload[key].inspect}"
-    else
-      raise ArgumentError, "#{key} out of range" if value < min || (!max.nil? && value > max)
-
-      payload[key] = value
-    end
-
-    def validate_float!(payload, key, min:, max:)
-      return if payload[key].nil?
-
-      value = Float(payload[key])
-    rescue ArgumentError, TypeError
-      raise ArgumentError, "invalid #{key}: #{payload[key].inspect}"
-    else
-      raise ArgumentError, "#{key} out of range" unless value.between?(min, max)
-
-      payload[key] = value
-    end
-
-    def validate_length!(payload, key, max:)
-      return if payload[key].nil?
-
-      value = payload[key].to_s
-      raise ArgumentError, "#{key} too long" if value.length > max
-
-      payload[key] = value
     end
   end
 end

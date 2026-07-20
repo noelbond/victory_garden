@@ -367,7 +367,9 @@
     <div class="card wizard-fact-panel">
       <h3>Latest Detected Node</h3>
       <div class="wizard-fact-grid">
+        <div class="wizard-fact"><span>Name</span><strong><%= @latest_detected_node.display_name %></strong></div>
         <div class="wizard-fact"><span>Node ID</span><strong><%= @latest_detected_node.node_id %></strong></div>
+        <div class="wizard-fact"><span>Device ID</span><strong><%= @latest_detected_node.device_id.presence || "—" %></strong></div>
         <div class="wizard-fact"><span>Last Seen</span><strong><%= @latest_detected_node.last_seen_at %></strong></div>
         <div class="wizard-fact"><span>Reported Zone ID</span><strong><%= @latest_detected_node.reported_zone_id.presence || "—" %></strong></div>
       </div>
@@ -475,7 +477,7 @@
       <div class="form-grid">
         <div class="field">
           <%= label_tag :node_id, "Sensor Node" %>
-          <%= select_tag :node_id, options_from_collection_for_select(@assignable_nodes, :id, :node_id, @selected_assignment_node&.id) %>
+          <%= select_tag :node_id, options_for_select(@assignable_nodes.map { |node| ["#{node.display_name} (#{node.node_id})", node.id] }, @selected_assignment_node&.id) %>
         </div>
         <div class="field">
           <%= label_tag :zone_id, "Assign To Zone" %>
@@ -516,9 +518,16 @@
     <div class="card wizard-fact-panel">
       <h3>Selected Node</h3>
       <div class="wizard-fact-grid">
+        <div class="wizard-fact"><span>Name</span><strong><%= @selected_reading_node.display_name %></strong></div>
         <div class="wizard-fact"><span>Node ID</span><strong><%= @selected_reading_node.node_id %></strong></div>
+        <div class="wizard-fact"><span>Device ID</span><strong><%= @selected_reading_node.device_id.presence || "—" %></strong></div>
         <div class="wizard-fact"><span>Zone</span><strong><%= @selected_reading_node.zone.name.presence || @selected_reading_node.zone.zone_id %></strong></div>
         <div class="wizard-fact"><span>Latest Reading</span><strong><%= @latest_selected_reading&.recorded_at || "No persisted reading yet" %></strong></div>
+        <% if @latest_selected_reading.present? %>
+          <div class="wizard-fact"><span>Air Temp</span><strong><%= @latest_selected_reading.air_temperature_f.present? ? "#{@latest_selected_reading.air_temperature_f.round(1)} F" : "—" %></strong></div>
+          <div class="wizard-fact"><span>Humidity</span><strong><%= @latest_selected_reading.humidity_percent.present? ? "#{@latest_selected_reading.humidity_percent}%" : "—" %></strong></div>
+          <div class="wizard-fact"><span>Greenhouse Alert</span><strong><%= @latest_selected_reading.greenhouse_alert_status.presence || "—" %></strong></div>
+        <% end %>
       </div>
     </div>
 
@@ -541,7 +550,7 @@
 
   <% if @selected_watering_zone.present? %>
     <% waiting_for_confirmation = @latest_watering_event.present? && !WateringEvent::TERMINAL_STATUSES.include?(@latest_watering_event.status) %>
-    <div class="card <%= onboarding_current_step[:done] ? "metric-ok" : (waiting_for_confirmation ? "metric-warn" : "metric-warn") %> wizard-status-card">
+    <div class="card <%= onboarding_current_step[:done] ? "metric-ok" : "metric-warn" %> wizard-status-card">
       <div class="metric-label">Step Status</div>
       <div class="metric-value">
         <% if onboarding_current_step[:done] %>

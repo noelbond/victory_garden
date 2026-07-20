@@ -24,37 +24,15 @@
     "node" => "180px",
     "moisture_percent" => "130px",
     "moisture_raw" => "130px",
-    "soil_temp_c" => "130px",
-    "battery_percent" => "130px",
+    "air_temperature_f" => "130px",
+    "humidity_percent" => "130px",
+    "greenhouse_alert_status" => "170px",
     "health" => "120px",
     "last_error" => "240px",
     "publish_reason" => "170px"
   }
   column_value_for = lambda do |reading, column|
-    case column
-    when "recorded_at"
-      reading.recorded_at.utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-    when "zone"
-      reading.zone&.name.presence || reading.zone&.zone_id || "—"
-    when "node"
-      reading.node_id
-    when "moisture_percent"
-      reading.moisture_percent.present? ? "#{reading.moisture_percent}%" : "—"
-    when "moisture_raw"
-      reading.moisture_raw || "—"
-    when "soil_temp_c"
-      reading.soil_temp_c || "—"
-    when "battery_percent"
-      reading.battery_percent.present? ? "#{reading.battery_percent}%" : "—"
-    when "health"
-      reading.health || "—"
-    when "last_error"
-      reading.last_error.presence || "none"
-    when "publish_reason"
-      reading.publish_reason || "—"
-    else
-      "—"
-    end
+    reading.display_value(column, nodes_by_node_id: @nodes_by_node_id)
   end
 %>
 
@@ -184,7 +162,7 @@
           <div class="reading-tabs">
             <%= link_to "All Nodes", reading_history_path(node_tab_params_for.call(nil)), class: "reading-tab #{'active' if @selected_node.blank?}" %>
             <% @node_tabs.each do |node| %>
-              <%= link_to node.node_id, reading_history_path(node_tab_params_for.call(node)), class: "reading-tab #{'active' if @selected_node == node}" %>
+              <%= link_to node.display_name, reading_history_path(node_tab_params_for.call(node)), class: "reading-tab #{'active' if @selected_node == node}" %>
             <% end %>
           </div>
         <% else %>

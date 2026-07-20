@@ -117,10 +117,6 @@ class WateringEventsController < ApplicationController
     ].count(true)
   end
 
-  def watering_events_csv(scope)
-    csv_string_for_scope(scope, tie_breaker: "watering_events.id #{secondary_sort_direction}")
-  end
-
   def csv_value_for(event, column)
     case column
     when "issued_at" then event.issued_at&.utc&.iso8601

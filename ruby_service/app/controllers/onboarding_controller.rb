@@ -1,4 +1,6 @@
 class OnboardingController < ApplicationController
+  include SharedParams
+
   FIRMWARE_BOARD_OPTIONS = {
     "pico_w" => {
       label: "Pico W",
@@ -80,7 +82,7 @@ class OnboardingController < ApplicationController
     node.update!(zone: zone)
     PublishNodeConfigJob.perform_later(node.id)
 
-    redirect_to onboarding_step_redirect("reading"), notice: "Node assigned to #{zone.name.presence || zone.zone_id}."
+    redirect_to onboarding_step_redirect("reading"), notice: "#{node.reload.display_name} assigned to #{zone.name.presence || zone.zone_id}."
   end
 
   def publish_config
@@ -102,7 +104,7 @@ class OnboardingController < ApplicationController
       node_id: node.node_id
     )
 
-    redirect_to onboarding_step_redirect("reading"), notice: "Immediate reading requested. Refresh this step after the node responds."
+    redirect_to onboarding_step_redirect("reading"), notice: reading_request_notice_for(node)
   end
 
   def water_now
@@ -118,25 +120,7 @@ class OnboardingController < ApplicationController
       return
     end
 
-    command = {
-      command: "start_watering",
-      zone_id: zone.zone_id,
-      runtime_seconds: zone.crop_profile.max_pulse_runtime_sec,
-      reason: "manual_trigger",
-      issued_at: Time.current,
-      idempotency_key: "#{zone.zone_id}-#{Time.current.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}"
-    }
-
-    WateringEvent.create!(
-      zone: zone,
-      command: command[:command],
-      runtime_seconds: command[:runtime_seconds],
-      reason: command[:reason],
-      issued_at: command[:issued_at],
-      idempotency_key: command[:idempotency_key],
-      status: "queued"
-    )
-    CommandPublishJob.perform_later(command)
+    WateringCommand.start(zone)
 
     redirect_to onboarding_step_redirect("watering"), notice: "Watering command queued. Refresh this step after the actuator responds."
   end
@@ -283,7 +267,7 @@ class OnboardingController < ApplicationController
         required: true,
         description: "Flash the sensor Pico, power it near the Pi, and wait for the app to detect its first live state publish.",
         checklist: [
-          discovered_node.present? ? "Latest discovered node: #{discovered_node.node_id}." : "No sensor nodes have been discovered yet.",
+          discovered_node.present? ? "Latest discovered node: #{discovered_node.display_name}." : "No sensor nodes have been discovered yet.",
           discovered_node&.reported_zone_id.present? ? "Reported Zone ID: #{discovered_node.reported_zone_id}." : "The node has not reported a zone identifier yet."
         ],
         actions: []
@@ -295,7 +279,7 @@ class OnboardingController < ApplicationController
         required: true,
         description: "Assign the discovered sensor node to the zone you created so readings can be persisted and used by the controller.",
         checklist: [
-          assigned_node.present? ? "Assigned node: #{assigned_node.node_id} -> #{assigned_node.zone.name.presence || assigned_node.zone.zone_id}." : "No sensor node is assigned to a zone yet."
+          assigned_node.present? ? "Assigned node: #{assigned_node.display_name} -> #{assigned_node.zone.name.presence || assigned_node.zone.zone_id}." : "No sensor node is assigned to a zone yet."
         ],
         actions: []
       },
@@ -430,15 +414,7 @@ class OnboardingController < ApplicationController
   end
 
   def apply_connection_setting_defaults(setting)
-    setting.mqtt_host = ENV["MQTT_HOST"].presence || "127.0.0.1" if setting.mqtt_host.blank?
-    setting.mqtt_port = (ENV["MQTT_PORT"].presence || 1883).to_i if setting.mqtt_port.blank?
-    setting.mqtt_username = ENV["MQTT_USERNAME"].presence || "victory_garden" if setting.mqtt_username.blank?
-    setting.mqtt_password = ENV["MQTT_PASSWORD"] if setting.mqtt_password.blank? && ENV["MQTT_PASSWORD"].present?
-    setting.readings_topic = "greenhouse/zones/+/nodes/+/state" if setting.readings_topic.blank?
-    setting.actuators_topic = "greenhouse/zones/+/actuator/status" if setting.actuators_topic.blank?
-    setting.command_topic = "greenhouse/zones/{zone_id}/actuator/command" if setting.command_topic.blank?
-    setting.config_topic = "greenhouse/system/config/current" if setting.config_topic.blank?
-    setting.bluetooth_enabled = false if setting.bluetooth_enabled.nil?
+    ConnectionSettingDefaults.apply!(setting)
   end
 
   def onboarding_zone_record
@@ -507,41 +483,15 @@ class OnboardingController < ApplicationController
   end
 
   def connection_setting_params
-    params.require(:connection_setting).permit(
-      :mqtt_host,
-      :mqtt_port,
-      :mqtt_username,
-      :mqtt_password,
-      :irrigation_line_count,
-      :readings_topic,
-      :actuators_topic,
-      :command_topic,
-      :config_topic,
-      :bluetooth_enabled,
-      :notes
-    )
+    permitted_connection_setting_params
   end
 
   def onboarding_zone_params
-    params.require(:zone).permit(
-      :name,
-      :crop_profile_id,
-      :active,
-      :irrigation_line,
-      :publish_interval_ms
-    )
+    permitted_zone_params
   end
 
   def onboarding_crop_profile_params
-    params.require(:crop_profile).permit(
-      :crop_name,
-      :dry_threshold,
-      :max_pulse_runtime_sec,
-      :daily_max_runtime_sec,
-      :climate_preference,
-      :time_to_harvest_days,
-      :notes
-    )
+    permitted_crop_profile_params
   end
 
   def zone_draft_params

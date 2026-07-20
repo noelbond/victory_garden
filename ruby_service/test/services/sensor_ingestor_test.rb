@@ -92,6 +92,67 @@ class SensorIngestorTest < ActiveSupport::TestCase
     assert_equal 0, WateringEvent.count
   end
 
+  test "stores the physical device id from channel state" do
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => "sensor-zone1-ch2",
+      "device_id" => "sensor-zone1"
+    )
+
+    SensorIngestor.new(payload).call
+
+    assert_equal "sensor-zone1", Node.find_by!(node_id: "sensor-zone1-ch2").device_id
+  end
+
+  test "enqueues node config refresh when desired timezone offset is stale" do
+    node = Node.create!(
+      node_id: "pico-w-zone1",
+      zone: @zone,
+      last_seen_at: 1.hour.ago,
+      desired_config: { "utc_offset_hours" => PublishNodeConfigJob.current_utc_offset_hours - 1 }
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "timestamp" => Time.current.utc.iso8601
+    )
+
+    assert_enqueued_with(job: PublishNodeConfigJob, args: [node.id]) do
+      SensorIngestor.new(payload).call
+    end
+  end
+
+  test "does not enqueue node config refresh when desired timezone offset is current" do
+    Node.create!(
+      node_id: "pico-w-zone1",
+      zone: @zone,
+      last_seen_at: 1.hour.ago,
+      desired_config: { "utc_offset_hours" => PublishNodeConfigJob.current_utc_offset_hours }
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "timestamp" => Time.current.utc.iso8601
+    )
+
+    assert_no_enqueued_jobs only: PublishNodeConfigJob do
+      SensorIngestor.new(payload).call
+    end
+  end
+
+  test "persists a temperature-only reading without soil moisture" do
+    Node.create!(node_id: "pico-w-zone1", zone: @zone, last_seen_at: 1.hour.ago)
+    payload = load_fixture("node-state-v1.json").except("moisture_raw", "moisture_percent").merge(
+      "timestamp" => Time.current.utc.iso8601,
+      "air_temperature_c" => 25.0,
+      "humidity_percent" => 62.5,
+      "soil_moisture_read" => false
+    )
+
+    reading = SensorIngestor.new(payload).call
+
+    assert_nil reading.moisture_raw
+    assert_equal 25.0, reading.air_temperature_c.to_f
+    assert_equal 62.5, reading.humidity_percent.to_f
+    assert_not reading.soil_moisture_read
+    assert_equal "normal", reading.greenhouse_alert_status
+  end
+
   test "ignores duplicate node state for the same node and timestamp" do
     Node.create!(
       node_id: "pico-w-zone1",

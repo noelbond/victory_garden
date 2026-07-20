@@ -1,4 +1,6 @@
 class SetupApiController < ApplicationController
+  include SharedParams
+
   skip_forgery_protection
 
   def bootstrap
@@ -82,7 +84,6 @@ class SetupApiController < ApplicationController
     end
 
     node.update!(zone: zone)
-    PublishNodeConfigJob.perform_later(node.id)
 
     render json: {
       assigned: true,
@@ -109,10 +110,13 @@ class SetupApiController < ApplicationController
       node_id: node.node_id
     )
 
+    next_wake_at = node.next_expected_wake_at(reference_time: requested_at)
     render json: {
       queued: true,
       command_id: command_id,
       requested_at: requested_at.iso8601,
+      next_expected_wake_at: next_wake_at&.utc&.iso8601,
+      message: reading_request_notice_for(node),
       node: node_payload(node)
     }
   end
@@ -176,32 +180,12 @@ class SetupApiController < ApplicationController
       return
     end
 
-    issued_at = Time.current.utc
-    idempotency_key = "#{zone.zone_id}-#{issued_at.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}"
-    command = {
-      command: "start_watering",
-      zone_id: zone.zone_id,
-      runtime_seconds: zone.crop_profile.max_pulse_runtime_sec,
-      reason: "manual_trigger",
-      issued_at: issued_at,
-      idempotency_key: idempotency_key
-    }
-
-    WateringEvent.create!(
-      zone: zone,
-      command: command[:command],
-      runtime_seconds: command[:runtime_seconds],
-      reason: command[:reason],
-      issued_at: command[:issued_at],
-      idempotency_key: command[:idempotency_key],
-      status: "queued"
-    )
-    CommandPublishJob.perform_later(command)
+    result = WateringCommand.start(zone)
 
     render json: {
       queued: true,
-      idempotency_key: idempotency_key,
-      issued_at: issued_at.iso8601,
+      idempotency_key: result.payload[:idempotency_key],
+      issued_at: result.payload[:issued_at].utc.iso8601,
       zone: zone_payload(zone)
     }
   end
@@ -239,30 +223,14 @@ class SetupApiController < ApplicationController
   end
 
   def apply_connection_setting_defaults(setting)
-    setting.mqtt_host = ENV["MQTT_HOST"].presence || "127.0.0.1" if setting.mqtt_host.blank?
-    setting.mqtt_port = (ENV["MQTT_PORT"].presence || 1883).to_i if setting.mqtt_port.blank?
-    # The Pi-managed broker credentials are authoritative for first-run setup.
-    # The desktop installer provisions Pico nodes with these exact values, so
-    # allowing arbitrary setup-time overrides here would break broker auth.
-    setting.mqtt_username = effective_mqtt_username(setting)
-    setting.mqtt_password = effective_mqtt_password(setting)
-    setting.readings_topic = "greenhouse/zones/+/nodes/+/state" if setting.readings_topic.blank?
-    setting.actuators_topic = "greenhouse/zones/+/actuator/status" if setting.actuators_topic.blank?
-    setting.command_topic = "greenhouse/zones/{zone_id}/actuator/command" if setting.command_topic.blank?
-    setting.config_topic = "greenhouse/system/config/current" if setting.config_topic.blank?
-    setting.bluetooth_enabled = false if setting.bluetooth_enabled.nil?
-  end
-
-  def effective_mqtt_username(setting)
-    ENV["MQTT_USERNAME"].presence || setting.mqtt_username.presence || "victory_garden"
-  end
-
-  def effective_mqtt_password(setting)
-    ENV["MQTT_PASSWORD"].presence || setting.mqtt_password
+    ConnectionSettingDefaults.apply!(setting)
   end
 
   def setup_status_payload
     assigned_node = Node.assigned.order(last_seen_at: :desc, created_at: :desc).first
+    device_grouped = assigned_node&.device_id.present?
+    assigned_channels = (device_grouped ? Node.where(device_id: assigned_node.device_id) : Node.where(id: assigned_node&.id)).to_a
+    expected_channel_count = device_grouped ? Node::EXPECTED_CHANNELS_PER_DEVICE : 1
 
     {
       connection_ready: onboarding_step_state(:connection),
@@ -270,7 +238,9 @@ class SetupApiController < ApplicationController
       detected_node_ready: onboarding_step_state(:detected_node),
       assigned_node_ready: onboarding_step_state(:assigned_node),
       reading_ready: onboarding_step_state(:reading),
-      calibration_ready: assigned_node&.calibration_configured? || false,
+      calibration_ready: assigned_node.present? &&
+        assigned_channels.size == expected_channel_count &&
+        assigned_channels.all?(&:calibration_configured?),
       watering_ready: onboarding_step_state(:watering)
     }
   end
@@ -279,9 +249,9 @@ class SetupApiController < ApplicationController
     {
       mqtt_host: setting.mqtt_host,
       mqtt_port: setting.mqtt_port,
-      mqtt_username: effective_mqtt_username(setting),
-      provisioning_mqtt_username: effective_mqtt_username(setting),
-      provisioning_mqtt_password: effective_mqtt_password(setting),
+      mqtt_username: ConnectionSettingDefaults.mqtt_username_for(setting),
+      provisioning_mqtt_username: ConnectionSettingDefaults.mqtt_username_for(setting),
+      provisioning_mqtt_password: ConnectionSettingDefaults.mqtt_password_for(setting),
       irrigation_line_count: setting.irrigation_line_count,
       readings_topic: setting.readings_topic,
       actuators_topic: setting.actuators_topic,
@@ -323,6 +293,8 @@ class SetupApiController < ApplicationController
     {
       id: node.id,
       node_id: node.node_id,
+      name: node.display_name,
+      device_id: node.device_id,
       zone_id: node.zone_id,
       zone_name: node.zone&.name,
       assigned: node.assigned?,
@@ -343,6 +315,11 @@ class SetupApiController < ApplicationController
       recorded_at: reading.recorded_at&.utc&.iso8601,
       moisture_raw: reading.moisture_raw,
       moisture_percent: reading.moisture_percent,
+      air_temperature_c: reading.air_temperature_c,
+      humidity_percent: reading.humidity_percent,
+      greenhouse_alert_status: reading.greenhouse_alert_status,
+      health: reading.health,
+      last_error: reading.last_error,
       publish_reason: reading.publish_reason,
       battery_percent: reading.battery_percent,
       wifi_rssi: reading.wifi_rssi
@@ -380,12 +357,22 @@ class SetupApiController < ApplicationController
 
   def latest_detected_node_payload
     node = Node.order(last_seen_at: :desc, created_at: :desc).first
-    node.present? ? node_payload(node) : nil
+    node.present? ? device_payload(node) : nil
   end
 
   def assigned_node_payload
     node = Node.assigned.order(last_seen_at: :desc, created_at: :desc).first
-    node.present? ? node_payload(node) : nil
+    node.present? ? device_payload(node) : nil
+  end
+
+  def device_payload(node)
+    payload = node_payload(node)
+    return payload if node.device_id.blank?
+
+    payload.merge(
+      node_id: node.device_id,
+      channels: node.device_siblings.order(:node_id).map { |channel| node_payload(channel) }
+    )
   end
 
   def assignable_zone
@@ -412,41 +399,15 @@ class SetupApiController < ApplicationController
   end
 
   def connection_setting_params
-    params.require(:connection_setting).permit(
-      :mqtt_host,
-      :mqtt_port,
-      :mqtt_username,
-      :mqtt_password,
-      :irrigation_line_count,
-      :readings_topic,
-      :actuators_topic,
-      :command_topic,
-      :config_topic,
-      :bluetooth_enabled,
-      :notes
-    )
+    permitted_connection_setting_params
   end
 
   def crop_profile_params
-    params.require(:crop_profile).permit(
-      :crop_name,
-      :dry_threshold,
-      :max_pulse_runtime_sec,
-      :daily_max_runtime_sec,
-      :climate_preference,
-      :time_to_harvest_days,
-      :notes
-    )
+    permitted_crop_profile_params
   end
 
   def zone_params
-    params.require(:zone).permit(
-      :name,
-      :crop_profile_id,
-      :active,
-      :irrigation_line,
-      :publish_interval_ms
-    )
+    permitted_zone_params
   end
 
   def calibration_params

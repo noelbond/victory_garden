@@ -1,4 +1,6 @@
 class ZonesController < ApplicationController
+  include SharedParams
+
   AGGREGATE_READING_FRESHNESS_WINDOW = 15.minutes
   AGGREGATE_READING_FRESHNESS_MINUTES = (AGGREGATE_READING_FRESHNESS_WINDOW / 1.minute).to_i
   READING_FREQUENCY_OPTIONS = [
@@ -13,6 +15,7 @@ class ZonesController < ApplicationController
   ].freeze
 
   before_action :set_zone, only: %i[show nodes edit update destroy water_now stop_watering toggle_active]
+  helper_method :reading_freshness
 
   def index
     if onboarding_incomplete?
@@ -42,6 +45,7 @@ class ZonesController < ApplicationController
     @assigned_nodes = @zone.nodes.order(:node_id)
     @recent_readings = @zone.sensor_readings.order(recorded_at: :desc).limit(10)
     @latest_reading = @recent_readings.first
+    @latest_readings_by_node_id = latest_node_readings_for_zone(@zone)
     @zone_moisture_snapshot = zone_moisture_snapshots_for([@zone]).fetch(@zone.id)
     @aggregate_freshness_minutes = AGGREGATE_READING_FRESHNESS_MINUTES
     @last_watering_event = @zone.watering_events.order(issued_at: :desc).first
@@ -109,48 +113,12 @@ class ZonesController < ApplicationController
       return
     end
 
-    command = {
-      command: "start_watering",
-      zone_id: @zone.zone_id,
-      runtime_seconds: @zone.crop_profile.max_pulse_runtime_sec,
-      reason: "manual_trigger",
-      issued_at: Time.current,
-      idempotency_key: "#{@zone.zone_id}-#{Time.current.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}"
-    }
-
-    WateringEvent.create!(
-      zone: @zone,
-      command: command[:command],
-      runtime_seconds: command[:runtime_seconds],
-      reason: command[:reason],
-      issued_at: command[:issued_at],
-      idempotency_key: command[:idempotency_key],
-      status: "queued"
-    )
-    CommandPublishJob.perform_later(command)
+    WateringCommand.start(@zone)
     redirect_to @zone, notice: "Watering command queued."
   end
 
   def stop_watering
-    command = {
-      command: "stop_watering",
-      zone_id: @zone.zone_id,
-      runtime_seconds: nil,
-      reason: "manual_stop",
-      issued_at: Time.current,
-      idempotency_key: "#{@zone.zone_id}-#{Time.current.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}"
-    }
-
-    WateringEvent.create!(
-      zone: @zone,
-      command: command[:command],
-      runtime_seconds: command[:runtime_seconds],
-      reason: command[:reason],
-      issued_at: command[:issued_at],
-      idempotency_key: command[:idempotency_key],
-      status: "queued"
-    )
-    CommandPublishJob.perform_later(command)
+    WateringCommand.stop(@zone)
     redirect_to @zone, notice: "Stop command queued."
   end
 
@@ -173,13 +141,7 @@ class ZonesController < ApplicationController
   end
 
   def zone_params
-    params.require(:zone).permit(
-      :name,
-      :crop_profile_id,
-      :active,
-      :irrigation_line,
-      :publish_interval_ms
-    )
+    permitted_zone_params
   end
 
   def selected_node_ids
@@ -394,10 +356,8 @@ class ZonesController < ApplicationController
 
   def reading_freshness(reading)
     return "offline" if reading.blank?
-    return "ok" if reading.recorded_at > 5.minutes.ago
-    return "stale" if reading.recorded_at > 30.minutes.ago
 
-    "offline"
+    @zone.reading_freshness(reading.recorded_at)
   end
 
   def aggregate_freshness(snapshot)
@@ -423,6 +383,15 @@ class ZonesController < ApplicationController
   def zone_attention_items
     items = []
     aggregate = @zone_moisture_snapshot
+
+    if %w[warning critical].include?(@latest_reading&.greenhouse_alert_status)
+      temperature_f = @latest_reading.air_temperature_f
+      items << {
+        label: @latest_reading.greenhouse_alert_status == "critical" ? "Critical greenhouse temperature" : "High greenhouse temperature",
+        detail: format("Air temperature is %.1f F with %.1f%% humidity.", temperature_f, @latest_reading.humidity_percent.to_f),
+        severity: @latest_reading.greenhouse_alert_status == "critical" ? "alert" : "warn"
+      }
+    end
 
     if aggregate[:valid_sensor_count].zero?
       items << {
@@ -451,6 +420,23 @@ class ZonesController < ApplicationController
         detail: "Latest reading is #{view_context.time_ago_in_words(@latest_reading.recorded_at)} old.",
         severity: "warn"
       }
+    elsif aggregate[:valid_sensor_count] >= aggregate[:expected_sensor_count]
+      # The aggregate and the single freshest reading both look fine, which can
+      # mask one channel node quietly falling behind the rest of the zone -
+      # surface that explicitly instead of letting the freshest channel hide it.
+      lagging_nodes = (@assigned_nodes || []).reject do |node|
+        reading = @latest_readings_by_node_id[node.node_id]
+        reading.present? && reading_freshness(reading) == "ok"
+      end
+
+      if lagging_nodes.any?
+        names = lagging_nodes.map(&:display_name).sort
+        items << {
+          label: "Uneven channel freshness",
+          detail: "#{names.join(', ')} #{names.size == 1 ? "hasn't" : "haven't"} reported as recently as the rest of this zone.",
+          severity: "warn"
+        }
+      end
     end
 
     if @open_fault_count.positive?

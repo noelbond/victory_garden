@@ -25,8 +25,9 @@ class NodesController < ApplicationController
     "recorded_at" => "sensor_readings.recorded_at",
     "moisture_percent" => "sensor_readings.moisture_percent",
     "moisture_raw" => "sensor_readings.moisture_raw",
-    "soil_temp_c" => "sensor_readings.soil_temp_c",
-    "battery_percent" => "sensor_readings.battery_percent",
+    "air_temperature_f" => "sensor_readings.air_temperature_c",
+    "humidity_percent" => "sensor_readings.humidity_percent",
+    "greenhouse_alert_status" => "sensor_readings.greenhouse_alert_status",
     "health" => "sensor_readings.health",
     "last_error" => "sensor_readings.last_error",
     "publish_reason" => "sensor_readings.publish_reason",
@@ -38,8 +39,9 @@ class NodesController < ApplicationController
     ["recorded_at", "Recorded At"],
     ["moisture_percent", "Moisture %"],
     ["moisture_raw", "Moisture Raw"],
-    ["soil_temp_c", "Soil Temp C"],
-    ["battery_percent", "Battery %"],
+    ["air_temperature_f", "Air Temp F"],
+    ["humidity_percent", "Humidity %"],
+    ["greenhouse_alert_status", "Greenhouse Alert"],
     ["health", "Health"],
     ["last_error", "Last Error"],
     ["publish_reason", "Publish Reason"],
@@ -56,6 +58,8 @@ class NodesController < ApplicationController
     @nodes = Node.includes(:zone).order(last_seen_at: :desc, node_id: :asc)
     @unassigned_nodes = @nodes.select { |node| !node.assigned? }
     @assigned_nodes = @nodes.select(&:assigned?)
+    @unassigned_node_groups = Node.group_by_device(@unassigned_nodes)
+    @assigned_node_groups = Node.group_by_device(@assigned_nodes)
 
     @distinct_zone_ids = Node.distinct.pluck(:zone_id)
   end
@@ -127,7 +131,7 @@ class NodesController < ApplicationController
       command_id: "#{@node.node_id}-#{Time.current.utc.strftime('%Y%m%dT%H%M%SZ')}-request-reading",
       node_id: @node.node_id
     )
-    redirect_to resolved_return_path, notice: "Immediate reading requested."
+    redirect_to resolved_return_path, notice: reading_request_notice_for(@node)
   end
 
   def reboot
@@ -236,19 +240,7 @@ class NodesController < ApplicationController
   end
 
   def csv_value_for(reading, column)
-    case column
-    when "recorded_at" then reading.recorded_at.utc.iso8601
-    when "moisture_percent" then reading.moisture_percent
-    when "moisture_raw" then reading.moisture_raw
-    when "soil_temp_c" then reading.soil_temp_c
-    when "battery_percent" then reading.battery_percent
-    when "health" then reading.health
-    when "last_error" then reading.last_error.presence || "none"
-    when "publish_reason" then reading.publish_reason
-    when "wifi_rssi" then reading.wifi_rssi
-    when "wake_count" then reading.wake_count
-    when "uptime_seconds" then reading.uptime_seconds
-    end
+    reading.csv_value(column)
   end
 
 end

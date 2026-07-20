@@ -38,8 +38,9 @@ class ReadingHistoryController < ApplicationController
     "node" => "sensor_readings.node_id",
     "moisture_percent" => "sensor_readings.moisture_percent",
     "moisture_raw" => "sensor_readings.moisture_raw",
-    "soil_temp_c" => "sensor_readings.soil_temp_c",
-    "battery_percent" => "sensor_readings.battery_percent",
+    "air_temperature_f" => "sensor_readings.air_temperature_c",
+    "humidity_percent" => "sensor_readings.humidity_percent",
+    "greenhouse_alert_status" => "sensor_readings.greenhouse_alert_status",
     "health" => "sensor_readings.health",
     "last_error" => "sensor_readings.last_error",
     "publish_reason" => "sensor_readings.publish_reason"
@@ -50,8 +51,9 @@ class ReadingHistoryController < ApplicationController
     ["node", "Node"],
     ["moisture_percent", "Moisture %"],
     ["moisture_raw", "Moisture Raw"],
-    ["soil_temp_c", "Soil Temp C"],
-    ["battery_percent", "Battery %"],
+    ["air_temperature_f", "Air Temp F"],
+    ["humidity_percent", "Humidity %"],
+    ["greenhouse_alert_status", "Greenhouse Alert"],
     ["health", "Health"],
     ["last_error", "Last Error"],
     ["publish_reason", "Publish Reason"]
@@ -91,6 +93,10 @@ class ReadingHistoryController < ApplicationController
       .order(Arel.sql("#{SORTABLE_COLUMNS.fetch(sort_column)} #{sort_direction.upcase}, sensor_readings.id #{secondary_sort_direction}"))
       .offset((@page - 1) * @per_page)
       .limit(@per_page)
+    # Built from the readings actually being displayed, not just currently-assigned
+    # nodes, so historical rows from an unassigned/reassigned node still resolve
+    # to a friendly name instead of silently falling back to the raw node_id.
+    @nodes_by_node_id = Node.where(node_id: @readings.map(&:node_id).uniq).index_by(&:node_id)
 
     @node_tabs = @selected_zone ? @zone_nodes.to_a : []
     @active_filter_count = active_filter_count
@@ -208,18 +214,7 @@ class ReadingHistoryController < ApplicationController
   end
 
   def csv_value_for(reading, column)
-    case column
-    when "recorded_at" then reading.recorded_at&.utc&.iso8601
-    when "zone" then reading.zone&.name.presence || reading.zone&.zone_id
-    when "node" then reading.node_id
-    when "moisture_percent" then reading.moisture_percent
-    when "moisture_raw" then reading.moisture_raw
-    when "soil_temp_c" then reading.soil_temp_c
-    when "battery_percent" then reading.battery_percent
-    when "health" then reading.health
-    when "last_error" then reading.last_error.presence || "none"
-    when "publish_reason" then reading.publish_reason
-    end
+    reading.csv_value(column)
   end
 
 end

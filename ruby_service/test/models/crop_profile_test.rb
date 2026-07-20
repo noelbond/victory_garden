@@ -58,13 +58,16 @@ class CropProfileTest < ActiveSupport::TestCase
     assert_includes crop.errors[:daily_max_runtime_sec], "must be greater than or equal to max pulse runtime"
   end
 
-  test "enqueues node config publish when assigned crop profile changes" do
+  test "enqueues one node config publish per device when assigned crop profile changes" do
     crop = create(:crop_profile)
     zone = create(:zone, crop_profile: crop)
-    Node.create!(node_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+    channels = 4.times.map do |channel|
+      Node.create!(node_id: "sensor-zone1-ch#{channel}", device_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+    end
 
-    assert_enqueued_with(job: PublishNodeConfigJob) do
+    assert_enqueued_jobs 1, only: PublishNodeConfigJob do
       crop.update!(dry_threshold: 25.0)
     end
+    assert_enqueued_with(job: PublishNodeConfigJob, args: [channels.first.id])
   end
 end

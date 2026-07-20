@@ -1,4 +1,6 @@
 class SettingsController < ApplicationController
+  include SharedParams
+
   def show
     @setting = ConnectionSetting.first || ConnectionSetting.new
   end
@@ -16,18 +18,6 @@ class SettingsController < ApplicationController
   private
 
   def setting_params
-    params.require(:connection_setting).permit(
-      :mqtt_host,
-      :mqtt_port,
-      :mqtt_username,
-      :mqtt_password,
-      :irrigation_line_count,
-      :readings_topic,
-      :actuators_topic,
-      :command_topic,
-      :config_topic,
-      :bluetooth_enabled,
-      :notes
-    )
+    permitted_connection_setting_params
   end
 end
