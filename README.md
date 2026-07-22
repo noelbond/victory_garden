@@ -63,7 +63,7 @@ The firmware, Python controller, tests, and docs should all be updated from the 
 
 - PostgreSQL in Rails is the source of truth for crop profiles, zone definitions, node assignments, watering history, and config sync status.
 - MQTT retained node state is the live transport and working state for nodes and the Python controller, not the long-term source of truth.
-- The actuator path is zone-scoped. Rails publishes to `greenhouse/zones/{zone_id}/actuator/command`, and the dedicated actuator Pico publishes results to `greenhouse/zones/{zone_id}/actuator/status`.
+- The actuator topic remains zone-scoped, but watering targets are node-scoped when a command includes `node_id`. Rails/Python publish to `greenhouse/zones/{zone_id}/actuator/command`, and the actuator Pico reports `zone_id` plus `node_id` on `greenhouse/zones/{zone_id}/actuator/status`.
 - Python is the authoritative automatic actuator-command publisher in the deployed stack.
 - Rails remains the manual actuator-command publisher, persistence layer, and config authority.
 - The deployed Pi stack expects MQTT username/password auth on the local broker.

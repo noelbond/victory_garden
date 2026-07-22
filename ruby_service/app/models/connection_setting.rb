@@ -7,19 +7,25 @@ class ConnectionSetting < ApplicationRecord
   validates :irrigation_line_count, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
   validates :mqtt_host, format: { with: HOST_PATTERN, message: "must be a valid hostname, IPv4 address, or bracketed IPv6 address" }, allow_blank: true
 
-  validate :irrigation_line_count_covers_assigned_zones
+  validate :irrigation_line_count_covers_assigned_targets
 
   after_commit :enqueue_config_publish_if_irrigation_changed, on: %i[create update]
 
   private
 
-  def irrigation_line_count_covers_assigned_zones
+  def irrigation_line_count_covers_assigned_targets
     return if irrigation_line_count.blank?
+
+    overflow = Node.where("irrigation_line > ?", irrigation_line_count).order(:irrigation_line).first
+    if overflow
+      errors.add(:irrigation_line_count, "must be at least #{overflow.irrigation_line} to keep existing node pump assignments")
+      return
+    end
 
     overflow = Zone.where("irrigation_line > ?", irrigation_line_count).order(:irrigation_line).first
     return unless overflow
 
-    errors.add(:irrigation_line_count, "must be at least #{overflow.irrigation_line} to keep existing zone assignments")
+    errors.add(:irrigation_line_count, "must be at least #{overflow.irrigation_line} to keep existing legacy zone assignments")
   end
 
   def enqueue_config_publish_if_irrigation_changed

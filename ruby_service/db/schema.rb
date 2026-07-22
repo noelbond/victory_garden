@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_20_090000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_21_090000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -25,7 +25,9 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_20_090000) do
     t.text "fault_detail"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "node_id"
     t.index ["idempotency_key", "state"], name: "index_actuator_statuses_on_idempotency_key_and_state_unique", unique: true, where: "(idempotency_key IS NOT NULL)"
+    t.index ["node_id", "recorded_at"], name: "index_actuator_statuses_on_node_id_and_recorded_at"
     t.index ["zone_id", "recorded_at"], name: "index_actuator_statuses_on_zone_id_and_recorded_at"
     t.index ["zone_id"], name: "index_actuator_statuses_on_zone_id"
   end
@@ -69,6 +71,8 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_20_090000) do
     t.datetime "resolved_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "node_id"
+    t.index ["node_id", "recorded_at"], name: "index_faults_on_node_id_and_recorded_at"
     t.index ["zone_id", "recorded_at"], name: "index_faults_on_zone_id_and_recorded_at"
     t.index ["zone_id"], name: "index_faults_on_zone_id"
   end
@@ -97,7 +101,11 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_20_090000) do
     t.integer "moisture_raw_wet"
     t.string "device_id"
     t.string "name"
+    t.bigint "crop_profile_id"
+    t.integer "irrigation_line"
+    t.index ["crop_profile_id"], name: "index_nodes_on_crop_profile_id"
     t.index ["device_id"], name: "index_nodes_on_device_id"
+    t.index ["irrigation_line"], name: "index_nodes_on_irrigation_line", unique: true, where: "(irrigation_line IS NOT NULL)"
     t.index ["node_id"], name: "index_nodes_on_node_id", unique: true
     t.index ["zone_id"], name: "index_nodes_on_zone_id"
   end
@@ -141,7 +149,9 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_20_090000) do
     t.string "status"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "node_id"
     t.index ["idempotency_key"], name: "index_watering_events_on_idempotency_key", unique: true
+    t.index ["node_id", "issued_at"], name: "index_watering_events_on_node_id_and_issued_at"
     t.index ["zone_id", "issued_at"], name: "index_watering_events_on_zone_id_and_issued_at"
     t.index ["zone_id", "status"], name: "index_watering_events_on_zone_id_and_status"
     t.index ["zone_id"], name: "index_watering_events_on_zone_id"
@@ -164,6 +174,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_20_090000) do
 
   add_foreign_key "actuator_statuses", "zones"
   add_foreign_key "faults", "zones"
+  add_foreign_key "nodes", "crop_profiles"
   add_foreign_key "nodes", "zones"
   add_foreign_key "sensor_readings", "zones"
   add_foreign_key "watering_events", "zones"

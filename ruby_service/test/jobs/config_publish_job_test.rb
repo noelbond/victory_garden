@@ -94,4 +94,39 @@ class ConfigPublishJobTest < ActiveSupport::TestCase
 
     assert_enqueued_with(job: PublishNodeConfigJob, args: [channels.first.id])
   end
+
+  test "publishes node watering targets for controller and actuator config" do
+    ConnectionSetting.create!(irrigation_line_count: 4)
+    zone_crop = create(:crop_profile, crop_id: "tomato-zone")
+    plant_crop = create(:crop_profile, crop_id: "squash-plant")
+    zone = create(:zone, zone_id: "zone1", crop_profile: zone_crop, active: true, irrigation_line: nil)
+    node = Node.create!(
+      node_id: "sensor-zone1-ch0",
+      device_id: "sensor-zone1",
+      zone: zone,
+      crop_profile: plant_crop,
+      irrigation_line: 2,
+      last_seen_at: Time.current
+    )
+    published_payloads = []
+    published_actuator_payloads = []
+
+    with_publish_config_stub(->(payload) { published_payloads << payload }) do
+      with_publish_actuator_config_stub(->(payload) { published_actuator_payloads << payload }) do
+        ConfigPublishJob.perform_now
+      end
+    end
+
+    payload = published_payloads.fetch(0)
+    actuator_payload = published_actuator_payloads.fetch(0)
+    assert_equal "node", payload[:watering_mode]
+    assert_equal(
+      [{ node_id: node.node_id, zone_id: zone.zone_id, crop_id: plant_crop.crop_id, active: true, allowed_hours: zone.allowed_hours, irrigation_line: 2 }],
+      payload[:nodes]
+    )
+    assert_equal(
+      [{ node_id: node.node_id, zone_id: zone.zone_id, irrigation_line: 2, active: true }],
+      actuator_payload[:nodes]
+    )
+  end
 end

@@ -111,7 +111,7 @@ class NodeTest < ActiveSupport::TestCase
     Node.sync_default_names_for_zone!(zone)
 
     assert_equal(
-      ["Greenhouse Zone 1 node 1", "Greenhouse Zone 1 node 2", "Greenhouse Zone 1 node 3", "Greenhouse Zone 1 node 4"],
+      ["Greenhouse Zone 1_Ch1", "Greenhouse Zone 1_Ch2", "Greenhouse Zone 1_Ch3", "Greenhouse Zone 1_Ch4"],
       channels.map { |node| node.reload.name }
     )
   end
@@ -237,6 +237,38 @@ class NodeTest < ActiveSupport::TestCase
     assert_enqueued_with(job: ConfigPublishJob) do
       node.destroy!
     end
+  end
+
+  test "uses node crop profile and irrigation line for plant watering configuration" do
+    fallback_crop = create(:crop_profile, crop_id: "tomato-node-fallback")
+    plant_crop = create(:crop_profile, crop_id: "basil-node")
+    zone = create(:zone, crop_profile: fallback_crop)
+    node = Node.create!(
+      valid_attrs.merge(
+        zone: zone,
+        crop_profile: plant_crop,
+        irrigation_line: 2
+      )
+    )
+
+    assert_equal plant_crop, node.effective_crop_profile
+    assert node.watering_configured?
+  end
+
+  test "falls back to zone crop profile until a plant crop is chosen" do
+    zone = create(:zone)
+    node = Node.create!(valid_attrs.merge(zone: zone))
+
+    assert_equal zone.crop_profile, node.effective_crop_profile
+    assert_not node.watering_configured?
+  end
+
+  test "rejects node irrigation line above configured pump output count" do
+    ConnectionSetting.create!(irrigation_line_count: 2)
+    node = Node.new(valid_attrs.merge(irrigation_line: 3))
+
+    assert_not node.valid?
+    assert_includes node.errors[:irrigation_line], "must be between 1 and 2"
   end
 
   test "does not enqueue config publish when an unassigned node is destroyed" do

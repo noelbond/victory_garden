@@ -7,10 +7,16 @@ Usage: ./deploy/pi_image/build_pi_image.sh --pi-gen-dir PATH --first-user-pass P
 
 Stages the current Victory Garden repo and bundled Pico firmwares into a custom
 pi-gen stage, then runs pi-gen's build.sh to create a Raspberry Pi OS 64-bit
-image with Victory Garden preloaded. The final artifact is exported as a
-versioned .img.xz plus a matching .sha256 file. If a base download URL is
-provided, the pipeline also emits a Raspberry Pi Imager repository JSON file
-that enables Imager 2.x customisation for the hosted image.
+image (with desktop) with Victory Garden preloaded. The final artifact is
+exported as a versioned .img.xz plus a matching .sha256 file. If a base
+download URL is provided, the pipeline also emits a Raspberry Pi Imager
+repository JSON file that enables Imager 2.x customisation for the hosted
+image.
+
+The image includes the standard Raspberry Pi OS desktop environment so it can
+be used with a monitor/keyboard attached, but nothing about Victory Garden
+requires that: the web app is still reachable at http://<pi-ip>:3000 (or
+http://victory-garden.local:3000) and SSH stays enabled either way.
 EOF
 }
 
@@ -152,8 +158,16 @@ FIRST_USER_NAME=${FIRST_USER_NAME}
 FIRST_USER_PASS=${FIRST_USER_PASS}
 DISABLE_FIRST_BOOT_USER_RENAME=1
 HOSTNAME=${IMAGE_HOSTNAME}
-STAGE_LIST="stage0 stage1 stage2 stage-victory-garden"
+STAGE_LIST="stage0 stage1 stage2 stage3 stage4 stage-victory-garden"
 EOF
+}
+
+# stage2 and stage4 each carry their own EXPORT_IMAGE marker in stock pi-gen
+# (that's how a plain Lite or plain Desktop image gets produced). We only want
+# one final artifact - the one built on top of our custom stage - so strip
+# those markers rather than exporting (and having to filter out) extra images.
+disable_earlier_stage_exports() {
+  rm -f "$PI_GEN_DIR"/stage2/EXPORT_IMAGE "$PI_GEN_DIR"/stage4/EXPORT_IMAGE
 }
 
 run_pi_gen_build() {
@@ -225,5 +239,6 @@ build_firmware_bundles
 verify_pi_gen_branch
 stage_pi_gen_files
 write_pi_gen_config
+disable_earlier_stage_exports
 run_pi_gen_build
 export_release_artifacts

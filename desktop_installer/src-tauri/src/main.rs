@@ -138,6 +138,12 @@ struct SetupNode {
     moisture_raw_dry: Option<u64>,
     moisture_raw_wet: Option<u64>,
     calibration_configured: Option<bool>,
+    crop_profile_id: Option<u64>,
+    crop_profile_name: Option<String>,
+    effective_crop_profile_id: Option<u64>,
+    effective_crop_profile_name: Option<String>,
+    irrigation_line: Option<u16>,
+    watering_configured: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -182,6 +188,12 @@ struct SetupAssignNodeResponse {
     assigned: bool,
     node: SetupNode,
     first_zone: SetupZone,
+    status: SetupStatus,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SetupUpdateNodeResponse {
+    node: SetupNode,
     status: SetupStatus,
 }
 
@@ -231,6 +243,7 @@ struct SetupCalibrationResponse {
 struct SetupActuatorStatus {
     id: u64,
     zone_id: String,
+    node_id: Option<String>,
     state: String,
     recorded_at: Option<String>,
     actual_runtime_seconds: Option<u64>,
@@ -242,6 +255,7 @@ struct SetupActuatorStatus {
 struct SetupWateringEvent {
     id: u64,
     zone_id: String,
+    node_id: Option<String>,
     command: String,
     status: String,
     reason: Option<String>,
@@ -256,6 +270,7 @@ struct SetupStartWateringResponse {
     idempotency_key: String,
     issued_at: String,
     zone: SetupZone,
+    node: Option<SetupNode>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -264,6 +279,7 @@ struct SetupWateringStatusResponse {
     event: Option<SetupWateringEvent>,
     actuator_status: Option<SetupActuatorStatus>,
     zone: Option<SetupZone>,
+    node: Option<SetupNode>,
 }
 
 #[derive(Deserialize)]
@@ -297,8 +313,6 @@ struct CreateCropProfileInput {
 struct SaveZoneInput {
     base_url: String,
     name: String,
-    crop_profile_id: u64,
-    irrigation_line: u16,
     publish_interval_hours: u16,
 }
 
@@ -315,6 +329,16 @@ struct AssignSetupNodeInput {
     base_url: String,
     node_id: String,
     zone_id: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateSetupNodeInput {
+    base_url: String,
+    node_id: String,
+    name: String,
+    crop_profile_id: u64,
+    irrigation_line: u16,
 }
 
 #[derive(Deserialize)]
@@ -346,6 +370,7 @@ struct SaveSetupCalibrationInput {
 struct StartSetupWateringInput {
     base_url: String,
     zone_id: u64,
+    node_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -353,6 +378,7 @@ struct StartSetupWateringInput {
 struct SetupWateringStatusInput {
     base_url: String,
     zone_id: u64,
+    node_id: Option<String>,
     idempotency_key: String,
 }
 
@@ -1360,8 +1386,6 @@ fn save_setup_zone(input: SaveZoneInput) -> Result<SetupZoneResponse, String> {
     let payload = json!({
         "zone": {
             "name": input.name,
-            "crop_profile_id": input.crop_profile_id,
-            "irrigation_line": input.irrigation_line,
             "publish_interval_ms": u32::from(input.publish_interval_hours) * 3_600_000,
             "active": true
         }
@@ -1388,6 +1412,20 @@ fn assign_setup_node(input: AssignSetupNodeInput) -> Result<SetupAssignNodeRespo
     })
     .to_string();
     let (status_code, body) = http_request(&url, "POST", Some(&payload), Some("application/json"))?;
+    decode_json_response(status_code, &body, &url)
+}
+
+#[tauri::command]
+fn update_setup_node(input: UpdateSetupNodeInput) -> Result<SetupUpdateNodeResponse, String> {
+    let url = api_url_from_base(&input.base_url, "/setup_api/node")?;
+    let payload = json!({
+        "node_id": input.node_id,
+        "name": input.name,
+        "crop_profile_id": input.crop_profile_id,
+        "irrigation_line": input.irrigation_line
+    })
+    .to_string();
+    let (status_code, body) = http_request(&url, "PATCH", Some(&payload), Some("application/json"))?;
     decode_json_response(status_code, &body, &url)
 }
 
@@ -1431,7 +1469,8 @@ fn save_setup_calibration(input: SaveSetupCalibrationInput) -> Result<SetupCalib
 fn start_setup_watering(input: StartSetupWateringInput) -> Result<SetupStartWateringResponse, String> {
     let url = api_url_from_base(&input.base_url, "/setup_api/start_watering")?;
     let payload = json!({
-        "zone_id": input.zone_id
+        "zone_id": input.zone_id,
+        "node_id": input.node_id
     })
     .to_string();
     let (status_code, body) = http_request(&url, "POST", Some(&payload), Some("application/json"))?;
@@ -1442,8 +1481,9 @@ fn start_setup_watering(input: StartSetupWateringInput) -> Result<SetupStartWate
 fn fetch_setup_watering_status(input: SetupWateringStatusInput) -> Result<SetupWateringStatusResponse, String> {
     let url = api_url_from_base(&input.base_url, "/setup_api/watering_status")?;
     let query_url = format!(
-        "{url}?zone_id={}&idempotency_key={}",
+        "{url}?zone_id={}&node_id={}&idempotency_key={}",
         input.zone_id,
+        encode_query_value(input.node_id.as_deref().unwrap_or("")),
         encode_query_value(&input.idempotency_key)
     );
     let (status_code, body) = http_request(&query_url, "GET", None, None)?;
@@ -1885,6 +1925,7 @@ fn main() {
             save_setup_zone,
             fetch_setup_node_status,
             assign_setup_node,
+            update_setup_node,
             request_setup_reading,
             fetch_setup_reading_status,
             save_setup_calibration,

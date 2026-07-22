@@ -196,8 +196,8 @@
             </thead>
             <tbody>
               <% @nodes.each do |node| %>
-                <% latest_reading = node.zone_id ? @latest_readings[node.zone_id] : nil %>
-                <% latest_status = node.zone_id ? @latest_actuator_statuses[node.zone_id] : nil %>
+                <% latest_reading = @latest_readings[node.node_id] %>
+                <% latest_status = @latest_actuator_statuses[node.node_id] %>
                 <% runtime_guidance = node_runtime_error_guidance(node) %>
                 <% config_guidance = node_config_guidance(node) %>
                 <% freshness_class = node_seen_freshness_state(node) %>
@@ -312,6 +312,9 @@
             <div class="attention-item attention-warn">
               <div class="attention-label">
                 <strong><%= fault.zone.name.presence || fault.zone.zone_id %></strong>
+                <% if fault.node_id.present? %>
+                  <span><%= fault.node&.display_name || fault.node_id %></span>
+                <% end %>
                 <span class="health-pill warn"><%= fault.fault_code %></span>
                 <span class="muted"><%= time_ago_in_words(fault.recorded_at) %> ago</span>
               </div>

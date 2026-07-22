@@ -14,8 +14,8 @@ test("normalizeSensorChannels preserves explicit provisioning and backend channe
     "sensor-zone1-ch0",
     { node_id: "sensor-zone1-ch1", moisture_raw_dry: 100, moisture_raw_wet: 200 },
   ]), [
-    { nodeId: "sensor-zone1-ch0", dryRaw: null, wetRaw: null },
-    { nodeId: "sensor-zone1-ch1", dryRaw: 100, wetRaw: 200 },
+    { nodeId: "sensor-zone1-ch0", name: "", cropProfileId: null, irrigationLine: null, wateringConfigured: false, dryRaw: null, wetRaw: null },
+    { nodeId: "sensor-zone1-ch1", name: "", cropProfileId: null, irrigationLine: null, wateringConfigured: false, dryRaw: 100, wetRaw: 200 },
   ])
 })
 
@@ -38,6 +38,18 @@ test("nextInstallerStep walks the unified installer flow in order", () => {
       completed: {},
     }),
     { id: "step-connection", label: "Step 2: Configure Victory Garden" },
+  )
+
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: { connection_ready: true, zone_ready: true, assigned_node_ready: true },
+        crop_profiles: [{ id: 1 }],
+      },
+      completed: { actuator: true, calibration: true },
+    }),
+    { id: "step-reading", label: "Step 8: Confirm The Calibrated Reading" },
   )
 
   assert.deepEqual(

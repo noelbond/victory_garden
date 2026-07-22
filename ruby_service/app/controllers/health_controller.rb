@@ -11,9 +11,9 @@ class HealthController < ApplicationController
         node.node_id
       ]
     end
-    @latest_readings = latest_records(SensorReading).index_by(&:zone_id)
-    @latest_actuator_statuses = latest_records(ActuatorStatus).index_by(&:zone_id)
-    @recent_faults = Fault.includes(:zone).order(recorded_at: :desc).limit(10)
+    @latest_readings = latest_sensor_readings_by_node
+    @latest_actuator_statuses = latest_actuator_statuses_by_node
+    @recent_faults = Fault.includes(:zone, :node).order(recorded_at: :desc).limit(10)
     @environment_label = Rails.env.production? ? "Production" : Rails.env.titleize
     @recent_activity = build_recent_activity
     assigned_zones = @nodes.filter_map(&:zone).uniq(&:id)
@@ -64,15 +64,15 @@ class HealthController < ApplicationController
       items << {
         at: reading.recorded_at,
         label: "Reading",
-        detail: "#{reading.zone.name.presence || reading.zone.zone_id}: #{reading.moisture_percent || "—"}%"
+        detail: "#{reading.zone.name.presence || reading.zone.zone_id} / #{reading.node&.display_name || reading.node_id}: #{reading.moisture_percent || "—"}%"
       }
     end
 
-    latest_records(ActuatorStatus).includes(:zone).limit(5).each do |status|
+    latest_records(ActuatorStatus).includes(:zone, :node).limit(5).each do |status|
       items << {
         at: status.recorded_at,
         label: "Actuator",
-        detail: "#{status.zone.name.presence || status.zone.zone_id}: #{status.state}"
+        detail: "#{status.zone.name.presence || status.zone.zone_id} / #{status.node&.display_name || status.node_id || "zone"}: #{status.state}"
       }
     end
 
@@ -85,6 +85,21 @@ class HealthController < ApplicationController
     end
 
     items.compact.sort_by { |item| item[:at] }.reverse.first(8)
+  end
+
+  def latest_sensor_readings_by_node
+    SensorReading
+      .select("DISTINCT ON (node_id) sensor_readings.*")
+      .order(:node_id, recorded_at: :desc)
+      .index_by(&:node_id)
+  end
+
+  def latest_actuator_statuses_by_node
+    ActuatorStatus
+      .where.not(node_id: nil)
+      .select("DISTINCT ON (node_id) actuator_statuses.*")
+      .order(:node_id, recorded_at: :desc)
+      .index_by(&:node_id)
   end
 
   def build_attention_items

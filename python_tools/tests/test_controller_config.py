@@ -12,6 +12,7 @@ from watering.controller import (
     SYSTEM_CONFIG_TOPIC,
     allowed_now,
     load_controller_runtime,
+    process_node_tick,
     on_message,
     process_zone_tick,
     reading_ready_for_control,
@@ -21,6 +22,7 @@ from watering.controller import (
     sync_zone_state_subscriptions,
     zone_moisture_snapshot,
 )
+from watering.controller_runtime import LIVE_NODES
 from watering.schemas import SensorReading
 from watering.state import ZoneState
 
@@ -85,6 +87,7 @@ def controller_args():
 
 def setup_function():
     LIVE_CROPS.clear()
+    LIVE_NODES.clear()
     LIVE_ZONES.clear()
     LATEST_STATE.clear()
     LATEST_ZONE_READINGS.clear()
@@ -737,6 +740,120 @@ def test_process_zone_tick_waters_when_quorum_average_is_dry():
     assert event_payloads[0]["moisture_percent"] == 23.5
     assert event_payloads[0]["valid_sensor_count"] == 4
     assert any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
+
+
+def test_process_node_tick_waters_only_the_dry_channel_target():
+    on_message(
+        None,
+        None,
+        SimpleNamespace(
+            topic=SYSTEM_CONFIG_TOPIC,
+            payload=json.dumps(
+                {
+                    "crops": [
+                        {
+                            "crop_id": "tomato",
+                            "crop_name": "Tomato",
+                            "dry_threshold": 30.0,
+                            "max_pulse_runtime_sec": 45,
+                            "daily_max_runtime_sec": 300,
+                        },
+                        {
+                            "crop_id": "basil",
+                            "crop_name": "Basil",
+                            "dry_threshold": 20.0,
+                            "max_pulse_runtime_sec": 20,
+                            "daily_max_runtime_sec": 120,
+                        },
+                    ],
+                    "zones": [
+                        {
+                            "zone_id": "zone1",
+                            "crop_id": "tomato",
+                            "node_ids": ["sensor-zone1-ch0", "sensor-zone1-ch1"],
+                            "active": True,
+                            "allowed_hours": {"start_hour": 6, "end_hour": 20},
+                            "irrigation_line": 1,
+                        }
+                    ],
+                    "nodes": [
+                        {
+                            "node_id": "sensor-zone1-ch0",
+                            "zone_id": "zone1",
+                            "crop_id": "tomato",
+                            "active": True,
+                            "irrigation_line": 1,
+                        },
+                        {
+                            "node_id": "sensor-zone1-ch1",
+                            "zone_id": "zone1",
+                            "crop_id": "basil",
+                            "active": True,
+                            "irrigation_line": 2,
+                        },
+                    ],
+                    "watering_mode": "node",
+                }
+            ).encode("utf-8"),
+        ),
+    )
+
+    store_latest_reading(
+        SensorReading(
+            node_id="sensor-zone1-ch0",
+            zone_id="zone1",
+            moisture_raw=2500,
+            moisture_percent=22.0,
+            timestamp=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+    store_latest_reading(
+        SensorReading(
+            node_id="sensor-zone1-ch1",
+            zone_id="zone1",
+            moisture_raw=2500,
+            moisture_percent=30.0,
+            timestamp=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    client = FakeClient()
+    args = controller_args()
+    states = {}
+    node_runtime = {}
+    target = LIVE_NODES["sensor-zone1-ch0"]
+    node_runtime, states = process_node_tick(
+        target,
+        LIVE_CROPS[target.crop_id],
+        node_runtime,
+        states,
+        datetime(2026, 3, 31, 10, 1, tzinfo=timezone.utc),
+        args,
+        client,
+        local_tz=timezone(timedelta(hours=-4)),
+    )
+
+    wet_target = LIVE_NODES["sensor-zone1-ch1"]
+    _wet_runtime, states = process_node_tick(
+        wet_target,
+        LIVE_CROPS[wet_target.crop_id],
+        {},
+        states,
+        datetime(2026, 3, 31, 10, 1, tzinfo=timezone.utc),
+        args,
+        client,
+        local_tz=timezone(timedelta(hours=-4)),
+    )
+
+    command_payloads = [
+        json.loads(payload)
+        for topic, payload, _ in client.messages
+        if topic.endswith("/actuator/command")
+    ]
+    assert len(command_payloads) == 1
+    assert command_payloads[0]["node_id"] == "sensor-zone1-ch0"
+    assert states["node:sensor-zone1-ch0"].runtime_seconds_today == 45
+    assert states["node:sensor-zone1-ch1"].runtime_seconds_today == 0
 
 
 def test_process_zone_tick_caps_global_quorum_to_expected_sensor_count():

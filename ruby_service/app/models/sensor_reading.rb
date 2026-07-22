@@ -1,5 +1,6 @@
 class SensorReading < ApplicationRecord
   belongs_to :zone
+  belongs_to :node, primary_key: :node_id, foreign_key: :node_id, optional: true
 
   validates :node_id, presence: true
   validates :recorded_at, presence: true

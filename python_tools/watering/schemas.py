@@ -14,12 +14,14 @@ class SensorReading(BaseModel):
 
     schema_version: Optional[str] = Field(default=None, max_length=50, examples=["node-state/v1"])
     node_id: str = Field(min_length=1, examples=["sensor-gh1-zone3"])
+    device_id: Optional[str] = Field(default=None, max_length=50, examples=["sensor-gh1"])
     zone_id: str = Field(min_length=1, examples=["zone3"])
 
     timestamp: datetime = Field(default_factory=utcnow)
 
     moisture_raw: int = Field(ge=0, le=65535, examples=[1820])
     moisture_percent: Optional[float] = Field(default=None, ge=0, le=100, examples=[31.4])
+    soil_moisture_read: Optional[bool] = Field(default=None)
 
     battery_voltage: Optional[float] = Field(default=None, ge=0, le=10, examples=[3.78])
     battery_percent: Optional[int] = Field(default=None, ge=0, le=100, examples=[89])
@@ -32,6 +34,9 @@ class SensorReading(BaseModel):
         serialization_alias="wifi_rssi",
     )
     soil_temp_c: Optional[float] = Field(default=None, examples=[24.8])
+    air_temperature_c: Optional[float] = Field(default=None, ge=-40, le=125, examples=[24.8])
+    humidity_percent: Optional[float] = Field(default=None, ge=0, le=100, examples=[58.2])
+    greenhouse_alert_status: Optional[str] = Field(default=None, max_length=50, examples=["normal"])
     uptime_seconds: Optional[int] = Field(default=None, ge=0, examples=[607])
     wake_count: Optional[int] = Field(default=None, ge=0, examples=[1042])
     ip: Optional[str] = Field(default=None, max_length=50, examples=["192.168.4.21"])

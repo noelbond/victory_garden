@@ -4,6 +4,7 @@ module PayloadContracts
 
     REQUIRED_KEYS = %w[zone_id timestamp action].freeze
     OPTIONAL_KEYS = %w[
+      node_id
       moisture_percent
       runtime_seconds
       runtime_seconds_today
@@ -39,6 +40,7 @@ module PayloadContracts
       validate_integer!(normalized, "runtime_seconds_today", min: 0)
       validate_integer!(normalized, "valid_sensor_count", min: 0)
       validate_integer!(normalized, "expected_sensor_count", min: 0)
+      validate_length!(normalized, "node_id", max: 100)
       validate_length!(normalized, "idempotency_key", max: 300)
       validate_length!(normalized, "reason", max: 200)
       validate_string_list!(normalized, "valid_node_ids")

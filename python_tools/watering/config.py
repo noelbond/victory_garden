@@ -40,12 +40,25 @@ class SystemZoneConfig(BaseModel):
     active: bool = True
     allowed_hours: AllowedHoursConfig | None = None
     irrigation_line: int | None = Field(default=None, ge=1)
+    watering_mode: str | None = None
+
+
+class SystemNodeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    node_id: str = Field(min_length=1, examples=["sensor-zone1-ch0"])
+    zone_id: str = Field(min_length=1, examples=["zone1"])
+    crop_id: str = Field(min_length=1, examples=["tomato"])
+    active: bool = True
+    allowed_hours: AllowedHoursConfig | None = None
+    irrigation_line: int | None = Field(default=None, ge=1)
 
 
 class SystemConfigPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     crops: List[CropProfile]
     zones: List[SystemZoneConfig]
+    nodes: List[SystemNodeConfig] = Field(default_factory=list)
+    watering_mode: str = "zone_average"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -82,14 +95,25 @@ def validate_zone_crop_refs(
         raise ValueError(f"zones.yaml references unknown crop_id(s): {missing_str}")
 
 
-def load_system_config_payload(payload: dict) -> tuple[Dict[str, CropProfile], Dict[str, SystemZoneConfig]]:
+def load_system_config_payload(payload: dict) -> tuple[Dict[str, CropProfile], Dict[str, SystemZoneConfig], Dict[str, SystemNodeConfig]]:
     config = SystemConfigPayload.model_validate(payload)
     crops = {crop.crop_id: crop for crop in config.crops}
     zones = {zone.zone_id: zone for zone in config.zones}
+    nodes = {node.node_id: node for node in config.nodes if node.active}
 
     missing = sorted({zone.crop_id for zone in zones.values()} - set(crops.keys()))
     if missing:
         missing_str = ", ".join(missing)
         raise ValueError(f"system config references unknown crop_id(s): {missing_str}")
 
-    return crops, zones
+    missing_node_crops = sorted({node.crop_id for node in nodes.values()} - set(crops.keys()))
+    if missing_node_crops:
+        missing_str = ", ".join(missing_node_crops)
+        raise ValueError(f"system config nodes reference unknown crop_id(s): {missing_str}")
+
+    missing_node_zones = sorted({node.zone_id for node in nodes.values()} - set(zones.keys()))
+    if missing_node_zones:
+        missing_str = ", ".join(missing_node_zones)
+        raise ValueError(f"system config nodes reference unknown zone_id(s): {missing_str}")
+
+    return crops, zones, nodes

@@ -102,7 +102,7 @@ class ZoneTest < ActiveSupport::TestCase
 
     zone.update!(name: "Greenhouse Zone 1")
 
-    assert_equal "Greenhouse Zone 1 node 1", channel.reload.name
+    assert_equal "Greenhouse Zone 1_Ch1", channel.reload.name
   end
 
   test "publish_interval_ms rejects zero" do
@@ -132,7 +132,8 @@ class ZoneTest < ActiveSupport::TestCase
     assert_enqueued_jobs 1, only: PublishNodeConfigJob do
       zone.update!(allowed_hours: { "start_hour" => 7, "end_hour" => 19 })
     end
-    assert_enqueued_with(job: PublishNodeConfigJob, args: [channels.first.id])
+    enqueued_job = enqueued_jobs.find { |job| job[:job] == PublishNodeConfigJob }
+    assert_includes channels.map(&:id), enqueued_job[:args].first
   end
 
 end

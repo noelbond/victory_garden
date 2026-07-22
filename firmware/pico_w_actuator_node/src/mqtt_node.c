@@ -364,7 +364,22 @@ static uint8_t line_gpio_for_index(const mqtt_node_t *node, size_t line_index) {
 
 static actuator_zone_assignment_t *assignment_for_zone(mqtt_node_t *node, const char *zone_id) {
     for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
-        if (node->assignments[i].assigned && strcmp(node->assignments[i].zone_id, zone_id) == 0) {
+        if (node->assignments[i].assigned &&
+            node->assignments[i].node_id[0] == '\0' &&
+            strcmp(node->assignments[i].zone_id, zone_id) == 0) {
+            return &node->assignments[i];
+        }
+    }
+    return NULL;
+}
+
+static actuator_zone_assignment_t *assignment_for_node(mqtt_node_t *node, const char *node_id) {
+    if (!node_id || node_id[0] == '\0') {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
+        if (node->assignments[i].assigned && strcmp(node->assignments[i].node_id, node_id) == 0) {
             return &node->assignments[i];
         }
     }
@@ -438,7 +453,7 @@ static uint32_t actuator_elapsed_seconds(const actuator_line_run_t *run) {
     return (now_ms - run->started_at_ms) / 1000u;
 }
 
-static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone_id, const char *idempotency_key,
+static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone_id, const char *node_id, const char *idempotency_key,
                                              const actuator_line_run_t *run, actuator_status_t status,
                                              const char *fault_code, const char *fault_detail) {
     if (!g_runtime.connected || !g_runtime.client || !mqtt_client_is_connected(g_runtime.client)) {
@@ -449,6 +464,7 @@ static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone
     char timestamp[32];
     char payload[MQTT_TX_PAYLOAD_MAX];
     char actual_runtime_json[24];
+    char node_id_json[VG_MAX_NODE_ID_LEN + 4];
     char fault_code_json[64];
     char fault_detail_json[160];
     topic_actuator_status_for_zone(zone_id, topic, sizeof(topic));
@@ -459,6 +475,14 @@ static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone
     } else {
         snprintf(actual_runtime_json, sizeof(actual_runtime_json), "%lu",
                  (unsigned long)(run ? actuator_elapsed_seconds(run) : 0u));
+    }
+
+    if (node_id && node_id[0] != '\0') {
+        snprintf(node_id_json, sizeof(node_id_json), "\"%s\"", node_id);
+    } else if (run && run->node_id[0] != '\0') {
+        snprintf(node_id_json, sizeof(node_id_json), "\"%s\"", run->node_id);
+    } else {
+        snprintf(node_id_json, sizeof(node_id_json), "null");
     }
 
     if (fault_code && fault_code[0] != '\0') {
@@ -476,8 +500,9 @@ static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone
     snprintf(
         payload,
         sizeof(payload),
-        "{\"zone_id\":\"%s\",\"state\":\"%s\",\"timestamp\":\"%s\",\"idempotency_key\":\"%s\",\"actual_runtime_seconds\":%s,\"flow_ml\":null,\"fault_code\":%s,\"fault_detail\":%s}",
+        "{\"zone_id\":\"%s\",\"node_id\":%s,\"state\":\"%s\",\"timestamp\":\"%s\",\"idempotency_key\":\"%s\",\"actual_runtime_seconds\":%s,\"flow_ml\":null,\"fault_code\":%s,\"fault_detail\":%s}",
         zone_id,
+        node_id_json,
         actuator_status_name(status),
         timestamp,
         idempotency_key,
@@ -511,7 +536,7 @@ static void actuator_stop_with_status(mqtt_node_t *node, actuator_line_run_t *ru
            fault_code ? fault_code : "none");
     actuator_set_line_output(node, irrigation_line, false);
     if (run) {
-        mqtt_publish_actuator_status_now(node, run->zone_id, run->idempotency_key, run, status, fault_code, fault_detail);
+        mqtt_publish_actuator_status_now(node, run->zone_id, run->node_id, run->idempotency_key, run, status, fault_code, fault_detail);
         memset(run, 0, sizeof(*run));
     }
 }
@@ -616,7 +641,8 @@ static void handle_actuator_config_message(mqtt_node_t *node, const char *payloa
         const char *cursor = strchr(zones_array, '[');
         if (cursor) {
             ++cursor;
-            while ((cursor = strstr(cursor, "{\"zone_id\":\"")) != NULL) {
+            const char *array_end = strchr(cursor, ']');
+            while (array_end && (cursor = strstr(cursor, "{\"zone_id\":\"")) != NULL && cursor < array_end) {
                 actuator_zone_assignment_t assignment = {0};
                 const char *zone_start = cursor + strlen("{\"zone_id\":\"");
                 const char *after_zone = NULL;
@@ -663,6 +689,65 @@ static void handle_actuator_config_message(mqtt_node_t *node, const char *payloa
         }
     }
 
+    const char *nodes_array = strstr(payload, "\"nodes\":[");
+    if (nodes_array) {
+        const char *cursor = strchr(nodes_array, '[');
+        if (cursor) {
+            ++cursor;
+            const char *array_end = strchr(cursor, ']');
+            while (array_end && (cursor = strstr(cursor, "{\"node_id\":\"")) != NULL && cursor < array_end) {
+                actuator_zone_assignment_t assignment = {0};
+                const char *node_start = cursor + strlen("{\"node_id\":\"");
+                const char *after_node = NULL;
+                int line_number = 0;
+                bool active = false;
+
+                if (!decode_json_string(node_start, assignment.node_id, sizeof(assignment.node_id), &after_node)) {
+                    break;
+                }
+
+                const char *object_end = strchr(after_node, '}');
+                if (!object_end || object_end > array_end) {
+                    break;
+                }
+
+                const char *line_field = strstr(after_node, "\"irrigation_line\":");
+                const char *active_field = strstr(after_node, "\"active\":");
+                if (!line_field || line_field > object_end || !extract_json_int(line_field, "irrigation_line", &line_number)) {
+                    cursor = object_end + 1;
+                    continue;
+                }
+
+                if (!extract_json_string(after_node, "zone_id", assignment.zone_id, sizeof(assignment.zone_id))) {
+                    cursor = object_end + 1;
+                    continue;
+                }
+
+                if (active_field && active_field < object_end) {
+                    if (strncmp(active_field + strlen("\"active\":"), "true", 4) == 0) {
+                        active = true;
+                    }
+                }
+
+                if (line_number <= 0 || line_number > irrigation_line_count) {
+                    cursor = object_end + 1;
+                    continue;
+                }
+
+                assignment.assigned = true;
+                assignment.active = active;
+                assignment.irrigation_line = (uint8_t)line_number;
+                node->assignments[line_number - 1] = assignment;
+                printf("[actuator] config node=%s zone=%s line=%d active=%d\n",
+                       assignment.node_id,
+                       assignment.zone_id,
+                       line_number,
+                       (int)active);
+                cursor = object_end + 1;
+            }
+        }
+    }
+
     printf("[actuator] config applied line_count=%u\n", (unsigned)node->irrigation_line_count);
     subscribe_assigned_zone_topics(node);
     set_error(node, "none");
@@ -672,6 +757,7 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
     char command[32] = {0};
     char idempotency_key[96] = {0};
     char payload_zone_id[VG_MAX_ZONE_ID_LEN] = {0};
+    char payload_node_id[VG_MAX_NODE_ID_LEN] = {0};
     int runtime_seconds = 0;
 
     if (!payload || payload[0] == '\0') {
@@ -687,17 +773,25 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
 
     if (extract_json_string(payload, "zone_id", payload_zone_id, sizeof(payload_zone_id)) &&
         strcmp(payload_zone_id, topic_zone_id) != 0) {
-        mqtt_publish_actuator_status_now(node, topic_zone_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "ZONE_MISMATCH", "topic zone_id does not match payload");
+        mqtt_publish_actuator_status_now(node, topic_zone_id, NULL, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "ZONE_MISMATCH", "topic zone_id does not match payload");
         set_error(node, "actuator zone mismatch");
         return;
     }
+    extract_json_string(payload, "node_id", payload_node_id, sizeof(payload_node_id));
 
     clear_retained_actuator_command(topic_zone_id);
 
-    actuator_zone_assignment_t *assignment = assignment_for_zone(node, topic_zone_id);
+    actuator_zone_assignment_t *assignment = payload_node_id[0] != '\0'
+        ? assignment_for_node(node, payload_node_id)
+        : assignment_for_zone(node, topic_zone_id);
+    if (assignment && strcmp(assignment->zone_id, topic_zone_id) != 0) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "ZONE_MISMATCH", "node assignment zone_id does not match command topic");
+        set_error(node, "actuator node zone mismatch");
+        return;
+    }
     if (!assignment || assignment->irrigation_line == 0 || assignment->irrigation_line > node->irrigation_line_count) {
-        mqtt_publish_actuator_status_now(node, topic_zone_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "UNASSIGNED_LINE", "zone has no irrigation line mapping");
-        set_error(node, "zone missing irrigation line");
+        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "UNASSIGNED_LINE", "target has no irrigation line mapping");
+        set_error(node, "target missing irrigation line");
         return;
     }
 
@@ -708,11 +802,11 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
     }
 
     if (strcmp(command, "stop_watering") == 0) {
-        printf("[actuator] command=stop zone=%s id=%s\n", topic_zone_id, idempotency_key);
+        printf("[actuator] command=stop zone=%s node=%s id=%s\n", topic_zone_id, assignment->node_id, idempotency_key);
         if (run->running) {
             actuator_stop_with_status(node, run, assignment->irrigation_line, ACTUATOR_STATUS_STOPPED, NULL, NULL);
         } else {
-            mqtt_publish_actuator_status_now(node, topic_zone_id, idempotency_key, NULL, ACTUATOR_STATUS_STOPPED, NULL, NULL);
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key, NULL, ACTUATOR_STATUS_STOPPED, NULL, NULL);
         }
         set_error(node, "none");
         return;
@@ -728,9 +822,10 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
         return;
     }
 
-    printf("[actuator] command=%s zone=%s id=%s runtime=%d running=%d\n",
+    printf("[actuator] command=%s zone=%s node=%s id=%s runtime=%d running=%d\n",
            command,
            topic_zone_id,
+           assignment->node_id,
            idempotency_key,
            runtime_seconds,
            (int)run->running);
@@ -740,21 +835,22 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
     }
 
     if (run->running) {
-        mqtt_publish_actuator_status_now(node, topic_zone_id, idempotency_key, run, ACTUATOR_STATUS_FAULT, "ALREADY_RUNNING", "zone is already watering");
-        set_error(node, "zone already running");
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key, run, ACTUATOR_STATUS_FAULT, "ALREADY_RUNNING", "relay line is already watering");
+        set_error(node, "relay line already running");
         return;
     }
 
     memset(run, 0, sizeof(*run));
     run->running = true;
     snprintf(run->zone_id, sizeof(run->zone_id), "%s", topic_zone_id);
+    snprintf(run->node_id, sizeof(run->node_id), "%s", assignment->node_id);
     snprintf(run->idempotency_key, sizeof(run->idempotency_key), "%s", idempotency_key);
     run->started_at_ms = to_ms_since_boot(get_absolute_time());
     run->runtime_seconds = (uint32_t)runtime_seconds;
     run->hard_deadline = make_timeout_time_ms((uint32_t)runtime_seconds * 1000u);
-    mqtt_publish_actuator_status_now(node, topic_zone_id, idempotency_key, run, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL);
+    mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL);
     actuator_set_line_output(node, assignment->irrigation_line, true);
-    mqtt_publish_actuator_status_now(node, topic_zone_id, idempotency_key, run, ACTUATOR_STATUS_RUNNING, NULL, NULL);
+    mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_RUNNING, NULL, NULL);
 
     set_error(node, "none");
 }

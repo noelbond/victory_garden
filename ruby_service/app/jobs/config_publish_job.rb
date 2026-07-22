@@ -3,19 +3,23 @@ class ConfigPublishJob < ApplicationJob
 
   def perform
     zones = Zone.where(active: true).includes(:crop_profile, :nodes).order(:zone_id)
+    control_nodes = Node.assigned.includes(:crop_profile, zone: :crop_profile).where.not(irrigation_line: nil).order(:irrigation_line, :node_id)
     assigned_lines = Zone.where.not(irrigation_line: nil).order(:irrigation_line, :zone_id)
-    crop_ids = zones.map(&:crop_profile_id).uniq
+    crop_ids = (zones.map(&:crop_profile_id) + control_nodes.map { |node| node.effective_crop_profile&.id }).compact.uniq
     crops = CropProfile.where(id: crop_ids).or(CropProfile.where(active: true)).distinct.order(:crop_id)
     payload = {
       crops: crops.map { |c| crop_payload(c) },
-      zones: zones.map { |z| zone_payload(z) }
+      zones: zones.map { |z| zone_payload(z) },
+      nodes: control_nodes.select(&:watering_configured?).map { |node| node_payload(node) },
+      watering_mode: "node"
     }
     MqttClient.publish_config(payload)
     MqttClient.publish_actuator_config(
       schema_version: "actuator-config/v1",
       config_version: Time.current.utc.iso8601,
       irrigation_line_count: ConnectionSetting.first&.irrigation_line_count.to_i,
-      zones: assigned_lines.map { |z| actuator_zone_payload(z) }
+      zones: assigned_lines.map { |z| actuator_zone_payload(z) },
+      nodes: control_nodes.select(&:watering_configured?).map { |node| actuator_node_payload(node) }
     )
     nodes_by_device = Node.group_by_device(Node.where.not(zone_id: nil).order(:node_id))
     nodes_by_device.each_value do |nodes|
@@ -44,7 +48,20 @@ class ConfigPublishJob < ApplicationJob
       node_ids: zone.nodes.sort_by(&:node_id).map(&:node_id),
       active: zone.active,
       allowed_hours: zone.allowed_hours,
-      irrigation_line: zone.irrigation_line
+      irrigation_line: zone.irrigation_line,
+      watering_mode: "node"
+    }
+  end
+
+  def node_payload(node)
+    crop = node.effective_crop_profile
+    {
+      node_id: node.node_id,
+      zone_id: node.zone.zone_id,
+      crop_id: crop.crop_id,
+      active: node.zone.active,
+      allowed_hours: node.zone.allowed_hours,
+      irrigation_line: node.irrigation_line
     }
   end
 
@@ -53,6 +70,15 @@ class ConfigPublishJob < ApplicationJob
       zone_id: zone.zone_id,
       irrigation_line: zone.irrigation_line,
       active: zone.active
+    }
+  end
+
+  def actuator_node_payload(node)
+    {
+      node_id: node.node_id,
+      zone_id: node.zone.zone_id,
+      irrigation_line: node.irrigation_line,
+      active: node.zone.active
     }
   end
 end

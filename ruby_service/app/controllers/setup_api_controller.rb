@@ -47,6 +47,7 @@ class SetupApiController < ApplicationController
   def upsert_zone
     zone = Zone.order(:created_at, :id).first || Zone.new(active: true)
     zone.assign_attributes(zone_params)
+    zone.crop_profile ||= CropProfile.order(:crop_name).first
 
     if zone.save
       render json: {
@@ -91,6 +92,25 @@ class SetupApiController < ApplicationController
       first_zone: zone_payload(zone),
       status: setup_status_payload
     }
+  end
+
+  def update_node
+    node = setup_node_from_params
+
+    if node.blank?
+      render json: { errors: ["Node #{params[:node_id].inspect} has not been detected yet."] }, status: :unprocessable_entity
+      return
+    end
+
+    if node.update(node_setup_params)
+      ConfigPublishJob.perform_later
+      render json: {
+        node: node_payload(node.reload),
+        status: setup_status_payload
+      }
+    else
+      render json: { errors: node.errors.full_messages }, status: :unprocessable_entity
+    end
   end
 
   def request_reading
@@ -168,25 +188,34 @@ class SetupApiController < ApplicationController
   end
 
   def start_watering
-    zone = assignable_zone
+    node = setup_node_from_params
+    zone = node&.zone || assignable_zone
 
     if zone.blank?
       render json: { errors: ["Create a zone before testing watering."] }, status: :unprocessable_entity
       return
     end
 
-    if zone.watering_events.blocking_start_commands.exists?
-      render json: { errors: ["Watering is already active for this zone."] }, status: :unprocessable_entity
+    if node.present? && !node.watering_configured?
+      render json: { errors: ["Assign a crop profile and pump output before testing watering for #{node.display_name}."] }, status: :unprocessable_entity
       return
     end
 
-    result = WateringCommand.start(zone)
+    active_scope = zone.watering_events.blocking_start_commands
+    active_scope = active_scope.where(node_id: node.node_id) if node.present?
+    if active_scope.exists?
+      render json: { errors: ["Watering is already active for this target."] }, status: :unprocessable_entity
+      return
+    end
+
+    result = node.present? ? WateringCommand.start_node(node) : WateringCommand.start(zone)
 
     render json: {
       queued: true,
       idempotency_key: result.payload[:idempotency_key],
       issued_at: result.payload[:issued_at].utc.iso8601,
-      zone: zone_payload(zone)
+      zone: zone_payload(zone),
+      node: node.present? ? node_payload(node) : nil
     }
   end
 
@@ -204,15 +233,20 @@ class SetupApiController < ApplicationController
       return
     end
 
+    node = setup_node_from_params
     event_scope = zone.watering_events.order(issued_at: :desc, id: :desc)
+    event_scope = event_scope.where(node_id: node.node_id) if node.present?
     event = idempotency_key.present? ? event_scope.find_by(idempotency_key: idempotency_key) : event_scope.first
-    latest_status = zone.actuator_statuses.order(recorded_at: :desc, id: :desc).first
+    status_scope = zone.actuator_statuses.order(recorded_at: :desc, id: :desc)
+    status_scope = status_scope.where(node_id: node.node_id) if node.present?
+    latest_status = status_scope.first
 
     render json: {
       complete: event.present? && WateringEvent::TERMINAL_STATUSES.include?(event.status),
       event: event.present? ? watering_event_payload(event) : nil,
       actuator_status: latest_status.present? ? actuator_status_payload(latest_status) : nil,
-      zone: zone_payload(zone)
+      zone: zone_payload(zone),
+      node: node.present? ? node_payload(node) : nil
     }
   end
 
@@ -304,7 +338,13 @@ class SetupApiController < ApplicationController
       last_seen_at: node.last_seen_at&.utc&.iso8601,
       moisture_raw_dry: node.moisture_raw_dry,
       moisture_raw_wet: node.moisture_raw_wet,
-      calibration_configured: node.calibration_configured?
+      calibration_configured: node.calibration_configured?,
+      crop_profile_id: node.crop_profile_id,
+      crop_profile_name: node.crop_profile&.crop_name,
+      effective_crop_profile_id: node.effective_crop_profile&.id,
+      effective_crop_profile_name: node.effective_crop_profile&.crop_name,
+      irrigation_line: node.irrigation_line,
+      watering_configured: node.watering_configured?
     }
   end
 
@@ -330,6 +370,7 @@ class SetupApiController < ApplicationController
     {
       id: event.id,
       zone_id: event.zone.zone_id,
+      node_id: event.node_id,
       command: event.command,
       status: event.status,
       reason: event.reason,
@@ -343,6 +384,7 @@ class SetupApiController < ApplicationController
     {
       id: status.id,
       zone_id: status.zone.zone_id,
+      node_id: status.node_id,
       state: status.state,
       recorded_at: status.recorded_at&.utc&.iso8601,
       actual_runtime_seconds: status.actual_runtime_seconds,
@@ -414,6 +456,13 @@ class SetupApiController < ApplicationController
     params.permit(:moisture_raw_dry, :moisture_raw_wet).tap do |permitted|
       permitted[:moisture_raw_dry] = permitted[:moisture_raw_dry].to_i if permitted[:moisture_raw_dry].present?
       permitted[:moisture_raw_wet] = permitted[:moisture_raw_wet].to_i if permitted[:moisture_raw_wet].present?
+    end
+  end
+
+  def node_setup_params
+    params.permit(:name, :crop_profile_id, :irrigation_line).tap do |permitted|
+      permitted[:crop_profile_id] = permitted[:crop_profile_id].presence
+      permitted[:irrigation_line] = permitted[:irrigation_line].to_i if permitted[:irrigation_line].present?
     end
   end
 end

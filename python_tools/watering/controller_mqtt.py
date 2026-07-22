@@ -37,7 +37,7 @@ def effective_zone_configs(
     fallback_zones: dict[str, ZoneConfig],
     zone_filter: set[str] | None = None,
 ) -> dict[str, ZoneConfig | SystemZoneConfig]:
-    live_crops, live_zones = live_config_snapshot()
+    live_crops, live_zones, _live_nodes = live_config_snapshot()
     if live_zones and live_crops:
         zones = {zone_id: zone for zone_id, zone in live_zones.items() if zone.active}
     else:
@@ -53,7 +53,7 @@ def profile_for_zone(
     zone: ZoneConfig | SystemZoneConfig,
     fallback_crops: dict[str, CropProfile],
 ) -> CropProfile:
-    live_crops, _ = live_config_snapshot()
+    live_crops, _live_zones, _live_nodes = live_config_snapshot()
     if isinstance(zone, SystemZoneConfig) and zone.crop_id in live_crops:
         return live_crops[zone.crop_id]
     return fallback_crops[zone.crop_id]
@@ -152,7 +152,7 @@ def update_system_config(topic: str, payload_bytes: bytes) -> bool:
             )
             return False
 
-        crops, zones = load_system_config_payload(payload)
+        crops, zones, nodes = load_system_config_payload(payload)
     except Exception as exc:
         log_event(
             "controller",
@@ -168,6 +168,8 @@ def update_system_config(topic: str, payload_bytes: bytes) -> bool:
         CONTROLLER_RUNTIME.live_crops.update(crops)
         CONTROLLER_RUNTIME.live_zones.clear()
         CONTROLLER_RUNTIME.live_zones.update(zones)
+        CONTROLLER_RUNTIME.live_nodes.clear()
+        CONTROLLER_RUNTIME.live_nodes.update(nodes)
 
     added_topics, removed_topics = sync_zone_state_subscriptions()
 
@@ -176,6 +178,7 @@ def update_system_config(topic: str, payload_bytes: bytes) -> bool:
         "system_config_updated",
         crop_count=len(crops),
         zone_count=len(zones),
+        node_count=len(nodes),
         subscribed_topics=added_topics,
         unsubscribed_topics=removed_topics,
         topic=topic,
@@ -215,9 +218,11 @@ def publish_event(
     valid_sensor_count: int | None = None,
     expected_sensor_count: int | None = None,
     valid_node_ids: list[str] | None = None,
+    node_id: str | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "zone_id": zone_id,
+        "node_id": node_id,
         "timestamp": now.isoformat(),
         "moisture_percent": moisture,
         "action": action,
@@ -243,9 +248,11 @@ def publish_skip(
     zone_id: str,
     now: datetime,
     reason: str,
+    node_id: str | None = None,
 ) -> None:
     payload = {
         "zone_id": zone_id,
+        "node_id": node_id,
         "timestamp": now.isoformat(),
         "reason": reason,
     }
@@ -259,10 +266,12 @@ def publish_actuator_command(
     runtime_seconds: int,
     reason: str,
     idempotency_key: str,
+    node_id: str | None = None,
 ) -> None:
     payload = {
         "command": "start_watering",
         "zone_id": zone_id,
+        "node_id": node_id,
         "runtime_seconds": runtime_seconds,
         "reason": reason,
         "idempotency_key": idempotency_key,
@@ -275,6 +284,7 @@ def publish_actuator_command(
         "controller",
         "actuator_command_published",
         zone_id=zone_id,
+        node_id=node_id,
         runtime_seconds=runtime_seconds,
         reason=reason,
         idempotency_key=idempotency_key,

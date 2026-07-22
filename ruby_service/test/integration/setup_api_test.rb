@@ -107,7 +107,7 @@ class SetupApiTest < ActionDispatch::IntegrationTest
   end
 
   test "node status reports whether a provisioned node has appeared" do
-    zone = create(:zone)
+    zone = create(:zone, irrigation_line: nil)
     node = Node.create!(
       node_id: "sensor-zone1",
       last_seen_at: Time.current,
@@ -179,6 +179,31 @@ class SetupApiTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal [zone.id], Node.where(device_id: "sensor-zone1").distinct.pluck(:zone_id)
+  end
+
+  test "node update saves plant crop profile and pump output" do
+    ConnectionSetting.create!(irrigation_line_count: 4)
+    zone = create(:zone, irrigation_line: nil)
+    crop = create(:crop_profile, crop_name: "Squash")
+    node = Node.create!(node_id: "sensor-zone1-ch0", device_id: "sensor-zone1", last_seen_at: Time.current, zone: zone)
+
+    assert_enqueued_with(job: ConfigPublishJob) do
+      patch "/setup_api/node",
+            params: {
+              node_id: node.node_id,
+              name: "Bed One_Ch1",
+              crop_profile_id: crop.id,
+              irrigation_line: 1
+            },
+            as: :json
+    end
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal "Bed One_Ch1", body.dig("node", "name")
+    assert_equal crop.id, body.dig("node", "crop_profile_id")
+    assert_equal 1, body.dig("node", "irrigation_line")
+    assert_equal true, body.dig("node", "watering_configured")
   end
 
   test "request reading queues a targeted reading command and reports reading status" do

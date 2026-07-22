@@ -14,6 +14,7 @@ class ActuatorStatusIngestor
   def call
     zone = Zone.find_by(zone_id: @payload.fetch("zone_id"))
     raise ArgumentError, "Unknown zone_id: #{@payload['zone_id']}" unless zone
+    node = node_for(zone)
 
     duplicate_status = find_duplicate_status(zone)
     return duplicate_status if duplicate_status
@@ -22,6 +23,7 @@ class ActuatorStatusIngestor
       status = begin
         ActuatorStatus.create!(
           zone: zone,
+          node_id: node&.node_id || @payload["node_id"],
           state: @payload.fetch("state"),
           recorded_at: @payload.fetch("timestamp"),
           idempotency_key: @payload["idempotency_key"],
@@ -64,6 +66,7 @@ class ActuatorStatusIngestor
 
     WateringEvent
       .where(zone: event.zone, command: "start_watering")
+      .where(node_id: event.node_id)
       .where.not(status: WateringEvent::TERMINAL_STATUSES)
       .where("issued_at <= ?", status.recorded_at)
       .order(issued_at: :desc)
@@ -86,6 +89,7 @@ class ActuatorStatusIngestor
 
     existing = Fault.find_by(
       zone: zone,
+      node_id: status.node_id,
       fault_code: status.fault_code,
       detail: status.fault_detail,
       resolved_at: nil
@@ -94,6 +98,7 @@ class ActuatorStatusIngestor
 
     Fault.create!(
       zone: zone,
+      node_id: status.node_id,
       fault_code: status.fault_code,
       detail: status.fault_detail,
       recorded_at: status.recorded_at
@@ -150,18 +155,33 @@ class ActuatorStatusIngestor
 
     RequestReadingJob.set(wait: 5.minutes).perform_later(
       zone_id: zone.zone_id,
-      command_id: "#{status.idempotency_key}-reread"
+      command_id: "#{status.idempotency_key}-reread",
+      node_id: status.node_id
     )
   end
 
   def daily_runtime_met?(zone, time)
+    node = Node.find_by(node_id: @payload["node_id"]) if @payload["node_id"].present?
+    crop_profile = node&.effective_crop_profile || zone.crop_profile
     day_scope = time.beginning_of_day..time.end_of_day
-    runtime_today = WateringEvent.where(
+    scope = WateringEvent.where(
       zone: zone,
       command: "start_watering",
       status: "completed",
       issued_at: day_scope
-    ).sum(:runtime_seconds)
-    runtime_today >= zone.crop_profile.daily_max_runtime_sec
+    )
+    scope = scope.where(node_id: node.node_id) if node
+    runtime_today = scope.sum(:runtime_seconds)
+    runtime_today >= crop_profile.daily_max_runtime_sec
+  end
+
+  def node_for(zone)
+    return nil if @payload["node_id"].blank?
+
+    node = Node.find_by(node_id: @payload["node_id"])
+    raise ArgumentError, "Unknown node_id: #{@payload['node_id']}" unless node
+    raise ArgumentError, "Node #{@payload['node_id']} is not assigned to #{zone.zone_id}" unless node.zone_id == zone.id
+
+    node
   end
 end

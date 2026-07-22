@@ -39,7 +39,7 @@ class PublishNodeConfigJob < ApplicationJob
     issued_at = Time.current.utc.iso8601
 
     if node.zone.present?
-      crop = node.zone.crop_profile
+      crop = node.effective_crop_profile
       payload = {
         schema_version: "node-config/v1",
         config_version: issued_at,

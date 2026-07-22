@@ -19,12 +19,14 @@ typedef struct {
     bool assigned;
     bool active;
     char zone_id[VG_MAX_ZONE_ID_LEN];
+    char node_id[VG_MAX_NODE_ID_LEN];
     uint8_t irrigation_line;
 } actuator_zone_assignment_t;
 
 typedef struct {
     bool running;
     char zone_id[VG_MAX_ZONE_ID_LEN];
+    char node_id[VG_MAX_NODE_ID_LEN];
     char idempotency_key[96];
     uint32_t started_at_ms;
     uint32_t runtime_seconds;

@@ -5,9 +5,9 @@ This is the fastest path to a working single-zone Victory Garden setup.
 It assumes:
 
 - one Raspberry Pi on your LAN
-- one actuator zone
-- one four-channel sensor device whose channel nodes will be assigned to the zone in Rails
-- one dedicated actuator Pico for that zone
+- one bed/zone
+- one four-channel sensor device whose channel nodes are plant sensors in that bed
+- one dedicated actuator Pico with one pump/relay output per plant sensor
 - Mosquitto and Rails running on the Pi
 
 If you need the full install flow first, start with [`setup.md`](../docs/setup.md).
@@ -45,9 +45,8 @@ In the Rails UI:
    - MQTT host points to the Pi broker
    - MQTT port is `1883`
    - MQTT username/password match the Pi broker if auth is enabled
-3. create one Crop Profile if needed
-   - use the Setup Checklist, the Crop Profile library, or the zone form's `Create Custom Crop Profile` action
-4. create one zone
+3. use the seeded Crop Profile library or create a custom profile if needed
+4. create one bed/zone
 
 The health page should show the app is running even before a node is assigned.
 
@@ -99,8 +98,8 @@ In Rails:
 
 1. open `Nodes`
 2. confirm all four channel nodes appear
-3. assign any channel to the zone you created; Rails cascades the assignment to its `device_id` siblings
-4. if needed, open the node detail page and change the zone's crop profile there
+3. assign any channel to the bed you created; Rails cascades the assignment to its `device_id` siblings
+4. open each channel node and assign its plant crop profile and pump/relay output
 
 Important:
 
@@ -124,7 +123,7 @@ Useful checks:
 
 In the Rails UI:
 
-1. open the zone
+1. open a channel node with a crop profile and pump/relay output
 2. click `Water Now`
 
 Expected flow:

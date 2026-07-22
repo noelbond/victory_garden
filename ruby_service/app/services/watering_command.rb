@@ -5,12 +5,26 @@ class WateringCommand
     new(zone, command: "start_watering", runtime_seconds: zone.crop_profile.max_pulse_runtime_sec, reason: "manual_trigger").issue!
   end
 
+  def self.start_node(node)
+    profile = node.effective_crop_profile
+    raise ArgumentError, "node must have a crop profile before watering" if profile.blank?
+
+    new(
+      node.zone,
+      node: node,
+      command: "start_watering",
+      runtime_seconds: profile.max_pulse_runtime_sec,
+      reason: "manual_trigger"
+    ).issue!
+  end
+
   def self.stop(zone)
     new(zone, command: "stop_watering", runtime_seconds: nil, reason: "manual_stop").issue!
   end
 
-  def initialize(zone, command:, runtime_seconds:, reason:)
+  def initialize(zone, node: nil, command:, runtime_seconds:, reason:)
     @zone = zone
+    @node = node
     @command = command
     @runtime_seconds = runtime_seconds
     @reason = reason
@@ -21,14 +35,16 @@ class WateringCommand
     payload = {
       command: @command,
       zone_id: @zone.zone_id,
+      node_id: @node&.node_id,
       runtime_seconds: @runtime_seconds,
       reason: @reason,
       issued_at: issued_at,
-      idempotency_key: "#{@zone.zone_id}-#{issued_at.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}"
+      idempotency_key: "#{@node&.node_id || @zone.zone_id}-#{issued_at.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}"
     }
 
     event = WateringEvent.create!(
       zone: @zone,
+      node_id: payload[:node_id],
       command: payload[:command],
       runtime_seconds: payload[:runtime_seconds],
       reason: payload[:reason],

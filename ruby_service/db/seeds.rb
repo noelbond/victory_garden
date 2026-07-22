@@ -1,20 +1,69 @@
-tomato = CropProfile.find_or_create_by!(crop_id: "tomato") do |crop|
-  crop.crop_name = "Tomato"
-  crop.dry_threshold = 30.0
-  crop.max_pulse_runtime_sec = 45
-  crop.daily_max_runtime_sec = 300
-  crop.climate_preference = "Warm, sunny"
-  crop.time_to_harvest_days = 75
+starter_crops = [
+  {
+    crop_id: "tomato",
+    crop_name: "Tomato",
+    dry_threshold: 30.0,
+    max_pulse_runtime_sec: 45,
+    daily_max_runtime_sec: 300,
+    climate_preference: "Warm, sunny",
+    time_to_harvest_days: 75
+  },
+  {
+    crop_id: "basil",
+    crop_name: "Basil",
+    dry_threshold: 40.0,
+    max_pulse_runtime_sec: 30,
+    daily_max_runtime_sec: 240,
+    climate_preference: "Warm, humid",
+    time_to_harvest_days: 50
+  },
+  {
+    crop_id: "squash",
+    crop_name: "Squash",
+    dry_threshold: 35.0,
+    max_pulse_runtime_sec: 45,
+    daily_max_runtime_sec: 300,
+    climate_preference: "Warm, steady moisture",
+    time_to_harvest_days: 55
+  },
+  {
+    crop_id: "pepper",
+    crop_name: "Pepper",
+    dry_threshold: 30.0,
+    max_pulse_runtime_sec: 40,
+    daily_max_runtime_sec: 260,
+    climate_preference: "Warm, slightly drier between watering",
+    time_to_harvest_days: 70
+  },
+  {
+    crop_id: "lettuce",
+    crop_name: "Lettuce",
+    dry_threshold: 45.0,
+    max_pulse_runtime_sec: 25,
+    daily_max_runtime_sec: 220,
+    climate_preference: "Cool, evenly moist",
+    time_to_harvest_days: 35
+  },
+  {
+    crop_id: "herbs",
+    crop_name: "Mixed Herbs",
+    dry_threshold: 35.0,
+    max_pulse_runtime_sec: 25,
+    daily_max_runtime_sec: 180,
+    climate_preference: "Bright, moderate moisture",
+    time_to_harvest_days: 45
+  }
+]
+
+starter_crops.each do |attributes|
+  CropProfile.find_or_initialize_by(crop_id: attributes.fetch(:crop_id)).tap do |crop|
+    crop.assign_attributes(attributes)
+    crop.save!
+  end
 end
 
-basil = CropProfile.find_or_create_by!(crop_id: "basil") do |crop|
-  crop.crop_name = "Basil"
-  crop.dry_threshold = 40.0
-  crop.max_pulse_runtime_sec = 30
-  crop.daily_max_runtime_sec = 240
-  crop.climate_preference = "Warm, humid"
-  crop.time_to_harvest_days = 50
-end
+tomato = CropProfile.find_by!(crop_id: "tomato")
+basil = CropProfile.find_by!(crop_id: "basil")
 
 Zone.find_or_create_by!(zone_id: "zone1") do |zone|
   zone.name = "Greenhouse Zone 1"

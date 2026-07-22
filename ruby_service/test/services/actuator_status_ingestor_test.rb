@@ -17,10 +17,11 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     clear_performed_jobs
   end
 
-  def create_watering_event(idempotency_key:, status:, zone: @zone, command: "start_watering",
+  def create_watering_event(idempotency_key:, status:, zone: @zone, node_id: nil, command: "start_watering",
                              runtime_seconds: 45, reason: "below_dry_threshold", issued_at: Time.current)
     WateringEvent.create!(
       zone: zone,
+      node_id: node_id,
       command: command,
       runtime_seconds: runtime_seconds,
       reason: reason,
@@ -44,7 +45,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     freeze_time do
       assert_enqueued_with(
         job: RequestReadingJob,
-        args: [{ zone_id: "zone1", command_id: "zone1-run-001-reread" }],
+        args: [{ zone_id: "zone1", command_id: "zone1-run-001-reread", node_id: nil }],
         at: 5.minutes.from_now
       ) do
         ActuatorStatusIngestor.new(payload).call
@@ -76,6 +77,34 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     assert_equal @zone, fault.zone
     assert_equal "NO_FLOW", fault.fault_code
     assert_equal "Pump reported no flow", fault.detail
+  end
+
+  test "node-targeted completed status stores node id and schedules node reread" do
+    node = Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, crop_profile: @crop, irrigation_line: 1, last_seen_at: Time.current)
+    event = create_watering_event(idempotency_key: "sensor-zone1-ch0-run-001", status: "running", node_id: node.node_id)
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "node_id" => node.node_id,
+      "state" => "COMPLETED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => event.idempotency_key,
+      "actual_runtime_seconds" => 44
+    }
+
+    freeze_time do
+      assert_enqueued_with(
+        job: RequestReadingJob,
+        args: [{ zone_id: "zone1", command_id: "sensor-zone1-ch0-run-001-reread", node_id: node.node_id }],
+        at: 5.minutes.from_now
+      ) do
+        ActuatorStatusIngestor.new(payload).call
+      end
+    end
+
+    status = ActuatorStatus.order(:id).last
+    assert_equal node.node_id, status.node_id
+    assert_equal "completed", event.reload.status
   end
 
   test "stopped actuator status marks the event stopped without scheduling reread" do

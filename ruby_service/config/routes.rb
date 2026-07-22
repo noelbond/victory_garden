@@ -49,6 +49,7 @@ Rails.application.routes.draw do
   patch "setup_api/zone", to: "setup_api#upsert_zone"
   get "setup_api/node_status", to: "setup_api#node_status"
   post "setup_api/assign_node", to: "setup_api#assign_node"
+  patch "setup_api/node", to: "setup_api#update_node"
   post "setup_api/request_reading", to: "setup_api#request_reading"
   get "setup_api/reading_status", to: "setup_api#reading_status"
   patch "setup_api/calibration", to: "setup_api#update_calibration"

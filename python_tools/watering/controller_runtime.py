@@ -9,7 +9,7 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
-from watering.config import SystemZoneConfig, ZoneConfig
+from watering.config import SystemNodeConfig, SystemZoneConfig, ZoneConfig
 from watering.profiles import CropProfile
 from watering.schemas import SensorReading
 from watering.state_store import (
@@ -29,6 +29,7 @@ class ControllerRuntime:
     latest_zone_readings: dict[str, dict[str, SensorReading]] = field(default_factory=dict)
     live_crops: dict[str, CropProfile] = field(default_factory=dict)
     live_zones: dict[str, SystemZoneConfig] = field(default_factory=dict)
+    live_nodes: dict[str, SystemNodeConfig] = field(default_factory=dict)
     subscribed_state_topics: set[str] = field(default_factory=set)
     subscription_fallback_zones: dict[str, ZoneConfig] = field(default_factory=dict)
     subscription_zone_filter: set[str] | None = None
@@ -46,6 +47,7 @@ LATEST_STATE = CONTROLLER_RUNTIME.latest_state
 LATEST_ZONE_READINGS = CONTROLLER_RUNTIME.latest_zone_readings
 LIVE_CROPS = CONTROLLER_RUNTIME.live_crops
 LIVE_ZONES = CONTROLLER_RUNTIME.live_zones
+LIVE_NODES = CONTROLLER_RUNTIME.live_nodes
 SUBSCRIBED_STATE_TOPICS = CONTROLLER_RUNTIME.subscribed_state_topics
 CONTROLLER_HEALTH = CONTROLLER_RUNTIME.controller_health
 
@@ -113,9 +115,9 @@ def write_text_if_changed(path: Path, text: str, previous: str | None) -> str:
     return text
 
 
-def live_config_snapshot() -> tuple[dict[str, CropProfile], dict[str, SystemZoneConfig]]:
+def live_config_snapshot() -> tuple[dict[str, CropProfile], dict[str, SystemZoneConfig], dict[str, SystemNodeConfig]]:
     with CONTROLLER_RUNTIME.live_config_lock:
-        return dict(CONTROLLER_RUNTIME.live_crops), dict(CONTROLLER_RUNTIME.live_zones)
+        return dict(CONTROLLER_RUNTIME.live_crops), dict(CONTROLLER_RUNTIME.live_zones), dict(CONTROLLER_RUNTIME.live_nodes)
 
 
 def latest_reading(zone_id: str) -> SensorReading | None:

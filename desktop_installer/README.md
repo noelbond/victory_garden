@@ -6,10 +6,11 @@ It is the user-facing setup app that:
 
 - finds the Pi after it boots from the Victory Garden image
 - saves the first Victory Garden settings
-- creates the first crop profile and zone
+- creates the first bed/zone
 - flashes Pico W and Pico 2 W firmware
 - provisions both Pico boards over USB serial
-- validates the first reading, calibration, and watering cycle
+- assigns crop profiles and pump outputs per sensor channel
+- captures calibration before validating the calibrated reading and watering cycle
 
 ## Current scope
 

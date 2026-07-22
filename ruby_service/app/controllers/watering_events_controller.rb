@@ -25,6 +25,7 @@ class WateringEventsController < ApplicationController
   SORTABLE_COLUMNS = {
     "issued_at" => "watering_events.issued_at",
     "zone" => "zones.zone_id",
+    "node" => "nodes.node_id",
     "command" => "watering_events.command",
     "runtime_seconds" => "watering_events.runtime_seconds",
     "reason" => "watering_events.reason",
@@ -33,6 +34,7 @@ class WateringEventsController < ApplicationController
   TABLE_COLUMNS = [
     ["issued_at", "Issued At"],
     ["zone", "Zone"],
+    ["node", "Plant / Node"],
     ["command", "Command"],
     ["runtime_seconds", "Runtime (s)"],
     ["reason", "Watering Reason"],
@@ -89,7 +91,7 @@ class WateringEventsController < ApplicationController
   private
 
   def filtered_watering_events_scope
-    scope = WateringEvent.includes(:zone).joins(:zone).where(issued_at: @from..@to)
+    scope = WateringEvent.includes(:zone, :node).joins(:zone).left_outer_joins(:node).where(issued_at: @from..@to)
     scope = scope.where(zone: @selected_zone) if @selected_zone
     scope = scope.where(status: params[:status]) if @status_options.include?(params[:status])
     scope = scope.where(command: params[:command]) if @command_options.include?(params[:command])
@@ -121,6 +123,7 @@ class WateringEventsController < ApplicationController
     case column
     when "issued_at" then event.issued_at&.utc&.iso8601
     when "zone" then event.zone&.name.presence || event.zone&.zone_id
+    when "node" then event.node&.display_name.presence || event.node_id.presence || "—"
     when "command" then event.command
     when "runtime_seconds" then event.runtime_seconds
     when "reason" then event.reason.presence || "—"

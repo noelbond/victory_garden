@@ -19,7 +19,7 @@ class ConnectionSettingTest < ActiveSupport::TestCase
     setting = ConnectionSetting.new(irrigation_line_count: 2)
 
     assert_not setting.valid?
-    assert_includes setting.errors[:irrigation_line_count], "must be at least 3 to keep existing zone assignments"
+    assert_includes setting.errors[:irrigation_line_count], "must be at least 3 to keep existing legacy zone assignments"
   end
 
   test "enqueues config publish when irrigation line count changes" do

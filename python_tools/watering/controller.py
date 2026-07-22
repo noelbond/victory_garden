@@ -9,6 +9,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 
 from watering.config import (
+    SystemNodeConfig,
     SystemZoneConfig,
     ZoneConfig,
     load_crops,
@@ -120,6 +121,24 @@ def remember_skip(zone_runtime: dict[str, Any], signature: dict[str, Any], reaso
 def clear_skip_memory(zone_runtime: dict[str, Any]) -> None:
     zone_runtime["last_skip_signature"] = None
     zone_runtime["last_skip_reason"] = None
+
+
+def effective_node_targets(
+    zones: dict[str, ZoneConfig | SystemZoneConfig],
+    zone_filter: set[str] | None = None,
+) -> dict[str, SystemNodeConfig]:
+    _live_crops, _live_zones, live_nodes = live_config_snapshot()
+    if not live_nodes:
+        return {}
+
+    targets = {
+        node_id: node
+        for node_id, node in live_nodes.items()
+        if node.active and node.zone_id in zones and node.irrigation_line is not None
+    }
+    if zone_filter is not None:
+        targets = {node_id: node for node_id, node in targets.items() if node.zone_id in zone_filter}
+    return targets
 
 
 def allowed_now(
@@ -253,8 +272,154 @@ def maybe_publish_skip(
         reason=reason,
         **extra_log_fields,
     )
-    publish_skip(controller, zone.zone_id, now, reason)
+    publish_skip(controller, zone.zone_id, now, reason, node_id=extra_log_fields.get("node_id"))
     remember_skip(zone_runtime, signature, reason)
+
+
+def process_node_tick(
+    target: SystemNodeConfig,
+    profile: CropProfile,
+    node_runtime: dict[str, Any],
+    states: dict[str, ZoneState],
+    now: datetime,
+    args,
+    controller: mqtt.Client,
+    local_tz=None,
+) -> tuple[dict[str, Any], dict[str, ZoneState]]:
+    reading = latest_readings_for_zone(target.zone_id).get(target.node_id)
+    signature = reading_signature(reading) if reading is not None else {
+        "zone_id": target.zone_id,
+        "node_id": target.node_id,
+        "reading": None,
+    }
+
+    if reading is None:
+        maybe_publish_skip(node_runtime, target, signature, "missing_node_reading", controller, now, node_id=target.node_id)
+        return node_runtime, states
+
+    if reading.moisture_percent is None:
+        maybe_publish_skip(node_runtime, target, signature, "incomplete-reading", controller, now, node_id=target.node_id)
+        return node_runtime, states
+
+    if not reading_ready_for_control(reading, now=now, max_age_seconds=args.max_reading_age_seconds):
+        maybe_publish_skip(node_runtime, target, signature, "stale_reading", controller, now, node_id=target.node_id)
+        return node_runtime, states
+
+    if not allowed_now(target, now, local_tz=local_tz):
+        maybe_publish_skip(node_runtime, target, signature, "outside_allowed_hours", controller, now, node_id=target.node_id)
+        return node_runtime, states
+
+    moisture = float(reading.moisture_percent)
+
+    if signatures_equal(signature, node_runtime.get("last_processed_signature")):
+        log_event(
+            "controller",
+            "reading_ignored",
+            zone_id=target.zone_id,
+            node_id=target.node_id,
+            reason="already-processed-signature",
+            signature=signature,
+        )
+        return node_runtime, states
+
+    state_key = f"node:{target.node_id}"
+    state = states.get(state_key, ZoneState(zone_id=target.zone_id, day=now.date()))
+
+    if signatures_equal(signature, node_runtime.get("last_watering_signature")):
+        maybe_publish_skip(node_runtime, target, signature, "same-reading-after-watering", controller, now, moisture_percent=moisture, node_id=target.node_id)
+        node_runtime["last_processed_signature"] = signature
+        states[state_key] = state
+        return node_runtime, states
+
+    last_watering_at_raw = node_runtime.get("last_watering_at")
+    if last_watering_at_raw:
+        last_watering_at = datetime.fromisoformat(last_watering_at_raw.replace("Z", "+00:00"))
+        seconds_since_watering = (now - last_watering_at).total_seconds()
+        if seconds_since_watering < args.min_seconds_between_watering:
+            remaining = int(args.min_seconds_between_watering - seconds_since_watering)
+            maybe_publish_skip(
+                node_runtime, target, signature, "cooldown", controller, now,
+                moisture_percent=moisture,
+                remaining_seconds=remaining,
+                node_id=target.node_id,
+            )
+            states[state_key] = state
+            return node_runtime, states
+
+    clear_skip_memory(node_runtime)
+    cmd, state = decide_watering(reading, profile, state, now=now)
+
+    if cmd is None:
+        log_event(
+            "controller",
+            "decision_evaluated",
+            zone_id=target.zone_id,
+            node_id=target.node_id,
+            moisture_percent=moisture,
+            action="none",
+            runtime_seconds=0,
+            runtime_seconds_today=state.runtime_seconds_today,
+        )
+        publish_event(
+            controller,
+            target.zone_id,
+            now,
+            moisture,
+            "none",
+            0,
+            state.runtime_seconds_today,
+            node_id=target.node_id,
+        )
+        update_controller_health(
+            last_decision_at=iso_now(),
+            last_decision_zone_id=target.zone_id,
+            last_decision_action="none",
+            last_error=None,
+        )
+    else:
+        publish_actuator_command(
+            controller,
+            target.zone_id,
+            cmd.runtime_seconds,
+            cmd.reason,
+            cmd.idempotency_key,
+            node_id=target.node_id,
+        )
+        log_event(
+            "controller",
+            "decision_evaluated",
+            zone_id=target.zone_id,
+            node_id=target.node_id,
+            moisture_percent=moisture,
+            action="water",
+            runtime_seconds=cmd.runtime_seconds,
+            runtime_seconds_today=state.runtime_seconds_today,
+            idempotency_key=cmd.idempotency_key,
+        )
+        publish_event(
+            controller,
+            target.zone_id,
+            now,
+            moisture,
+            "water",
+            cmd.runtime_seconds,
+            state.runtime_seconds_today,
+            idempotency_key=cmd.idempotency_key,
+            reason=cmd.reason,
+            node_id=target.node_id,
+        )
+        node_runtime["last_watering_signature"] = signature
+        node_runtime["last_watering_at"] = now.isoformat().replace("+00:00", "Z")
+        update_controller_health(
+            last_decision_at=iso_now(),
+            last_decision_zone_id=target.zone_id,
+            last_decision_action="water",
+            last_error=None,
+        )
+
+    states[state_key] = state
+    node_runtime["last_processed_signature"] = signature
+    return node_runtime, states
 
 
 def process_zone_tick(
@@ -516,6 +681,8 @@ class ControllerApp:
         initial_zones = effective_zone_configs(self.fallback_zones, self.zone_filter)
         for zone_id in initial_zones:
             self.controller_runtime_data.setdefault(zone_id, new_zone_runtime())
+        for node_id in effective_node_targets(initial_zones, self.zone_filter):
+            self.controller_runtime_data.setdefault(f"node:{node_id}", new_zone_runtime())
 
     def _build_publisher(self) -> mqtt.Client:
         controller = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -670,22 +837,42 @@ class ControllerApp:
             active_zones = effective_zone_configs(self.fallback_zones, self.zone_filter)
             for zone_id in active_zones:
                 self.controller_runtime_data.setdefault(zone_id, new_zone_runtime())
+            active_nodes = effective_node_targets(active_zones, self.zone_filter)
+            for node_id in active_nodes:
+                self.controller_runtime_data.setdefault(f"node:{node_id}", new_zone_runtime())
 
             assert self.publisher_client is not None
-            for zone_id, zone in active_zones.items():
-                profile = profile_for_zone(zone, self.fallback_crops)
-                zone_runtime = self.controller_runtime_data.setdefault(zone_id, new_zone_runtime())
+            if active_nodes:
+                live_crops, _live_zones, _live_nodes = live_config_snapshot()
+                for node_id, target in active_nodes.items():
+                    profile = live_crops[target.crop_id]
+                    runtime_key = f"node:{node_id}"
+                    node_runtime = self.controller_runtime_data.setdefault(runtime_key, new_zone_runtime())
+                    updated_runtime, self.states = process_node_tick(
+                        target,
+                        profile,
+                        node_runtime,
+                        self.states,
+                        now,
+                        self.args,
+                        self.publisher_client,
+                    )
+                    self.controller_runtime_data[runtime_key] = updated_runtime
+            else:
+                for zone_id, zone in active_zones.items():
+                    profile = profile_for_zone(zone, self.fallback_crops)
+                    zone_runtime = self.controller_runtime_data.setdefault(zone_id, new_zone_runtime())
 
-                updated_runtime, self.states = process_zone_tick(
-                    zone,
-                    profile,
-                    zone_runtime,
-                    self.states,
-                    now,
-                    self.args,
-                    self.publisher_client,
-                )
-                self.controller_runtime_data[zone_id] = updated_runtime
+                    updated_runtime, self.states = process_zone_tick(
+                        zone,
+                        profile,
+                        zone_runtime,
+                        self.states,
+                        now,
+                        self.args,
+                        self.publisher_client,
+                    )
+                    self.controller_runtime_data[zone_id] = updated_runtime
 
             self._persist_runtime_files()
             health = controller_health_snapshot()

@@ -50,7 +50,7 @@ class ZonesController < ApplicationController
     @aggregate_freshness_minutes = AGGREGATE_READING_FRESHNESS_MINUTES
     @last_watering_event = @zone.watering_events.order(issued_at: :desc).first
     @latest_actuator_status = @zone.actuator_statuses.order(recorded_at: :desc).first
-    @recent_faults = @zone.faults.order(recorded_at: :desc).limit(5)
+    @recent_faults = @zone.faults.includes(:node).order(recorded_at: :desc).limit(5)
     @open_fault_count = @zone.faults.where(resolved_at: nil).count
     @reading_freshness = reading_freshness(@latest_reading)
     @aggregate_freshness = aggregate_freshness(@zone_moisture_snapshot)

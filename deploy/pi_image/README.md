@@ -3,7 +3,7 @@
 This directory contains the first working foundation for the `Get Victory Garden`
 download path:
 
-- one Raspberry Pi OS 64-bit image
+- one Raspberry Pi OS 64-bit image, with the standard desktop environment
 - bundled Victory Garden app source
 - bundled Pico W and Pico 2 W UF2 firmware
 - a one-shot first-boot provisioning service
@@ -110,6 +110,10 @@ The image currently uses:
 - hostname: `victory-garden`
 - mDNS support via `avahi-daemon`
 - default first user name: `pi`
+- Raspberry Pi OS with desktop (`stage0`-`stage4` plus `stage-victory-garden`)
+  rather than Lite - a monitor/keyboard can be plugged in directly, but nothing
+  about Victory Garden requires that. The web app, SSH, and mDNS discovery
+  work identically whether or not a display is attached.
 
 ## Raspberry Pi Imager 2.x support
 

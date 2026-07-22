@@ -74,6 +74,11 @@ void node_config_reset_defaults(node_config_t *config) {
 }
 
 void node_config_load(node_config_t *config) {
+    if (VG_FORCE_DEFAULT_CONFIG) {
+        node_config_reset_defaults(config);
+        return;
+    }
+
     const node_config_t *flash_config = (const node_config_t *)(XIP_BASE + VG_FLASH_CONFIG_OFFSET);
     if (flash_config->magic == VG_CONFIG_MAGIC &&
         flash_config->version == VG_CONFIG_VERSION &&

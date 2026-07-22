@@ -237,6 +237,10 @@ Example:
   "schema_version": "actuator-config/v1",
   "config_version": "2026-04-07T18:10:00Z",
   "irrigation_line_count": 4,
+  "nodes": [
+    { "node_id": "sensor-zone1-ch0", "zone_id": "zone1", "irrigation_line": 1, "active": true },
+    { "node_id": "sensor-zone1-ch1", "zone_id": "zone1", "irrigation_line": 2, "active": true }
+  ],
   "zones": [
     { "zone_id": "zone1", "irrigation_line": 1, "active": true },
     { "zone_id": "zone2", "irrigation_line": 2, "active": true },
@@ -248,10 +252,11 @@ Example:
 Behavior:
 
 - published retained
-- defines the installed Water Zone count on the shared actuator controller
-- maps one Water Zone to one zone
+- defines the installed pump/relay output count on the shared actuator controller
+- maps each plant node to one pump/relay output through `nodes`
+- keeps `zones` as a legacy zone-to-line fallback
 - lets the actuator Pico subscribe to exact per-zone command topics such as `greenhouse/zones/zone1/actuator/command`
-- zone subscriptions are derived from the retained zone-to-line assignments, not from a wildcard topic
+- zone subscriptions are derived from retained node and zone assignments, not from a wildcard topic
 - `active` is currently topology metadata for operators and upstream publishers; the actuator Pico uses `zone_id` to `irrigation_line` mapping and does not reject commands only because `active` is `false`
 
 ### Actuator Command
@@ -271,6 +276,7 @@ Example start command:
 {
   "command": "start_watering",
   "zone_id": "zone1",
+  "node_id": "sensor-zone1-ch0",
   "runtime_seconds": 45,
   "reason": "manual_trigger",
   "issued_at": "2026-03-30T22:00:53Z",
@@ -295,6 +301,7 @@ Rules:
 
 - `runtime_seconds` must be present and `> 0` for `start_watering`
 - `runtime_seconds` must be `null` for `stop_watering`
+- `node_id` targets a specific plant pump/relay when the actuator config includes `nodes`
 - `idempotency_key` is the correlation key expected back in actuator status
 
 ### Actuator Status
@@ -308,6 +315,7 @@ Example:
 ```json
 {
   "zone_id": "zone1",
+  "node_id": "sensor-zone1-ch0",
   "state": "COMPLETED",
   "timestamp": "2026-03-30T22:01:38Z",
   "idempotency_key": "zone1-20260330T220053Z-efeaa58a",
@@ -364,7 +372,7 @@ Observed `controller/skip_reason` values in the current controller include:
 - `incomplete-reading`
 - `same-reading-after-watering`
 
-When a zone has multiple assigned nodes, the Python controller averages fresh, non-null `moisture_percent` values from the configured `node_ids` and uses that aggregate as the watering decision input. A zone can require a minimum fresh sensor count with `--min-zone-sensor-readings`; if quorum is not met, the controller publishes `insufficient_sensor_quorum`.
+When node-level watering targets are configured, the Python controller evaluates each node independently using that node's crop profile and publishes actuator commands with `node_id`. The older zone-average path remains available as a fallback when no node targets are configured; in that mode a zone can require a minimum fresh sensor count with `--min-zone-sensor-readings`.
 
 ## Retained Message Rules
 

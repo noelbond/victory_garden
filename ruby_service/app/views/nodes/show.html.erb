@@ -117,39 +117,46 @@
 <div class="row" style="margin-top: 16px;">
   <% if @node.zone.present? %>
     <div class="col card">
-      <h3>Current Crop Profile</h3>
+      <h3>Plant Watering Profile</h3>
       <p><strong>Zone:</strong> <%= @node.zone.name.presence || @node.zone.zone_id %></p>
-      <p><strong>Crop Profile:</strong> <%= @node.zone.crop_profile.crop_name %></p>
-      <p><strong>Dry Threshold:</strong> <%= @node.zone.crop_profile.dry_threshold %>%</p>
-      <p><strong>Max Pulse Runtime:</strong> <%= @node.zone.crop_profile.max_pulse_runtime_sec %> s</p>
-      <p><strong>Daily Max Runtime:</strong> <%= @node.zone.crop_profile.daily_max_runtime_sec %> s</p>
+      <p><strong>Crop Profile:</strong> <%= @node.effective_crop_profile&.crop_name || "—" %></p>
+      <p><strong>Pump Relay:</strong> <%= @node.irrigation_line || "—" %></p>
+      <p><strong>Dry Threshold:</strong> <%= @node.effective_crop_profile&.dry_threshold || "—" %>%</p>
+      <p><strong>Max Pulse Runtime:</strong> <%= @node.effective_crop_profile&.max_pulse_runtime_sec || "—" %> s</p>
+      <p><strong>Daily Max Runtime:</strong> <%= @node.effective_crop_profile&.daily_max_runtime_sec || "—" %> s</p>
       <div style="margin-top: 16px;">
-        <%= link_to "Edit Crop Profile", edit_crop_profile_path(@node.zone.crop_profile, return_to: node_path(@node)), class: "btn light" %>
+        <% if @node.effective_crop_profile.present? %>
+          <%= link_to "Edit Crop Profile", edit_crop_profile_path(@node.effective_crop_profile, return_to: node_path(@node)), class: "btn light" %>
+        <% end %>
       </div>
     </div>
 
     <div class="col card">
-      <h3>Select Crop Profile</h3>
-      <p class="muted">Choose a profile for <%= @node.zone.name.presence || @node.zone.zone_id %> or create a new custom one.</p>
+      <h3>Select Plant Profile</h3>
+      <p class="muted">Choose the crop profile and actuator pump relay for this plant sensor.</p>
 
       <%= form_with url: crop_profile_node_path(@node), method: :patch do %>
         <div class="field">
-          <label for="crop_profile_id">Apply Crop Profile To This Zone</label>
-          <%= select_tag :crop_profile_id, options_from_collection_for_select(@crop_profiles, :id, :crop_name, @node.zone.crop_profile_id) %>
+          <label for="crop_profile_id">Crop Profile</label>
+          <%= select_tag :crop_profile_id, options_from_collection_for_select(@crop_profiles, :id, :crop_name, @node.crop_profile_id || @node.zone.crop_profile_id) %>
+        </div>
+        <div class="field">
+          <label for="irrigation_line">Pump Relay</label>
+          <%= number_field_tag :irrigation_line, @node.irrigation_line, min: 1, placeholder: "1" %>
         </div>
         <div style="margin-top: 16px;">
-          <%= submit_tag "Apply Crop Profile", class: "btn" %>
+          <%= submit_tag "Save Plant Profile", class: "btn" %>
         </div>
       <% end %>
 
       <div class="dashboard-actions" style="margin-top: 16px;">
-        <%= link_to "Create Custom Crop Profile", new_crop_profile_path(return_to: node_path(@node), apply_zone_id: @node.zone_id), class: "btn light" %>
+        <%= link_to "Create Custom Crop Profile", new_crop_profile_path(return_to: node_path(@node)), class: "btn light" %>
       </div>
     </div>
   <% else %>
     <div class="col card">
-      <h3>Current Crop Profile</h3>
-      <p class="muted">Assign this node first, then assign a crop profile to its zone.</p>
+      <h3>Plant Watering Profile</h3>
+      <p class="muted">Assign this node first, then assign a crop profile and pump relay to the plant.</p>
     </div>
 
     <div class="col card">

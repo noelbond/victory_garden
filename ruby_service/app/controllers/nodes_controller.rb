@@ -146,15 +146,11 @@ class NodesController < ApplicationController
   end
 
   def crop_profile
-    if @node.zone.blank?
-      redirect_to node_path(@node), alert: "Assign the node before applying a crop profile."
-      return
-    end
+    return unless require_assigned_zone_for_command("Assign the node before applying a crop profile.")
 
-    crop_profile = CropProfile.find(params.require(:crop_profile_id))
-    @node.zone.update!(crop_profile: crop_profile)
+    @node.update!(node_watering_params)
 
-    redirect_to node_path(@node), notice: "Crop profile updated for #{@node.zone.name.presence || @node.zone.zone_id}."
+    redirect_to node_path(@node), notice: "Plant watering profile updated for #{@node.display_name}."
   end
 
   def update_calibration
@@ -191,6 +187,13 @@ class NodesController < ApplicationController
 
   def node_calibration_params
     params.require(:node).permit(:moisture_raw_dry, :moisture_raw_wet)
+  end
+
+  def node_watering_params
+    params.permit(:crop_profile_id, :irrigation_line).tap do |permitted|
+      permitted[:crop_profile_id] = permitted[:crop_profile_id].presence
+      permitted[:irrigation_line] = permitted[:irrigation_line].to_i if permitted[:irrigation_line].present?
+    end
   end
 
   def filtered_readings_scope

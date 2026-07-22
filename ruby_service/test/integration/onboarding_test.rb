@@ -21,8 +21,8 @@ class OnboardingTest < ActionDispatch::IntegrationTest
     patch onboarding_assignment_path, params: { node_id: node.id, zone_id: zone.id }
 
     assert_response :redirect
-    assert_equal "Greenhouse Zone 1 node 1 assigned to Greenhouse Zone 1.", flash[:notice]
+    assert_equal "Greenhouse Zone 1_Ch1 assigned to Greenhouse Zone 1.", flash[:notice]
     assert_equal zone, node.reload.zone
-    assert_equal "Greenhouse Zone 1 node 1", node.name
+    assert_equal "Greenhouse Zone 1_Ch1", node.name
   end
 end

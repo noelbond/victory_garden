@@ -14,8 +14,8 @@
           <h1>Flash the Pi in Raspberry Pi Imager, then finish setup here.</h1>
           <p class="hero-copy">
             This installer is now the setup wizard. It finds the Pi, saves the
-            initial Victory Garden configuration, creates the first crop profile
-            and zone, and only then moves on to the Pico boards.
+            initial Victory Garden configuration, creates the first bed, and
+            then configures the plant sensors and Pico boards.
           </p>
         </div>
         <div class="progress-strip">
@@ -24,8 +24,8 @@
           <div class="progress-chip" id="progress-zone">Zone Not Created</div>
           <div class="progress-chip" id="progress-sensor">Sensor Not Flashed</div>
           <div class="progress-chip" id="progress-actuator">Actuator Not Provisioned</div>
-          <div class="progress-chip" id="progress-reading">Reading Not Verified</div>
           <div class="progress-chip" id="progress-calibration">Calibration Not Saved</div>
+          <div class="progress-chip" id="progress-reading">Reading Not Verified</div>
           <div class="progress-chip" id="progress-watering">Watering Not Verified</div>
         </div>
       </section>
@@ -65,8 +65,8 @@
           <div class="step-pill" id="connection-step-pill">Waiting</div>
         </div>
         <p class="step-copy">
-          Save the MQTT connection and installed water-zone count before any Pico
-          hardware is configured.
+          Save the MQTT connection and the number of actuator pump or relay
+          outputs before any Pico hardware is configured.
         </p>
         <div class="form-grid two-up">
           <label class="field">
@@ -94,7 +94,7 @@
             <input id="mqtt-password" type="password" placeholder="Broker password" />
           </label>
           <label class="field">
-            <span>Installed Water Zones</span>
+            <span>Pump / Relay Outputs</span>
             <input id="irrigation-line-count" type="number" min="1" placeholder="1" />
           </label>
         </div>
@@ -109,7 +109,7 @@
         <div class="step-header">
           <div>
             <p class="eyebrow">Step 3</p>
-            <h2>Create The First Crop Profile</h2>
+            <h2>Crop Profile Library</h2>
           </div>
           <div class="step-pill" id="crop-step-pill">Waiting</div>
         </div>
@@ -140,39 +140,35 @@
             <strong id="crop-profile-summary">No crop profile selected yet</strong>
           </div>
         </div>
-        <p id="crop-status" class="status-copy">Save a crop profile before creating the first zone.</p>
+        <p id="crop-status" class="status-copy">Use the built-in crop profiles, or add a custom one before assigning plant channels.</p>
       </section>
 
       <section class="step-card" id="step-zone">
         <div class="step-header">
           <div>
             <p class="eyebrow">Step 4</p>
-            <h2>Create The First Zone</h2>
+            <h2>Create The First Bed</h2>
           </div>
           <div class="step-pill" id="zone-step-pill">Waiting</div>
         </div>
         <div class="form-grid two-up">
           <label class="field">
-            <span>Zone Name</span>
+            <span>Bed / Zone Name</span>
             <input id="zone-name" type="text" placeholder="Front Planter" />
           </label>
           <label class="field">
-            <span>Water Zone Number</span>
-            <input id="zone-line" type="number" min="1" placeholder="1" />
+            <span>Sensor Channels</span>
+            <input id="sensor-channel-count" type="number" min="1" max="4" placeholder="4" disabled />
           </label>
           <label class="field">
             <span>Reading Frequency (hours)</span>
             <input id="zone-frequency-hours" type="number" min="1" placeholder="1" />
           </label>
-          <label class="field">
-            <span>Crop Profile</span>
-            <select id="zone-crop-profile"></select>
-          </label>
         </div>
         <div class="actions">
-          <button id="save-zone" class="btn primary">Save First Zone</button>
+          <button id="save-zone" class="btn primary">Save First Bed</button>
         </div>
-        <p id="zone-status" class="status-copy">Create a crop profile first, then save the first zone.</p>
+        <p id="zone-status" class="status-copy">Create the bed before flashing the sensor Pico.</p>
       </section>
 
       <section class="step-card" id="step-sensor">
@@ -205,6 +201,11 @@
           </div>
           <button id="flash-sensor" class="btn primary">Use Detected Pico For Sensor Node</button>
         </div>
+        <div class="facts" id="plant-channel-settings"></div>
+        <div class="actions">
+          <button id="save-plant-settings" class="btn subtle">Save Plant Assignments</button>
+        </div>
+        <p id="plant-settings-status" class="status-copy">Plant assignments appear after the sensor channels are detected.</p>
         <p id="sensor-status" class="status-copy">Click Detect Pico after the Sensor Pico appears in BOOTSEL mode.</p>
       </section>
 
@@ -242,43 +243,16 @@
         <p id="actuator-status" class="status-copy">Click Detect Pico after the Actuator Pico appears in BOOTSEL mode.</p>
       </section>
 
-      <section class="step-card" id="step-reading">
-        <div class="step-header">
-          <div>
-            <p class="eyebrow">Step 7</p>
-            <h2>Confirm The First Reading</h2>
-          </div>
-          <div class="step-pill" id="reading-step-pill">Waiting</div>
-        </div>
-        <p class="step-copy">
-          Once the sensor node is online, ask it for an immediate reading and wait until the Pi persists a fresh sample. The sensor Pico must be connected to the real sensor hardware, not left attached to this computer.
-        </p>
-        <div class="facts">
-          <div class="fact">
-            <span>Assigned Sensor Node</span>
-            <strong id="reading-node-summary">No sensor node assigned yet</strong>
-          </div>
-          <div class="fact">
-            <span>Latest Reading</span>
-            <strong id="reading-detail-summary">No reading confirmed yet</strong>
-          </div>
-        </div>
-        <div class="actions">
-          <button id="request-reading" class="btn primary">Request First Reading</button>
-        </div>
-        <p id="reading-status" class="status-copy">Finish the sensor setup first.</p>
-      </section>
-
       <section class="step-card" id="step-calibration">
         <div class="step-header">
           <div>
-            <p class="eyebrow">Step 8</p>
-            <h2>Calibrate The Sensor Node</h2>
+            <p class="eyebrow">Step 7</p>
+            <h2>Confirm And Calibrate The Sensors</h2>
           </div>
           <div class="step-pill" id="calibration-step-pill">Waiting</div>
         </div>
         <p class="step-copy">
-          Prepare dry and saturated soil for all four probes. Each capture wakes the Pico once and records one value per ADS1115 channel.
+          Capture dry and saturated readings for all four plant sensors. Each capture wakes the Pico once and records one value per ADS1115 channel.
         </p>
         <div class="facts">
           <div class="fact">
@@ -295,7 +269,34 @@
           <button id="capture-dry-calibration" class="btn primary">Capture Dry Calibration</button>
           <button id="capture-wet-calibration" class="btn subtle">Capture Wet Calibration</button>
         </div>
-        <p id="calibration-status" class="status-copy">Confirm the first reading before calibration.</p>
+        <p id="calibration-status" class="status-copy">Finish the sensor setup first.</p>
+      </section>
+
+      <section class="step-card" id="step-reading">
+        <div class="step-header">
+          <div>
+            <p class="eyebrow">Step 8</p>
+            <h2>Confirm The Calibrated Reading</h2>
+          </div>
+          <div class="step-pill" id="reading-step-pill">Waiting</div>
+        </div>
+        <p class="step-copy">
+          Ask the sensor Pico for a fresh reading after calibration so the Pi can verify moisture plus SHT40 temperature and humidity.
+        </p>
+        <div class="facts">
+          <div class="fact">
+            <span>Assigned Sensor Node</span>
+            <strong id="reading-node-summary">No sensor node assigned yet</strong>
+          </div>
+          <div class="fact">
+            <span>Latest Reading</span>
+            <strong id="reading-detail-summary">No reading confirmed yet</strong>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="request-reading" class="btn primary">Request Calibrated Reading</button>
+        </div>
+        <p id="reading-status" class="status-copy">Save calibration before confirming the calibrated reading.</p>
       </section>
 
       <section class="step-card" id="step-watering">

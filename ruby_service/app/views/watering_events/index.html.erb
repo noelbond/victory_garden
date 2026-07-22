@@ -14,6 +14,7 @@
   table_column_widths = {
     "issued_at" => "210px",
     "zone" => "190px",
+    "node" => "190px",
     "command" => "180px",
     "runtime_seconds" => "130px",
     "reason" => "200px",
@@ -25,6 +26,8 @@
       event.issued_at.utc.strftime("%Y-%m-%d %H:%M:%S UTC")
     when "zone"
       event.zone&.name.presence || event.zone&.zone_id || "—"
+    when "node"
+      event.node&.display_name.presence || event.node_id.presence || "—"
     when "command"
       event.command
     when "runtime_seconds"

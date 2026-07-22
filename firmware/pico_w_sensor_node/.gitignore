@@ -1,2 +1,4 @@
 build
+build-*
+build_*
 src/config_local.h

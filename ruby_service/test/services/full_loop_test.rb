@@ -50,7 +50,7 @@ class FullLoopTest < ActiveSupport::TestCase
 
       assert_enqueued_with(
         job: RequestReadingJob,
-        args: [{ zone_id: "zone1", command_id: "#{event.idempotency_key}-reread" }],
+        args: [{ zone_id: "zone1", command_id: "#{event.idempotency_key}-reread", node_id: nil }],
         at: 5.minutes.from_now
       ) do
         ActuatorStatusIngestor.new(completion_payload).call

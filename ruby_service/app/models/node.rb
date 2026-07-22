@@ -4,15 +4,19 @@ class Node < ApplicationRecord
   EXPECTED_CHANNELS_PER_DEVICE = 4
 
   belongs_to :zone, optional: true
+  belongs_to :crop_profile, optional: true
 
   after_commit :enqueue_config_publish_if_zone_changed, on: :update
   after_commit :cascade_zone_to_device_siblings, on: :update
   after_commit :sync_default_name_if_zone_changed, on: :update
+  after_commit :enqueue_config_publish_if_watering_assignment_changed, on: :update
   after_commit :enqueue_node_config_publish_if_calibration_changed, on: :update
   after_commit :enqueue_config_publish_if_destroyed_assigned, on: :destroy
 
   validates :node_id, presence: true, uniqueness: true
   validates :name, length: { maximum: 100 }, allow_nil: true
+  validates :irrigation_line, numericality: { greater_than: 0, only_integer: true }, allow_nil: true
+  validates :irrigation_line, uniqueness: true, allow_nil: true
   validates :battery_voltage, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 10 }, allow_nil: true
   validates :wifi_rssi, numericality: { greater_than_or_equal_to: -130, less_than_or_equal_to: 0 }, allow_nil: true
   validates :last_seen_at, presence: true
@@ -20,6 +24,7 @@ class Node < ApplicationRecord
   validates :moisture_raw_dry, numericality: { greater_than_or_equal_to: 0, only_integer: true }, allow_nil: true
   validates :moisture_raw_wet, numericality: { greater_than_or_equal_to: 0, only_integer: true }, allow_nil: true
   validate :moisture_calibration_is_valid
+  validate :irrigation_line_is_available
 
   scope :unassigned, -> { where(zone_id: nil) }
   scope :assigned, -> { where.not(zone_id: nil) }
@@ -45,8 +50,9 @@ class Node < ApplicationRecord
         end
 
         channel_number = (node.channel_index || index) + 1
-        default_name = "#{label_base} node #{channel_number}"
+        default_name = "#{label_base}_Ch#{channel_number}"
         next if node.name == default_name
+        next if node.name.present? && !node.auto_generated_name?
 
         node.update_columns(name: default_name, updated_at: timestamp)
       end
@@ -71,6 +77,10 @@ class Node < ApplicationRecord
     name.presence || node_id
   end
 
+  def auto_generated_name?
+    name.to_s.match?(/(?:_Ch\d+| node \d+)\z/)
+  end
+
   def channel_index
     match = node_id.to_s.match(/(?:^|-)ch(\d+)\z/)
     return nil unless match
@@ -80,6 +90,14 @@ class Node < ApplicationRecord
 
   def calibration_configured?
     moisture_raw_dry.present? && moisture_raw_wet.present?
+  end
+
+  def effective_crop_profile
+    crop_profile || zone&.crop_profile
+  end
+
+  def watering_configured?
+    zone.present? && effective_crop_profile.present? && irrigation_line.present?
   end
 
   def expected_publish_interval_seconds
@@ -139,6 +157,12 @@ class Node < ApplicationRecord
     PublishNodeConfigJob.perform_later(id)
   end
 
+  def enqueue_config_publish_if_watering_assignment_changed
+    return unless saved_change_to_crop_profile_id? || saved_change_to_irrigation_line? || saved_change_to_name?
+
+    ConfigPublishJob.perform_later
+  end
+
   def moisture_calibration_is_valid
     return if moisture_raw_dry.blank? && moisture_raw_wet.blank?
 
@@ -150,5 +174,15 @@ class Node < ApplicationRecord
     return unless moisture_raw_dry == moisture_raw_wet
 
     errors.add(:base, "moisture calibration dry and wet raw values cannot be the same")
+  end
+
+  def irrigation_line_is_available
+    return if irrigation_line.blank?
+
+    setting = ConnectionSetting.first
+    return if setting.blank? || setting.irrigation_line_count.blank?
+    return if irrigation_line <= setting.irrigation_line_count
+
+    errors.add(:irrigation_line, "must be between 1 and #{setting.irrigation_line_count}")
   end
 end

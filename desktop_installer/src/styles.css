@@ -294,6 +294,30 @@ code {
   padding: 12px 14px;
 }
 
+.plant-channel-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+}
+
+.plant-channel-controls {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(88px, 120px);
+  gap: 10px;
+}
+
+.plant-channel-controls input,
+.plant-channel-controls select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
 @media (max-width: 780px) {
   .progress-strip {
     grid-template-columns: 1fr 1fr;
@@ -304,6 +328,11 @@ code {
   }
 
   .device-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .plant-channel-row,
+  .plant-channel-controls {
     grid-template-columns: 1fr;
   }
 

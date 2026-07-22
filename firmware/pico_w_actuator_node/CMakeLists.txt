@@ -50,3 +50,17 @@ pico_enable_stdio_uart(pico_w_actuator_node 0)
 pico_enable_stdio_usb(pico_w_actuator_node 1)
 
 pico_add_extra_outputs(pico_w_actuator_node)
+
+add_executable(pico_w_actuator_relay_smoke_test
+    src/relay_smoke_test.c
+)
+
+target_link_libraries(pico_w_actuator_relay_smoke_test
+    pico_stdlib
+    hardware_gpio
+)
+
+pico_enable_stdio_uart(pico_w_actuator_relay_smoke_test 0)
+pico_enable_stdio_usb(pico_w_actuator_relay_smoke_test 1)
+
+pico_add_extra_outputs(pico_w_actuator_relay_smoke_test)

@@ -271,10 +271,13 @@ The sensor Pico provisioning acknowledgement supplies four explicit channel node
 
 1. Flash and provision one sensor Pico.
 2. Wait for all four ADS1115 channels to appear in Rails.
-3. Pick one zone. Assigning one channel assigns every sibling with the same physical `device_id`.
-4. Put all four probes in dry soil and capture once. One `request_reading` wake publishes all four dry values.
-5. Put all four probes in saturated soil and capture once. One wake publishes all four wet values.
-6. The installer saves dry/wet calibration independently on each channel. Rails publishes one aggregated config to `greenhouse/nodes/{device_id}/config` with a four-entry `channels` array.
+3. Create the bed/zone for that sensor Pico.
+4. Assign any detected channel to the bed. Rails cascades the assignment to every sibling with the same physical `device_id`.
+5. Name each channel node as a plant, then assign its crop profile and pump/relay output.
+6. Put all four probes in dry soil and capture once. One `request_reading` wake publishes all four dry values.
+7. Put all four probes in saturated soil and capture once. One wake publishes all four wet values.
+8. The installer saves dry/wet calibration independently on each channel. Rails publishes one aggregated config to `greenhouse/nodes/{device_id}/config` with a four-entry `channels` array.
+9. Request a final calibrated reading and then validate watering against one configured plant channel.
 
 ### Pico verification
 

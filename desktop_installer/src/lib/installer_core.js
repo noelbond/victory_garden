@@ -12,6 +12,10 @@ export const asErrorMessage = (error) => {
 
 export const normalizeSensorChannels = (channels = []) => channels.map((channel) => ({
   nodeId: typeof channel === "string" ? channel : channel.nodeId || channel.node_id,
+  name: typeof channel === "string" ? "" : channel.name || "",
+  cropProfileId: typeof channel === "string" ? null : channel.cropProfileId ?? channel.crop_profile_id ?? channel.effective_crop_profile_id ?? null,
+  irrigationLine: typeof channel === "string" ? null : channel.irrigationLine ?? channel.irrigation_line ?? null,
+  wateringConfigured: typeof channel === "string" ? false : Boolean(channel.wateringConfigured ?? channel.watering_configured),
   dryRaw: Number.isFinite(channel.dryRaw) ? channel.dryRaw : channel.moisture_raw_dry ?? null,
   wetRaw: Number.isFinite(channel.wetRaw) ? channel.wetRaw : channel.moisture_raw_wet ?? null,
 })).filter((channel) => Boolean(channel.nodeId))
@@ -265,7 +269,7 @@ export const retryAsyncOperation = async ({
 export const buildPicoProvisioningPayload = ({ bootstrap, piVerifiedUrl, form, kind }) => {
   const zone = bootstrap?.first_zone
   if (!zone || !zone.zone_id) {
-    throw new Error("The first zone has not been created yet.")
+    throw new Error("The first bed has not been created yet.")
   }
 
   const wifiSsid = (form?.wifiSsid || "").trim()
@@ -304,7 +308,7 @@ export const buildPicoProvisioningPayload = ({ bootstrap, piVerifiedUrl, form, k
 
 export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {} }) => {
   const status = bootstrap?.status || {}
-  const readingDone = Boolean(status.reading_ready) || Boolean(completed.reading)
+  const readingDone = Boolean(completed.reading)
   const calibrationDone = Boolean(status.calibration_ready || bootstrap?.assigned_node?.calibration_configured) || Boolean(completed.calibration)
   const wateringDone = Boolean(status.watering_ready) || Boolean(completed.watering)
   const sensorDone = Boolean(status.assigned_node_ready) || Boolean(completed.sensor)
@@ -317,10 +321,10 @@ export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {} }) 
     return { id: "step-connection", label: "Step 2: Configure Victory Garden" }
   }
   if (!(bootstrap?.crop_profiles || []).length) {
-    return { id: "step-crop", label: "Step 3: Create The First Crop Profile" }
+    return { id: "step-crop", label: "Step 3: Crop Profile Library" }
   }
   if (!status.zone_ready) {
-    return { id: "step-zone", label: "Step 4: Create The First Zone" }
+    return { id: "step-zone", label: "Step 4: Create The First Bed" }
   }
   if (!sensorDone) {
     return { id: "step-sensor", label: "Step 5: Flash The Sensor Pico" }
@@ -328,11 +332,11 @@ export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {} }) 
   if (!actuatorDone) {
     return { id: "step-actuator", label: "Step 6: Flash The Actuator Pico" }
   }
-  if (!readingDone) {
-    return { id: "step-reading", label: "Step 7: Confirm The First Reading" }
-  }
   if (!calibrationDone) {
-    return { id: "step-calibration", label: "Step 8: Calibrate The Sensor Node" }
+    return { id: "step-calibration", label: "Step 7: Confirm And Calibrate The Sensors" }
+  }
+  if (!readingDone) {
+    return { id: "step-reading", label: "Step 8: Confirm The Calibrated Reading" }
   }
   if (!wateringDone) {
     return { id: "step-watering", label: "Step 9: Confirm The First Watering" }

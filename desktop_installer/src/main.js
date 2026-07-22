@@ -74,6 +74,9 @@ const normalizeChannels = normalizeSensorChannels
 const channelNodeIds = () => state.channels.map((channel) => channel.nodeId)
 const primarySensorNodeId = () => channelNodeIds()[0] || state.bootstrap?.assigned_node?.channels?.[0]?.node_id || ""
 const allChannelsHave = (key) => state.channels.length > 0 && state.channels.every((channel) => Number.isFinite(channel[key]))
+const allChannelsConfigured = () => state.channels.length > 0 && state.channels.every((channel) => (
+  channel.name && Number.isFinite(Number(channel.cropProfileId)) && Number.isFinite(Number(channel.irrigationLine))
+))
 const celsiusToFahrenheit = (value) => (value * 9 / 5) + 32
 const formatTemperatureF = (value) => Number.isFinite(value) ? `${celsiusToFahrenheit(value).toFixed(1)} F` : "—"
 const formatHumidity = (value) => Number.isFinite(value) ? `${value.toFixed(1)}%` : "—"
@@ -99,9 +102,8 @@ const elements = {
   cropStatus: document.querySelector("#crop-status"),
   cropProfileSummary: document.querySelector("#crop-profile-summary"),
   zoneName: document.querySelector("#zone-name"),
-  zoneLine: document.querySelector("#zone-line"),
+  sensorChannelCount: document.querySelector("#sensor-channel-count"),
   zoneFrequencyHours: document.querySelector("#zone-frequency-hours"),
-  zoneCropProfile: document.querySelector("#zone-crop-profile"),
   saveZone: document.querySelector("#save-zone"),
   zoneStatus: document.querySelector("#zone-status"),
   sensorDeviceStatus: document.querySelector("#sensor-device-status"),
@@ -110,6 +112,9 @@ const elements = {
   sensorDetectedDetail: document.querySelector("#sensor-detected-detail"),
   sensorStatus: document.querySelector("#sensor-status"),
   sensorFlash: document.querySelector("#flash-sensor"),
+  plantChannelSettings: document.querySelector("#plant-channel-settings"),
+  savePlantSettings: document.querySelector("#save-plant-settings"),
+  plantSettingsStatus: document.querySelector("#plant-settings-status"),
   actuatorDetectedTitle: document.querySelector("#actuator-detected-title"),
   actuatorDetectedDetail: document.querySelector("#actuator-detected-detail"),
   actuatorStatus: document.querySelector("#actuator-status"),
@@ -487,17 +492,22 @@ const resetStepStatusText = () => {
     summary: "Find the Pi first to load and save its configuration.",
   }))
   renderStatus(elements.cropStatus, buildStatus({
-    summary: "Save a crop profile before creating the first zone.",
+    summary: "Use a built-in crop profile or add a custom one before assigning plant channels.",
   }))
   elements.cropProfileSummary.textContent = "No crop profile selected yet"
   renderStatus(elements.zoneStatus, buildStatus({
-    summary: "Create a crop profile first, then save the first zone.",
+    summary: "Create the first bed before flashing the sensor Pico.",
   }))
   renderStatus(elements.sensorDeviceStatus, buildStatus({
     summary: "Click Detect Pico after you plug in the Sensor Pico using BOOTSEL.",
   }))
   elements.sensorDetectedTitle.textContent = "No Pico detected yet"
   elements.sensorDetectedDetail.textContent = "Plug in one Pico in BOOTSEL mode. Use one board at a time."
+  elements.plantChannelSettings.replaceChildren()
+  elements.savePlantSettings.disabled = true
+  renderStatus(elements.plantSettingsStatus, buildStatus({
+    summary: "Plant assignments appear after the sensor channels are detected.",
+  }))
   renderStatus(elements.sensorStatus, buildStatus({
     summary: "Click Detect Pico after the Sensor Pico appears in BOOTSEL mode.",
   }))
@@ -517,7 +527,7 @@ const resetStepStatusText = () => {
   elements.calibrationDrySummary.textContent = "Not captured yet"
   elements.calibrationWetSummary.textContent = "Not captured yet"
   renderStatus(elements.calibrationStatus, buildStatus({
-    summary: "Confirm the first reading before calibration.",
+    summary: "Finish the sensor setup before calibration.",
   }))
   elements.wateringZoneSummary.textContent = "No zone ready yet"
   elements.wateringDetailSummary.textContent = "No watering cycle confirmed yet"
@@ -539,6 +549,7 @@ const loadPreferences = () => {
   elements.maxPulseRuntime.value = "45"
   elements.dailyMaxRuntime.value = "300"
   elements.zoneFrequencyHours.value = "1"
+  elements.sensorChannelCount.value = "4"
 }
 
 const normalizedPiUrl = () => {
@@ -574,7 +585,7 @@ const validateConnectionForm = () => {
 
   const irrigationLineCount = Number(elements.irrigationLineCount.value)
   if (!isFinitePositiveInteger(irrigationLineCount, { minimum: 1, maximum: 128 })) {
-    return "Enter how many installed water zones the Pi should manage."
+    return "Enter how many pump or relay outputs the actuator should manage."
   }
 
   return null
@@ -609,16 +620,7 @@ const validateCropProfileForm = () => {
 
 const validateZoneForm = () => {
   if (!elements.zoneName.value.trim()) {
-    return "Enter a zone name before saving the first zone."
-  }
-
-  if (!elements.zoneCropProfile.value) {
-    return "Create or select a crop profile first."
-  }
-
-  const irrigationLine = Number(elements.zoneLine.value)
-  if (!isFinitePositiveInteger(irrigationLine, { minimum: 1, maximum: 128 })) {
-    return "Enter a valid water zone number."
+    return "Enter a bed or zone name before saving."
   }
 
   const publishIntervalHours = Number(elements.zoneFrequencyHours.value)
@@ -685,50 +687,98 @@ const setZoneForm = (zone) => {
   }
 
   elements.zoneName.value = zone.name || ""
-  elements.zoneLine.value = zone.irrigation_line || ""
   if (zone.publish_interval_ms) {
     elements.zoneFrequencyHours.value = String(Math.max(1, zone.publish_interval_ms / 3600000))
   }
-  if (zone.crop_profile_id) {
-    elements.zoneCropProfile.value = String(zone.crop_profile_id)
-    state.selectedCropProfileId = zone.crop_profile_id
+}
+
+const renderPlantChannelSettings = () => {
+  if (!elements.plantChannelSettings) {
+    return
   }
+
+  const profiles = state.bootstrap?.crop_profiles || []
+  const pumpCount = maxPumpOutput()
+  const zone = state.bootstrap?.first_zone
+
+  if (!state.channels.length) {
+    elements.plantChannelSettings.replaceChildren()
+    if (elements.savePlantSettings) {
+      elements.savePlantSettings.disabled = true
+    }
+    elements.plantSettingsStatus.textContent = "Plant assignments appear after the sensor channels are detected."
+    return
+  }
+
+  const rows = state.channels.map((channel, index) => {
+    const row = document.createElement("div")
+    row.className = "fact plant-channel-row"
+    row.dataset.nodeId = channel.nodeId
+
+    const title = document.createElement("span")
+    title.textContent = `A${index}`
+
+    const controls = document.createElement("div")
+    controls.className = "plant-channel-controls"
+
+    const nameInput = document.createElement("input")
+    nameInput.type = "text"
+    nameInput.dataset.plantField = "name"
+    nameInput.value = defaultChannelName(channel, index)
+    nameInput.placeholder = zone ? `${zone.name || zone.zone_id}_Ch${index + 1}` : `Channel ${index + 1}`
+
+    const cropSelect = document.createElement("select")
+    cropSelect.dataset.plantField = "cropProfileId"
+    for (const profile of profiles) {
+      const option = document.createElement("option")
+      option.value = String(profile.id)
+      option.textContent = `${profile.crop_name} (${profile.dry_threshold}% dry)`
+      cropSelect.appendChild(option)
+    }
+    if (profiles.length) {
+      cropSelect.value = String(channel.cropProfileId || defaultCropProfileId())
+    }
+
+    const pumpInput = document.createElement("input")
+    pumpInput.type = "number"
+    pumpInput.min = "1"
+    pumpInput.max = String(Math.max(pumpCount, 1))
+    pumpInput.dataset.plantField = "irrigationLine"
+    pumpInput.value = String(channel.irrigationLine || index + 1)
+    pumpInput.placeholder = String(index + 1)
+
+    controls.append(nameInput, cropSelect, pumpInput)
+    row.append(title, controls)
+    return row
+  })
+
+  elements.plantChannelSettings.replaceChildren(...rows)
+  elements.savePlantSettings.disabled = !profiles.length || !zone
+  elements.plantSettingsStatus.textContent = allChannelsConfigured()
+    ? "Plant assignments are saved for all detected channels."
+    : "Review each plant name, crop profile, and pump output, then save assignments."
 }
 
 const renderCropProfiles = (profiles) => {
   const currentProfiles = profiles || []
-  elements.zoneCropProfile.innerHTML = ""
-
   if (!currentProfiles.length) {
-    const option = document.createElement("option")
-    option.value = ""
-    option.textContent = "Create a crop profile first"
-    elements.zoneCropProfile.appendChild(option)
-    elements.zoneCropProfile.disabled = true
     elements.cropProfileSummary.textContent = "No crop profile created yet"
+    renderPlantChannelSettings()
     return
   }
 
-  elements.zoneCropProfile.disabled = false
-  for (const profile of currentProfiles) {
-    const option = document.createElement("option")
-    option.value = String(profile.id)
-    option.textContent = `${profile.crop_name} (${profile.dry_threshold}% dry threshold)`
-    elements.zoneCropProfile.appendChild(option)
-  }
-
   if (state.selectedCropProfileId && currentProfiles.some((profile) => profile.id === state.selectedCropProfileId)) {
-    elements.zoneCropProfile.value = String(state.selectedCropProfileId)
+    // Keep the selected profile.
   } else {
     const fallback = currentProfiles[0]
     state.selectedCropProfileId = fallback.id
-    elements.zoneCropProfile.value = String(fallback.id)
   }
 
   const selected = currentProfiles.find((profile) => profile.id === state.selectedCropProfileId)
   elements.cropProfileSummary.textContent = selected
     ? `${selected.crop_name} · ${selected.max_pulse_runtime_sec}s pulse · ${selected.daily_max_runtime_sec}s daily max`
     : "Crop profile ready"
+  renderPlantChannelSettings()
 }
 
 const restoreSessionState = (session) => {
@@ -773,6 +823,10 @@ const applyBootstrap = (bootstrap) => {
     const existingByNode = new Map(state.channels.map((channel) => [channel.nodeId, channel]))
     state.channels = normalizeChannels(sensorDevice.channels).map((channel) => ({
       ...channel,
+      name: channel.name || existingByNode.get(channel.nodeId)?.name || "",
+      cropProfileId: channel.cropProfileId ?? existingByNode.get(channel.nodeId)?.cropProfileId ?? defaultCropProfileId(),
+      irrigationLine: channel.irrigationLine ?? existingByNode.get(channel.nodeId)?.irrigationLine ?? null,
+      wateringConfigured: channel.wateringConfigured || existingByNode.get(channel.nodeId)?.wateringConfigured || false,
       dryRaw: channel.dryRaw ?? existingByNode.get(channel.nodeId)?.dryRaw ?? null,
       wetRaw: channel.wetRaw ?? existingByNode.get(channel.nodeId)?.wetRaw ?? null,
     }))
@@ -781,7 +835,6 @@ const applyBootstrap = (bootstrap) => {
     ? bootstrap.detected_node.node_id
     : state.actuatorNodeId
   state.completed.sensor = Boolean(bootstrap.status?.assigned_node_ready) || state.completed.sensor
-  state.completed.reading = Boolean(bootstrap.status?.reading_ready)
   state.completed.calibration = Boolean(bootstrap.status?.calibration_ready)
   state.completed.watering = Boolean(bootstrap.status?.watering_ready)
   setConnectionForm(bootstrap.connection_setting)
@@ -812,13 +865,28 @@ const connectionReady = () => Boolean(state.bootstrap?.status?.connection_ready)
 const zoneReady = () => Boolean(state.bootstrap?.status?.zone_ready)
 const sensorDetectedReady = () => Boolean(state.bootstrap?.status?.detected_node_ready)
 const sensorAssignedReady = () => Boolean(state.bootstrap?.status?.assigned_node_ready)
-const readingReady = () => Boolean(state.bootstrap?.status?.reading_ready) || state.completed.reading
+const readingReady = () => state.completed.reading
 const calibrationReady = () => Boolean(state.bootstrap?.status?.calibration_ready) || state.completed.calibration
 const wateringReady = () => Boolean(state.bootstrap?.status?.watering_ready) || state.completed.watering
 
 const formatCalibrationSummary = (value) => (
   Number.isFinite(value) ? `${value} raw avg from 10 readings` : "Not captured yet"
 )
+
+const defaultChannelName = (channel, index) => {
+  const zoneName = state.bootstrap?.first_zone?.name || state.bootstrap?.first_zone?.zone_id || "Zone"
+  return channel.name || `${zoneName}_Ch${index + 1}`
+}
+
+const defaultCropProfileId = () => {
+  const profiles = state.bootstrap?.crop_profiles || []
+  return state.selectedCropProfileId || profiles[0]?.id || null
+}
+
+const maxPumpOutput = () => Number(state.bootstrap?.connection_setting?.irrigation_line_count || 0)
+const wateringTargetChannel = () => state.channels.find((channel) => (
+  channel.nodeId && Number.isFinite(Number(channel.cropProfileId)) && Number.isFinite(Number(channel.irrigationLine))
+)) || null
 
 const readingIdentity = (reading) => {
   if (!reading) {
@@ -891,8 +959,8 @@ const updatePicoStep = (kind) => {
   if (!setupReady) {
     buttonElement.disabled = true
     refreshButton.disabled = true
-    statusElement.textContent = state.messages[kind] || "Finish the Pi configuration and first zone before flashing Pico boards."
-    detectionStatusElement.textContent = "Finish the Pi configuration and first zone before detecting Pico hardware."
+    statusElement.textContent = state.messages[kind] || "Finish the Pi configuration and first bed before flashing Pico boards."
+    detectionStatusElement.textContent = "Finish the Pi configuration and first bed before detecting Pico hardware."
     titleElement.textContent = "Pico setup is locked until earlier steps are complete"
     detailElement.textContent = "The installer saves all required Pi-side information first, then moves to hardware."
     markPill(stepPill, "Locked", "waiting")
@@ -903,7 +971,7 @@ const updatePicoStep = (kind) => {
   if (completed && !flashing) {
     refreshButton.disabled = false
     statusElement.textContent = state.messages[kind] || (kind === "sensor"
-      ? "Sensor firmware installed, the node connected to the Pi, and it is assigned to the first zone."
+      ? "Sensor firmware installed, the channels connected to the Pi, and they are assigned to the bed."
       : `${friendlyKindName(kind)} firmware is provisioned and online. Continue with reading, calibration, and watering validation here.`)
   }
 
@@ -983,14 +1051,17 @@ const updateReadingStep = () => {
   const assignedNode = state.bootstrap?.assigned_node
   const readingDone = readingReady()
   const readingInFlight = state.flashing.reading
+  const calibrationDone = calibrationReady()
 
   elements.readingNodeSummary.textContent = assignedNode
     ? `${assignedNode.node_id} -> ${assignedNode.zone_name || state.bootstrap?.first_zone?.name || state.bootstrap?.first_zone?.zone_id}`
     : "No sensor node assigned yet"
 
-  if (!readyForReading) {
+  if (!readyForReading || !calibrationDone) {
     elements.requestReading.disabled = true
-    elements.readingStatus.textContent = "Finish the sensor setup first."
+    elements.readingStatus.textContent = !readyForReading
+      ? "Finish the sensor setup first."
+      : "Save calibration before confirming the calibrated reading."
     elements.readingDetailSummary.textContent = "No reading confirmed yet"
     markChip(elements.progressReading, readingDone ? "Reading Verified" : "Reading Not Verified", readingDone)
     markPill(elements.readingStepPill, readingDone ? "Done" : "Waiting", readingDone ? "complete" : "waiting")
@@ -1012,7 +1083,6 @@ const updateReadingStep = () => {
 const updateCalibrationStep = () => {
   const assignedNode = state.bootstrap?.assigned_node
   const readyForCalibration = state.completed.sensor || sensorAssignedReady()
-  const readingComplete = readingReady()
   const calibrationDone = calibrationReady()
   const calibrationInFlight = state.flashing.calibration
 
@@ -1037,17 +1107,6 @@ const updateCalibrationStep = () => {
     elements.captureDryCalibration.disabled = true
     elements.captureWetCalibration.disabled = true
     elements.calibrationStatus.textContent = "Finish the sensor setup first."
-    markChip(elements.progressCalibration, calibrationDone ? "Calibration Saved" : "Calibration Not Saved", calibrationDone)
-    markPill(elements.calibrationStepPill, calibrationDone ? "Done" : "Waiting", calibrationDone ? "complete" : "waiting")
-    return
-  }
-
-  if (!readingComplete) {
-    elements.captureDryCalibration.disabled = true
-    elements.captureWetCalibration.disabled = true
-    if (!calibrationInFlight) {
-      elements.calibrationStatus.textContent = "Confirm the first reading before calibration."
-    }
     markChip(elements.progressCalibration, calibrationDone ? "Calibration Saved" : "Calibration Not Saved", calibrationDone)
     markPill(elements.calibrationStepPill, calibrationDone ? "Done" : "Waiting", calibrationDone ? "complete" : "waiting")
     return
@@ -1084,21 +1143,24 @@ const updateCalibrationStep = () => {
 
 const updateWateringStep = () => {
   const zone = state.bootstrap?.first_zone
-  const canWater = (state.completed.actuator && readingReady() && calibrationReady()) || wateringReady()
+  const target = wateringTargetChannel()
+  const canWater = (state.completed.actuator && readingReady() && calibrationReady() && target) || wateringReady()
   const wateringDone = wateringReady()
   const wateringInFlight = state.flashing.watering
 
-  elements.wateringZoneSummary.textContent = zone
-    ? (zone.name || zone.zone_id)
-    : "No zone ready yet"
+  elements.wateringZoneSummary.textContent = target
+    ? `${target.name || target.nodeId} -> pump ${target.irrigationLine}`
+    : (zone ? `${zone.name || zone.zone_id} needs plant assignments` : "No zone ready yet")
 
   if (!canWater) {
     elements.startWatering.disabled = true
     elements.wateringStatus.textContent = !state.completed.actuator
       ? "Finish the actuator setup and wait for the actuator node to come online first."
       : (!readingReady()
-          ? "Confirm the first reading before testing watering."
-          : "Save the dry and wet calibration before testing watering.")
+          ? "Confirm the calibrated reading before testing watering."
+          : (!calibrationReady()
+              ? "Save the dry and wet calibration before testing watering."
+              : "Save plant crop and pump assignments before testing watering."))
     elements.wateringDetailSummary.textContent = "No watering cycle confirmed yet"
     markChip(elements.progressWatering, wateringDone ? "Watering Verified" : "Watering Not Verified", wateringDone)
     markPill(elements.wateringStepPill, wateringDone ? "Done" : "Waiting", wateringDone ? "complete" : "waiting")
@@ -1428,7 +1490,7 @@ const fetchPiNodeDiagnostics = async (nodeId, kind) => {
   }
 }
 
-const fetchPiWateringDiagnostics = async (zoneId, idempotencyKey = "") => {
+const fetchPiWateringDiagnostics = async (zoneId, idempotencyKey = "", nodeId = "") => {
   if (!state.piVerifiedUrl || !zoneId) {
     return ""
   }
@@ -1440,6 +1502,7 @@ const fetchPiWateringDiagnostics = async (zoneId, idempotencyKey = "") => {
         input: {
           baseUrl: state.piVerifiedUrl,
           zoneId,
+          nodeId,
           idempotencyKey,
         },
       },
@@ -1480,7 +1543,7 @@ const fetchPiWateringDiagnostics = async (zoneId, idempotencyKey = "") => {
 const waitForSensorNodeReady = async (channelIds, statusElement) => {
   const zone = state.bootstrap?.first_zone
   if (!zone) {
-    throw new Error("The first zone is missing. Save the zone before provisioning the sensor.")
+    throw new Error("The first bed is missing. Save the bed before provisioning the sensor.")
   }
   const expectedChannelCount = await expectedSensorChannelCount()
   if (channelIds.length !== expectedChannelCount) {
@@ -1535,6 +1598,112 @@ const waitForSensorNodeReady = async (channelIds, statusElement) => {
   throw new Error(`Provisioned sensor channels did not all appear in Victory Garden within 90 seconds. ${piDiagnostics} ${describeRuntimeDiagnostics(diagnostics)}`)
 }
 
+const readPlantAssignmentsFromUi = () => {
+  const rows = [...elements.plantChannelSettings.querySelectorAll("[data-node-id]")]
+  return rows.map((row, index) => ({
+    nodeId: row.dataset.nodeId,
+    name: row.querySelector("[data-plant-field='name']")?.value.trim() || defaultChannelName(state.channels[index], index),
+    cropProfileId: Number(row.querySelector("[data-plant-field='cropProfileId']")?.value),
+    irrigationLine: Number(row.querySelector("[data-plant-field='irrigationLine']")?.value),
+  }))
+}
+
+const validatePlantAssignments = (assignments) => {
+  const pumpCount = maxPumpOutput()
+  if (!state.bootstrap?.first_zone) {
+    return "Create the bed before saving plant assignments."
+  }
+  if (!assignments.length) {
+    return "Detect the sensor channels before saving plant assignments."
+  }
+  if (!(state.bootstrap?.crop_profiles || []).length) {
+    return "Create or seed at least one crop profile before saving plant assignments."
+  }
+
+  const seenPumpOutputs = new Set()
+  for (const assignment of assignments) {
+    if (!assignment.name) {
+      return "Every plant channel needs a name."
+    }
+    if (!isFinitePositiveInteger(assignment.cropProfileId)) {
+      return `Choose a crop profile for ${assignment.nodeId}.`
+    }
+    if (!isFinitePositiveInteger(assignment.irrigationLine, { minimum: 1, maximum: pumpCount || 128 })) {
+      return `Choose a valid pump output for ${assignment.nodeId}.`
+    }
+    if (seenPumpOutputs.has(assignment.irrigationLine)) {
+      return `Pump output ${assignment.irrigationLine} is assigned to more than one plant.`
+    }
+    seenPumpOutputs.add(assignment.irrigationLine)
+  }
+
+  return null
+}
+
+const savePlantSettings = async () => {
+  const assignments = readPlantAssignmentsFromUi()
+  const validationError = validatePlantAssignments(assignments)
+  if (validationError) {
+    renderStatus(elements.plantSettingsStatus, buildStatus({
+      summary: "Plant assignments are incomplete.",
+      detail: validationError,
+      recovery: "Review the plant rows, then save assignments again.",
+    }))
+    return
+  }
+
+  elements.savePlantSettings.disabled = true
+  renderStatus(elements.plantSettingsStatus, buildStatus({
+    summary: "Saving plant assignments...",
+  }))
+
+  try {
+    const responses = await Promise.all(assignments.map((assignment) => invokePiApiWithRetry(
+      "update_setup_node",
+      {
+        input: {
+          baseUrl: state.piVerifiedUrl,
+          nodeId: assignment.nodeId,
+          name: assignment.name,
+          cropProfileId: assignment.cropProfileId,
+          irrigationLine: assignment.irrigationLine,
+        },
+      },
+      {
+        attempts: 4,
+        delayMs: 2000,
+        onRetry: ({ attempt, attempts }) => {
+          elements.plantSettingsStatus.textContent = `Waiting for the Pi to save plant assignments (${attempt}/${attempts})...`
+        },
+      },
+    )))
+
+    const responseByNode = new Map(responses.map((response) => [response.node.node_id, response.node]))
+    state.channels = state.channels.map((channel, index) => {
+      const saved = responseByNode.get(channel.nodeId)
+      return saved ? normalizeChannels([saved])[0] : { ...channel, ...assignments[index] }
+    })
+    renderStatus(elements.plantSettingsStatus, buildStatus({
+      summary: "Plant assignments saved.",
+      detail: "Each channel now has its own crop profile and pump output.",
+    }))
+    await refreshBootstrapFromPi()
+  } catch (error) {
+    renderStatus(
+      elements.plantSettingsStatus,
+      piApiFailureStatus(
+        "Saving plant assignments",
+        error,
+        "The Pi rejected the plant assignment update.",
+        "Check that pump outputs are within the configured count and are not duplicated, then retry.",
+      ),
+    )
+  } finally {
+    elements.savePlantSettings.disabled = false
+    updateUi()
+  }
+}
+
 const waitForFreshReading = async (nodeId, requestedAt, { onWaiting } = {}) => {
   const deadline = Date.now() + 90000
 
@@ -1579,6 +1748,14 @@ const requestFirstReading = async () => {
     renderStatus(elements.readingStatus, buildStatus({
       summary: "No assigned sensor node is available yet.",
       recovery: "Finish the sensor Pico step and wait for the node to appear on the Pi.",
+    }))
+    return
+  }
+
+  if (!calibrationReady()) {
+    renderStatus(elements.readingStatus, buildStatus({
+      summary: "Calibration is not saved yet.",
+      recovery: "Capture and save dry and wet calibration before confirming the calibrated reading.",
     }))
     return
   }
@@ -1671,15 +1848,7 @@ const captureCalibration = async (target) => {
   if (!nodeId || channelIds.length === 0) {
     renderStatus(elements.calibrationStatus, buildStatus({
       summary: "No assigned sensor node is available yet.",
-      recovery: "Finish the sensor Pico step and confirm the first reading before calibration.",
-    }))
-    return
-  }
-
-  if (!readingReady()) {
-    renderStatus(elements.calibrationStatus, buildStatus({
-      summary: "Confirm the first reading before calibration.",
-      recovery: "Run the reading validation step first, then return to calibration.",
+      recovery: "Finish the sensor Pico step before calibration.",
     }))
     return
   }
@@ -1785,7 +1954,7 @@ const captureCalibration = async (target) => {
   }
 }
 
-const waitForWateringCompletion = async (zone, idempotencyKey = "") => {
+const waitForWateringCompletion = async (zone, target, idempotencyKey = "") => {
   const deadline = Date.now() + 120000
 
   while (Date.now() < deadline) {
@@ -1795,6 +1964,7 @@ const waitForWateringCompletion = async (zone, idempotencyKey = "") => {
         input: {
           baseUrl: state.piVerifiedUrl,
           zoneId: zone.id,
+          nodeId: target?.nodeId || "",
           idempotencyKey,
         },
       },
@@ -1811,7 +1981,7 @@ const waitForWateringCompletion = async (zone, idempotencyKey = "") => {
       state.completed.watering = true
       const actuatorState = status.actuator_status?.state || status.event.status
       elements.wateringDetailSummary.textContent = `${actuatorState} at ${status.event.issued_at || "unknown time"}`
-      elements.wateringStatus.textContent = `Confirmed a completed watering cycle for ${zone.name || zone.zone_id}.`
+      elements.wateringStatus.textContent = `Confirmed a completed watering cycle for ${target?.name || target?.nodeId || zone.name || zone.zone_id}.`
       await refreshBootstrapFromPi()
       return
     }
@@ -1821,15 +1991,24 @@ const waitForWateringCompletion = async (zone, idempotencyKey = "") => {
     await sleep(2000)
   }
 
-  throw new Error(`Timed out waiting for the watering cycle on ${zone.name || zone.zone_id}.`)
+  throw new Error(`Timed out waiting for the watering cycle on ${target?.name || target?.nodeId || zone.name || zone.zone_id}.`)
 }
 
 const runFirstWatering = async () => {
   const zone = state.bootstrap?.first_zone
+  const target = wateringTargetChannel()
   if (!zone) {
     renderStatus(elements.wateringStatus, buildStatus({
       summary: "No zone is configured yet.",
-      recovery: "Create and save the first zone before testing watering.",
+      recovery: "Create and save the first bed before testing watering.",
+    }))
+    return
+  }
+
+  if (!target) {
+    renderStatus(elements.wateringStatus, buildStatus({
+      summary: "No plant watering target is configured yet.",
+      recovery: "Save plant crop and pump assignments before testing watering.",
     }))
     return
   }
@@ -1840,12 +2019,13 @@ const runFirstWatering = async () => {
   void logInstallerInfo("watering", "start", "Starting watering validation.", {
     zoneId: zone.id,
     zoneName: zone.name || zone.zone_id,
+    nodeId: target.nodeId,
+    pumpOutput: target.irrigationLine,
   })
-  elements.wateringStatus.textContent = `Starting a watering cycle for ${zone.name || zone.zone_id}...`
+  elements.wateringStatus.textContent = `Starting a watering cycle for ${target.name || target.nodeId}...`
 
+  let queued = null
   try {
-    let queued = null
-
     try {
       queued = await invokePiApiWithRetry(
         "start_setup_watering",
@@ -1853,6 +2033,7 @@ const runFirstWatering = async () => {
           input: {
             baseUrl: state.piVerifiedUrl,
             zoneId: zone.id,
+            nodeId: target.nodeId,
           },
         },
         {
@@ -1865,33 +2046,36 @@ const runFirstWatering = async () => {
       )
     } catch (error) {
       const message = String(error)
-      if (!message.includes("Watering is already active for this zone.")) {
+      if (!message.includes("Watering is already active for this target.")) {
         throw error
       }
 
       void logInstallerWarn("watering", "reuse_active_cycle", "Reusing an already-active watering cycle for validation.", {
         zoneId: zone.id,
         zoneName: zone.name || zone.zone_id,
+        nodeId: target.nodeId,
       })
-      elements.wateringStatus.textContent = `A watering cycle is already active for ${zone.name || zone.zone_id}. Reusing it for validation...`
-      await waitForWateringCompletion(zone, "")
+      elements.wateringStatus.textContent = `A watering cycle is already active for ${target.name || target.nodeId}. Reusing it for validation...`
+      await waitForWateringCompletion(zone, target, "")
       return
     }
 
-    await waitForWateringCompletion(zone, queued.idempotency_key)
+    await waitForWateringCompletion(zone, target, queued.idempotency_key)
     void logInstallerInfo("watering", "success", "Watering validation completed successfully.", {
       zoneId: zone.id,
       zoneName: zone.name || zone.zone_id,
+      nodeId: target.nodeId,
       idempotencyKey: queued.idempotency_key,
     })
   } catch (error) {
     state.completed.watering = false
     const diagnostics = await fetchRuntimeDiagnostics("actuator")
-    const piDiagnostics = await fetchPiWateringDiagnostics(zone.id, queued?.idempotency_key || "")
+    const piDiagnostics = await fetchPiWateringDiagnostics(zone.id, queued?.idempotency_key || "", target.nodeId)
     const actuatorNodeDiagnostics = await fetchPiNodeDiagnostics(state.actuatorNodeId, "actuator")
     void logInstallerError("watering", "failed", "Watering validation failed.", {
       zoneId: zone.id,
       zoneName: zone.name || zone.zone_id,
+      nodeId: target.nodeId,
       error: asErrorMessage(error),
       piDiagnostics,
       actuatorNodeDiagnostics,
@@ -1904,12 +2088,12 @@ const runFirstWatering = async () => {
         ? piApiFailureStatus(
             "Watering validation",
             error,
-            "The installer could not confirm a completed watering cycle for the first zone.",
+            "The installer could not confirm a completed watering cycle for the selected plant.",
             "Wait for the Pi to respond again, then retry watering validation.",
           )
         : buildStatus({
             summary: "Watering validation failed.",
-            detail: "The installer could not confirm a completed watering cycle for the first zone.",
+            detail: "The installer could not confirm a completed watering cycle for the selected plant.",
             recovery: "Make sure the actuator Pico is on the real actuator hardware, online, and still visible to the Pi, then retry watering validation.",
             technicalDetail: [asErrorMessage(error), piDiagnostics, actuatorNodeDiagnostics, describeRuntimeDiagnostics(diagnostics)].filter(Boolean).join(" "),
           }),
@@ -1979,12 +2163,12 @@ const findPi = async () => {
     renderStatus(elements.cropStatus, buildStatus({
       summary: bootstrap.crop_profiles.length
         ? "At least one crop profile already exists."
-        : "Create the first crop profile here.",
+        : "Create a crop profile here, or seed the defaults on the Pi.",
     }))
     renderStatus(elements.zoneStatus, buildStatus({
       summary: bootstrap.first_zone
-        ? "A first zone already exists on the Pi."
-        : "Save the first zone here.",
+        ? "A first bed already exists on the Pi."
+        : "Save the first bed here.",
     }))
   } catch (error) {
     const classified = classifyPiDiscoveryError(error, { online: browserOnline() })
@@ -2138,7 +2322,7 @@ const createCropProfile = async () => {
     renderCropProfiles(response.crop_profiles)
     renderStatus(elements.cropStatus, buildStatus({
       summary: `Created crop profile ${response.crop_profile.crop_name}.`,
-      detail: "You can now use it when saving the first zone.",
+      detail: "You can now assign it to individual plant channels.",
     }))
   } catch (error) {
     renderStatus(
@@ -2159,7 +2343,7 @@ const saveZone = async () => {
   if (!state.piVerifiedUrl) {
     renderStatus(elements.zoneStatus, buildStatus({
       summary: "Find the Pi first.",
-      recovery: "Run Step 1 before saving the first zone.",
+      recovery: "Run Step 1 before saving the first bed.",
     }))
     return
   }
@@ -2167,15 +2351,15 @@ const saveZone = async () => {
   const validationError = validateZoneForm()
   if (validationError) {
     renderStatus(elements.zoneStatus, buildStatus({
-      summary: "Zone values are incomplete.",
+      summary: "Bed values are incomplete.",
       detail: validationError,
-      recovery: "Correct the first zone fields, then try again.",
+      recovery: "Correct the bed fields, then try again.",
     }))
     return
   }
 
   renderStatus(elements.zoneStatus, buildStatus({
-    summary: "Saving first zone...",
+    summary: "Saving first bed...",
   }))
 
   try {
@@ -2183,8 +2367,6 @@ const saveZone = async () => {
       input: {
         baseUrl: state.piVerifiedUrl,
         name: elements.zoneName.value.trim(),
-        cropProfileId: Number(elements.zoneCropProfile.value),
-        irrigationLine: Number(elements.zoneLine.value),
         publishIntervalHours: Number(elements.zoneFrequencyHours.value),
       },
     }, {
@@ -2192,10 +2374,10 @@ const saveZone = async () => {
       baseDelayMs: 2000,
       maxDelayMs: 8000,
       timeoutMs: 10000,
-      context: "Saving the first zone to the Pi",
+      context: "Saving the first bed to the Pi",
       onRetry: ({ attempt, attempts, delayMs, classified }) => {
         renderStatus(elements.zoneStatus, buildStatus({
-          summary: "Saving first zone...",
+          summary: "Saving first bed...",
           detail: piRetryDetail(classified, attempt, attempts, delayMs),
         }))
       },
@@ -2211,14 +2393,14 @@ const saveZone = async () => {
       assigned_node: state.bootstrap?.assigned_node || null,
     }
     renderStatus(elements.zoneStatus, buildStatus({
-      summary: `Saved first zone ${response.first_zone.name || response.first_zone.zone_id}.`,
-      detail: "The installer can now move on to Pico hardware setup.",
+      summary: `Saved first bed ${response.first_zone.name || response.first_zone.zone_id}.`,
+      detail: "The installer can now move on to Pico hardware setup and plant-channel assignments.",
     }))
   } catch (error) {
     renderStatus(
       elements.zoneStatus,
       piApiFailureStatus(
-        "Saving the first zone",
+        "Saving the first bed",
         error,
         "The Pi rejected the zone setup request.",
         "Verify the zone fields and Pi connectivity, then retry this step.",
@@ -2376,9 +2558,27 @@ const exportDiagnostics = async () => {
 const bindEvents = () => {
   elements.wizardUrl.addEventListener("change", savePreferences)
   elements.picoWifiSsid.addEventListener("change", savePreferences)
-  elements.zoneCropProfile.addEventListener("change", () => {
-    state.selectedCropProfileId = Number(elements.zoneCropProfile.value)
-    renderCropProfiles(state.bootstrap?.crop_profiles || [])
+  elements.plantChannelSettings.addEventListener("input", (event) => {
+    const row = event.target.closest("[data-node-id]")
+    const field = event.target.dataset.plantField
+    if (!row || !field) {
+      return
+    }
+
+    const channel = state.channels.find((item) => item.nodeId === row.dataset.nodeId)
+    if (!channel) {
+      return
+    }
+
+    if (field === "name") {
+      channel.name = event.target.value
+    } else if (field === "cropProfileId") {
+      channel.cropProfileId = Number(event.target.value)
+      state.selectedCropProfileId = channel.cropProfileId
+    } else if (field === "irrigationLine") {
+      channel.irrigationLine = Number(event.target.value)
+    }
+    saveSessionState()
   })
   elements.findPi.addEventListener("click", () => {
     void findPi()
@@ -2391,6 +2591,9 @@ const bindEvents = () => {
   })
   elements.saveZone.addEventListener("click", () => {
     void saveZone()
+  })
+  elements.savePlantSettings.addEventListener("click", () => {
+    void savePlantSettings()
   })
   elements.sensorFlash.addEventListener("click", () => {
     void flashBoard("sensor")

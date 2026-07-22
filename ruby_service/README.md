@@ -99,7 +99,7 @@ Crop profiles are user-managed from the Rails UI. Operators can create custom Cr
 - PostgreSQL is authoritative for crop profiles, zones, node assignments, watering history, faults, and node config sync status.
 - MQTT retained node state is the live transport layer for sleeping devices and the Python controller's working input.
 - `nodes.zone_id` is authoritative for routing. `reported_zone_id` from node payloads is stored for visibility only.
-- Actuation is external to this Rails app. Rails publishes zone-scoped actuator commands and consumes zone-scoped actuator status messages from the dedicated actuator Pico.
+- Actuation is external to this Rails app. Rails publishes zone-topic actuator commands with `node_id` for plant-level watering and consumes actuator status messages that include both `zone_id` and `node_id` when available.
 
 ## Consumed Payloads
 

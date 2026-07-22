@@ -100,7 +100,7 @@ class ApplicationController < ActionController::Base
   end
 
   def onboarding_zone_complete?
-    Zone.where.not(irrigation_line: nil).exists?
+    Node.assigned.where.not(irrigation_line: nil).exists? || Zone.where.not(irrigation_line: nil).exists?
   end
 
   def onboarding_reading_complete?

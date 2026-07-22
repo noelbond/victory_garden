@@ -98,21 +98,16 @@
     <section id="zone-details" class="card zone-section zone-panel zone-panel-details">
       <div class="zone-section-header">
         <h3>Zone Details</h3>
-        <div class="muted">Configuration, aggregate moisture, latest reading, and watering state.</div>
+        <div class="muted">Bed configuration, plant sensors, latest readings, and watering state.</div>
       </div>
 
       <div class="row">
         <div class="col card">
           <h3>Zone Configuration</h3>
           <ul class="list">
-      <li>Crop: <strong><%= @zone.crop_profile.crop_name %></strong></li>
-      <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
-      <li>Max Pulse Runtime: <%= @zone.crop_profile.max_pulse_runtime_sec %> s</li>
-      <li>Daily Max Runtime: <%= @zone.crop_profile.daily_max_runtime_sec %> s</li>
-      <li>Water Zone: <%= @zone.irrigation_line || "—" %></li>
+      <li>Legacy Crop Fallback: <strong><%= @zone.crop_profile.crop_name %></strong></li>
+      <li>Watering Mode: Per-node plant sensors</li>
       <li>Reading Frequency: <%= @zone.reading_frequency_hours || "—" %><%= " hours" if @zone.reading_frequency_hours.present? %></li>
-      <li>Climate: <%= @zone.crop_profile.climate_preference.presence || "—" %></li>
-      <li>Time to Harvest: <%= @zone.crop_profile.time_to_harvest_days || "—" %> days</li>
       <li>
         Assigned Nodes (<%= @assigned_nodes.count %>):
         <% if @assigned_nodes.any? %>
@@ -131,7 +126,7 @@
       <li>Freshness: <span class="health-pill <%= @aggregate_freshness %>"><%= freshness_label(@aggregate_freshness) %></span></li>
       <li>Average Moisture: <%= @zone_moisture_snapshot[:average_moisture] || "—" %><%= "%" if @zone_moisture_snapshot[:average_moisture].present? %></li>
       <li>Average Raw: <%= @zone_moisture_snapshot[:average_raw] || "—" %></li>
-      <li>Dry Threshold: <%= @zone.crop_profile.dry_threshold %>%</li>
+      <li>Use For Watering: No, plant nodes are evaluated individually</li>
       <li>Valid Sensor Count: <%= @zone_moisture_snapshot[:valid_sensor_count] %> / <%= @zone_moisture_snapshot[:expected_sensor_count] %></li>
       <li>Fresh Node IDs: <%= @zone_moisture_snapshot[:valid_node_ids].presence&.join(", ") || "—" %></li>
       <li>Missing Nodes: <%= @zone_moisture_snapshot[:missing_node_ids].presence&.join(", ") || "—" %></li>
@@ -157,7 +152,11 @@
                 <% freshness = reading_freshness(reading) %>
                 <li>
                   <strong><%= node.display_name %></strong>
-                  <div class="muted"><%= node.node_id %></div>
+                  <div class="muted">
+                    <%= node.node_id %>
+                    • crop: <%= node.effective_crop_profile&.crop_name || "—" %>
+                    • pump relay: <%= node.irrigation_line || "—" %>
+                  </div>
                   <% if reading.present? %>
                     <div>
                       <span class="health-pill <%= freshness %>"><%= freshness_label(freshness) %></span>
@@ -366,6 +365,9 @@
             <div class="attention-item attention-warn">
               <div class="attention-label">
                 <span class="health-pill warn"><%= fault.fault_code %></span>
+                <% if fault.node_id.present? %>
+                  <span><%= fault.node&.display_name || fault.node_id %></span>
+                <% end %>
                 <span class="muted"><%= fault.recorded_at %></span>
               </div>
               <div><%= fault.detail.presence || "No additional detail was provided." %></div>

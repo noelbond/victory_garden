@@ -5,12 +5,14 @@ class WateringEvent < ApplicationRecord
   ACTIVE_GUARD_LOOKBACK = 15.minutes
 
   belongs_to :zone
+  belongs_to :node, primary_key: :node_id, foreign_key: :node_id, optional: true
 
   validates :command, presence: true
   validates :status, presence: true, inclusion: { in: STATUSES }
   validates :issued_at, presence: true
   validates :idempotency_key, presence: true
   validates :runtime_seconds, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true
+  validates :node_id, length: { maximum: 100 }, allow_nil: true
 
   validate :runtime_consistency
 

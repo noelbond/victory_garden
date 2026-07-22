@@ -119,6 +119,42 @@ class ControllerEventIngestorTest < ActiveSupport::TestCase
     assert_equal "below_dry_threshold", event.reason
   end
 
+  test "stores node id on node-targeted watering events" do
+    node = Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, last_seen_at: Time.current)
+    payload = {
+      "zone_id" => "zone1",
+      "node_id" => node.node_id,
+      "timestamp" => "2026-03-31T20:00:00Z",
+      "action" => "water",
+      "runtime_seconds" => 45,
+      "idempotency_key" => "sensor-zone1-ch0-20260331T200000Z-abcd1234"
+    }
+
+    event = ControllerEventIngestor.new(payload).call
+
+    assert_equal node.node_id, event.node_id
+    assert_equal node, event.node
+  end
+
+  test "rejects node id assigned to a different zone" do
+    other_zone = create(:zone, zone_id: "zone2")
+    node = Node.create!(node_id: "sensor-zone2-ch0", zone: other_zone, last_seen_at: Time.current)
+    payload = {
+      "zone_id" => "zone1",
+      "node_id" => node.node_id,
+      "timestamp" => "2026-03-31T20:00:00Z",
+      "action" => "water",
+      "runtime_seconds" => 45,
+      "idempotency_key" => "sensor-zone2-ch0-20260331T200000Z-abcd1234"
+    }
+
+    error = assert_raises(ArgumentError) do
+      ControllerEventIngestor.new(payload).call
+    end
+
+    assert_match "is not assigned to zone1", error.message
+  end
+
   test "rejects non-integer runtime_seconds values" do
     payload = {
       "zone_id" => "zone1",

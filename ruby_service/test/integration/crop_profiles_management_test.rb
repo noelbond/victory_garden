@@ -86,7 +86,7 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Daily max runtime sec must be greater than or equal to max pulse runtime"
   end
 
-  test "node page can switch the assigned zone to a different crop profile" do
+  test "node page can switch the assigned plant to a different crop profile" do
     original_crop = create(:crop_profile, crop_name: "Tomato")
     replacement_crop = create(:crop_profile, crop_name: "Pepper")
     zone = create(:zone, crop_profile: original_crop)
@@ -95,17 +95,17 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
     get node_path(node)
 
     assert_response :success
-    assert_includes response.body, "Apply Crop Profile To This Zone"
+    assert_includes response.body, "Select Plant Profile"
     assert_includes response.body, "Edit Crop Profile"
 
     assert_enqueued_with(job: ConfigPublishJob) do
-      assert_enqueued_with(job: PublishNodeConfigJob) do
-        patch crop_profile_node_path(node), params: { crop_profile_id: replacement_crop.id }
-      end
+      patch crop_profile_node_path(node), params: { crop_profile_id: replacement_crop.id, irrigation_line: 1 }
     end
 
     assert_redirected_to node_path(node)
-    assert_equal replacement_crop, zone.reload.crop_profile
+    assert_equal replacement_crop, node.reload.crop_profile
+    assert_equal 1, node.irrigation_line
+    assert_equal original_crop, zone.reload.crop_profile
   end
 
   test "creating a crop profile with a nonexistent apply_zone_id still creates the profile with plain notice" do
