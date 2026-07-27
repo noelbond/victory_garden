@@ -2,13 +2,16 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  buildActuatorProvisioningRecordRequest,
   buildPicoProvisioningPayload,
   buildWateringStatusRequest,
   classifyPiDiscoveryError,
   classifyWateringStatus,
   effectiveFirstZoneReady,
   effectiveWateringDone,
+  isActuatorProvisioningRecordUnsupported,
   nextInstallerStep,
+  normalizeSetupActuator,
   normalizeSetupWatering,
   normalizeSensorChannels,
   normalizePiUrl,
@@ -614,6 +617,92 @@ test("buildPicoProvisioningPayload uses Pi-managed broker credentials", () => {
     zoneId: "zone1",
     publishIntervalMs: 3600000,
   })
+})
+
+test("actuator provisioning record request uses serial ack operation id and node identity", () => {
+  const request = buildActuatorProvisioningRecordRequest({
+    baseUrl: "http://victory-garden.local:3000/",
+    provisioningPayload: {
+      kind: "actuator",
+      nodeId: "actuator-zone1",
+      zoneId: "zone1",
+    },
+    provisioned: {
+      kind: "actuator",
+      operation_id: "provision-001",
+      node_id: "actuator-zone1",
+      zone_id: "zone1",
+    },
+    board: "pico_w",
+  })
+
+  assert.deepEqual(request, {
+    input: {
+      baseUrl: "http://victory-garden.local:3000/",
+      logicalNodeId: "actuator-zone1",
+      provisioningOperationId: "provision-001",
+      zoneExternalId: "zone1",
+      board: "pico_w",
+    },
+  })
+})
+
+test("actuator provisioning record request is skipped for sensor provisioning", () => {
+  assert.equal(buildActuatorProvisioningRecordRequest({
+    baseUrl: "http://victory-garden.local:3000/",
+    provisioningPayload: { kind: "sensor", nodeId: "sensor-zone1", zoneId: "zone1" },
+    provisioned: { kind: "sensor", operation_id: "provision-001", node_id: "sensor-zone1" },
+    board: "pico_w",
+  }), null)
+})
+
+test("actuator provisioning record request requires the returned operation id", () => {
+  assert.throws(() => buildActuatorProvisioningRecordRequest({
+    baseUrl: "http://victory-garden.local:3000/",
+    provisioningPayload: { kind: "actuator", nodeId: "actuator-zone1", zoneId: "zone1" },
+    provisioned: { kind: "actuator", node_id: "actuator-zone1" },
+    board: "pico_w",
+  }), /operation id/)
+})
+
+test("setup actuator authority is surfaced without controlling step selection yet", () => {
+  const setupActuator = normalizeSetupActuator({
+    setup_actuator: {
+      supported: true,
+      authoritative: true,
+      state: "ready",
+      complete: true,
+      actuator: { logical_node_id: "actuator-zone1" },
+      outputs: [{ output_index: 1, state: "available" }],
+    },
+  })
+
+  assert.equal(setupActuator.authoritative, true)
+  assert.equal(setupActuator.complete, true)
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: {
+          connection_ready: true,
+          first_zone_ready: true,
+          zone_ready: true,
+          assigned_node_ready: true,
+          calibration_ready: false,
+          watering_ready: false,
+        },
+        crop_profiles: [{ id: 1 }],
+        setup_actuator: setupActuator.raw,
+      },
+      completed: { sensor: true, actuator: false },
+    }),
+    { id: "step-actuator", label: "Step 6: Flash The Actuator Pico" },
+  )
+})
+
+test("older Rails actuator provisioning authority endpoint is explicitly detected", () => {
+  assert.equal(isActuatorProvisioningRecordUnsupported(new Error("HTTP 404 from /setup_api/actuator_provisioning")), true)
+  assert.equal(isActuatorProvisioningRecordUnsupported(new Error("Validation failed")), false)
 })
 
 test("classifyPiDiscoveryError distinguishes service startup failures", () => {

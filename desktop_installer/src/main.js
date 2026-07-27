@@ -2,6 +2,7 @@ import "./styles.css"
 import { invoke } from "@tauri-apps/api/core"
 import {
   asErrorMessage,
+  buildActuatorProvisioningRecordRequest,
   buildWateringStatusRequest,
   buildPicoProvisioningPayload,
   classifyPiConnectivityError,
@@ -9,7 +10,9 @@ import {
   classifyWateringStatus,
   effectiveFirstZoneReady,
   effectiveWateringDone,
+  isActuatorProvisioningRecordUnsupported,
   nextInstallerStep,
+  normalizeSetupActuator,
   normalizeSensorChannels,
   normalizePiUrl,
   normalizeSetupWatering,
@@ -654,6 +657,50 @@ const picoProvisioningPayload = (kind) => {
   })
 }
 
+const recordActuatorProvisioningAttempt = async ({ provisioningPayload, provisioned, board, statusElement }) => {
+  const request = buildActuatorProvisioningRecordRequest({
+    baseUrl: state.piVerifiedUrl,
+    provisioningPayload,
+    provisioned,
+    board,
+  })
+  if (!request) {
+    return null
+  }
+
+  try {
+    const response = await invokePiApiWithRetry("record_setup_actuator_provisioning", request, {
+      attempts: 1,
+      timeoutMs: 10000,
+      context: "Recording actuator provisioning authority",
+    })
+
+    if (response?.setup_actuator) {
+      state.bootstrap = {
+        ...(state.bootstrap || {}),
+        status: response.status || state.bootstrap?.status || {},
+        setup_actuator: response.setup_actuator,
+      }
+      renderSetupActuatorAuthority(normalizeSetupActuator(state.bootstrap))
+    }
+
+    return response
+  } catch (error) {
+    if (isActuatorProvisioningRecordUnsupported(error)) {
+      void logInstallerWarn("hardware", "actuator_authority_unsupported", "Rails does not support actuator provisioning authority yet.", {
+        nodeId: provisioned.node_id,
+        operationId: provisioned.operation_id,
+        error: asErrorMessage(error),
+      })
+      state.messages.actuator = `Actuator ${provisioned.node_id} was provisioned locally, but this Pi does not expose Rails actuator provisioning authority yet. Continue with the existing online check; actuator setup remains locally tracked on this server.`
+      statusElement.textContent = state.messages.actuator
+      return null
+    }
+
+    throw error
+  }
+}
+
 const currentDetectedDevice = () => {
   if (state.devices.length !== 1) {
     return null
@@ -883,6 +930,40 @@ const renderSetupWateringReconciliation = (setupWatering) => {
   }
 }
 
+const setupActuatorStatusDetail = (setupActuator) => {
+  if (!setupActuator?.authoritative) {
+    return ""
+  }
+
+  const pieces = []
+  if (setupActuator.message) {
+    pieces.push(setupActuator.message)
+  }
+  if (setupActuator.recovery) {
+    pieces.push(`Recovery: ${setupActuator.recovery}.`)
+  }
+  return pieces.join(" ")
+}
+
+const renderSetupActuatorAuthority = (setupActuator) => {
+  if (!setupActuator?.authoritative) {
+    return
+  }
+
+  const logicalNodeId = setupActuator.raw?.actuator?.logical_node_id || state.actuatorNodeId || "the actuator"
+  if (setupActuator.complete) {
+    state.messages.actuator = `Rails confirmed ${logicalNodeId} after a matching MQTT config acknowledgement.`
+    return
+  }
+
+  if (setupActuator.state === "none") {
+    return
+  }
+
+  state.messages.actuator = setupActuatorStatusDetail(setupActuator) ||
+    `Rails is tracking ${logicalNodeId}, but actuator readiness is not complete yet.`
+}
+
 const applyBootstrap = (bootstrap) => {
   state.bootstrap = bootstrap
   const sensorDevice = bootstrap.assigned_node?.channels?.length ? bootstrap.assigned_node : bootstrap.detected_node
@@ -914,6 +995,7 @@ const applyBootstrap = (bootstrap) => {
   })
   state.completed = wateringReconciliation.completed
   state.wateringAttempt = wateringReconciliation.wateringAttempt
+  renderSetupActuatorAuthority(normalizeSetupActuator(bootstrap))
   setConnectionForm(bootstrap.connection_setting)
   renderCropProfiles(bootstrap.crop_profiles)
   setZoneForm(bootstrap.first_zone)
@@ -2646,8 +2728,9 @@ const flashBoard = async (kind) => {
     void logInstallerInfo("hardware", "flash_complete", `${kind} Pico flash completed.`, result)
     state.messages[kind] = `Installed ${result.flashed_filename}. Waiting for the Pico USB serial port so the installer can provision it.`
     statusElement.textContent = state.messages[kind]
+    const provisioningPayload = picoProvisioningPayload(kind)
     const provisioned = await invoke("provision_pico", {
-      input: picoProvisioningPayload(kind),
+      input: provisioningPayload,
     })
     void logInstallerInfo("hardware", "provision_complete", `${kind} Pico provisioning completed.`, provisioned)
     state.provisioned[kind] = true
@@ -2657,7 +2740,15 @@ const flashBoard = async (kind) => {
       state.messages.sensor = `Sensor ${provisioned.node_id} was provisioned with ${state.channels.length} channels. Move it to the real probe hardware while the installer waits for all channels to appear on the Pi.`
     } else {
       state.actuatorNodeId = provisioned.node_id
-      state.messages.actuator = `Actuator ${provisioned.node_id} was provisioned. Move it to the real actuator hardware while the installer waits for it to appear on the Pi.`
+      await recordActuatorProvisioningAttempt({
+        provisioningPayload,
+        provisioned,
+        board: device.board,
+        statusElement,
+      })
+      if (!state.messages.actuator) {
+        state.messages.actuator = `Actuator ${provisioned.node_id} was provisioned. Move it to the real actuator hardware while the installer waits for it to appear on the Pi.`
+      }
     }
     saveSessionState()
 

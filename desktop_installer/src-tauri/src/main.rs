@@ -154,6 +154,8 @@ struct SetupNode {
 struct SetupBootstrapResponse {
     status: SetupStatus,
     setup_watering: Option<SetupWateringAttempt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    setup_actuator: Option<serde_json::Value>,
     connection_setting: SetupConnectionSetting,
     crop_profiles: Vec<SetupCropProfile>,
     first_zone: Option<SetupZone>,
@@ -319,6 +321,17 @@ struct SetupWateringStatusResponse {
     node: Option<SetupNode>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SetupActuatorProvisioningResponse {
+    recorded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    setup_actuator: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<SetupStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct ErrorResponse {
     errors: Vec<String>,
@@ -417,6 +430,16 @@ struct SetupWateringStatusInput {
     zone_id: u64,
     node_id: Option<String>,
     idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupActuatorProvisioningInput {
+    base_url: String,
+    logical_node_id: String,
+    provisioning_operation_id: String,
+    zone_external_id: Option<String>,
+    board: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1528,6 +1551,24 @@ fn fetch_setup_watering_status(input: SetupWateringStatusInput) -> Result<SetupW
 }
 
 #[tauri::command]
+fn record_setup_actuator_provisioning(
+    input: SetupActuatorProvisioningInput,
+) -> Result<SetupActuatorProvisioningResponse, String> {
+    let url = api_url_from_base(&input.base_url, "/setup_api/actuator_provisioning")?;
+    let payload = json!({
+        "actuator_provisioning": {
+            "logical_node_id": input.logical_node_id,
+            "provisioning_operation_id": input.provisioning_operation_id,
+            "zone_external_id": input.zone_external_id,
+            "board": input.board
+        }
+    })
+    .to_string();
+    let (status_code, body) = http_request(&url, "POST", Some(&payload), Some("application/json"))?;
+    decode_json_response(status_code, &body, &url)
+}
+
+#[tauri::command]
 fn collect_pico_runtime_diagnostics(input: PicoRuntimeDiagnosticsInput) -> Result<PicoRuntimeDiagnostics, String> {
     let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(8000).clamp(1000, 20000));
     let ports = candidate_serial_ports()?;
@@ -1968,6 +2009,7 @@ fn main() {
             save_setup_calibration,
             start_setup_watering,
             fetch_setup_watering_status,
+            record_setup_actuator_provisioning,
             collect_pico_runtime_diagnostics,
             provision_pico,
             flash_firmware,
@@ -2151,6 +2193,97 @@ mod tests {
                 .get("node_id")
                 .unwrap(),
             "sensor-zone1-ch0"
+        );
+    }
+
+    #[test]
+    fn setup_bootstrap_carries_setup_actuator_authority_as_frontend_json() {
+        let parsed: SetupBootstrapResponse = serde_json::from_value(json!({
+            "status": {
+                "connection_ready": true,
+                "first_zone_ready": true,
+                "watering_targets_ready": true,
+                "zone_ready": true,
+                "detected_node_ready": true,
+                "assigned_node_ready": true,
+                "reading_ready": true,
+                "calibration_ready": true,
+                "watering_ready": false
+            },
+            "setup_watering": null,
+            "setup_actuator": {
+                "supported": true,
+                "authoritative": true,
+                "state": "ready",
+                "complete": true,
+                "actuator": {
+                    "logical_node_id": "actuator-zone1",
+                    "provisioning_operation_id": "provision-001"
+                },
+                "outputs": [
+                    { "output_index": 1, "state": "available" }
+                ]
+            },
+            "connection_setting": {},
+            "crop_profiles": [],
+            "first_zone": null,
+            "detected_node": null,
+            "assigned_node": null
+        }))
+        .unwrap();
+
+        let frontend_json = serde_json::to_value(parsed).unwrap();
+        let setup_actuator = frontend_json.get("setup_actuator").unwrap();
+        assert_eq!(setup_actuator.get("state").unwrap(), "ready");
+        assert_eq!(
+            setup_actuator
+                .get("actuator")
+                .unwrap()
+                .get("logical_node_id")
+                .unwrap(),
+            "actuator-zone1"
+        );
+    }
+
+    #[test]
+    fn actuator_provisioning_response_carries_rails_authority_payload() {
+        let parsed: SetupActuatorProvisioningResponse = serde_json::from_value(json!({
+            "recorded": true,
+            "message": "Rails recorded the current actuator provisioning attempt.",
+            "status": {
+                "connection_ready": true,
+                "first_zone_ready": true,
+                "watering_targets_ready": true,
+                "zone_ready": true,
+                "detected_node_ready": true,
+                "assigned_node_ready": true,
+                "reading_ready": false,
+                "calibration_ready": false,
+                "watering_ready": false
+            },
+            "setup_actuator": {
+                "supported": true,
+                "authoritative": true,
+                "state": "pending_observation",
+                "complete": false,
+                "actuator": {
+                    "logical_node_id": "actuator-zone1",
+                    "provisioning_operation_id": "provision-001"
+                },
+                "outputs": []
+            }
+        }))
+        .unwrap();
+
+        let frontend_json = serde_json::to_value(parsed).unwrap();
+        assert_eq!(frontend_json.get("recorded").unwrap(), true);
+        assert_eq!(
+            frontend_json
+                .get("setup_actuator")
+                .unwrap()
+                .get("state")
+                .unwrap(),
+            "pending_observation"
         );
     }
 

@@ -306,6 +306,86 @@ export const buildPicoProvisioningPayload = ({ bootstrap, piVerifiedUrl, form, k
   }
 }
 
+export const buildActuatorProvisioningRecordRequest = ({ baseUrl, provisioningPayload = {}, provisioned = {}, board = "" }) => {
+  const kind = provisioned.kind || provisioningPayload.kind
+  if (kind !== "actuator") {
+    return null
+  }
+
+  const logicalNodeId = String(provisioned.node_id || provisioned.nodeId || provisioningPayload.nodeId || "").trim()
+  const provisioningOperationId = String(provisioned.operation_id || provisioned.operationId || "").trim()
+  const zoneExternalId = String(provisioned.zone_id || provisioned.zoneId || provisioningPayload.zoneId || "").trim()
+  const selectedBoard = String(board || provisioningPayload.board || "").trim()
+
+  if (!baseUrl) {
+    throw new Error("The Pi URL is required before recording actuator provisioning.")
+  }
+
+  if (!logicalNodeId) {
+    throw new Error("The actuator provisioning acknowledgement did not include a node id.")
+  }
+
+  if (!provisioningOperationId) {
+    throw new Error("The actuator provisioning acknowledgement did not include an operation id.")
+  }
+
+  return {
+    input: {
+      baseUrl,
+      logicalNodeId,
+      provisioningOperationId,
+      zoneExternalId,
+      board: selectedBoard,
+    },
+  }
+}
+
+export const isActuatorProvisioningRecordUnsupported = (error) => {
+  const message = asErrorMessage(error).toLowerCase()
+  return message.includes("http 404") ||
+    message.includes("cannot post /setup_api/actuator_provisioning") ||
+    message.includes("no route matches")
+}
+
+export const normalizeSetupActuator = (bootstrap = {}) => {
+  if (!hasOwn(bootstrap, "setup_actuator")) {
+    return {
+      supported: false,
+      authoritative: false,
+      state: "unsupported",
+      complete: false,
+      message: "This Rails setup API does not expose authoritative actuator provisioning state.",
+      recovery: "",
+      raw: undefined,
+    }
+  }
+
+  const raw = bootstrap.setup_actuator
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      supported: true,
+      authoritative: true,
+      state: "malformed",
+      complete: false,
+      message: "The Pi returned actuator authority state that this installer could not interpret.",
+      recovery: "Refresh setup state before continuing.",
+      raw,
+    }
+  }
+
+  const state = String(raw.state || "none").toLowerCase()
+  const complete = state === "ready" && raw.complete === true
+  return {
+    supported: Boolean(raw.supported ?? true),
+    authoritative: Boolean(raw.authoritative ?? true),
+    state: complete ? "ready" : state,
+    complete,
+    message: raw.message || "",
+    recovery: raw.recovery || "",
+    raw,
+  }
+}
+
 export const effectiveFirstZoneReady = (status = {}) => {
   if (Object.prototype.hasOwnProperty.call(status, "first_zone_ready")) {
     return Boolean(status.first_zone_ready)
