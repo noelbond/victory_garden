@@ -347,43 +347,198 @@ export const isActuatorProvisioningRecordUnsupported = (error) => {
     message.includes("no route matches")
 }
 
+const boundedText = (value, fallback = "", maxLength = 300) => {
+  const text = typeof value === "string" ? value.trim() : ""
+  return (text || fallback).slice(0, maxLength)
+}
+
+const normalizeOutputSummaries = (outputs) => (
+  Array.isArray(outputs)
+    ? outputs.map((output) => ({
+      outputIndex: Number.isFinite(Number(output?.output_index ?? output?.outputIndex)) ? Number(output.output_index ?? output.outputIndex) : null,
+      state: boundedText(output?.state, "unknown", 80),
+    })).filter((output) => Number.isFinite(output.outputIndex))
+    : []
+)
+
 export const normalizeSetupActuator = (bootstrap = {}) => {
   if (!hasOwn(bootstrap, "setup_actuator")) {
     return {
+      present: false,
       supported: false,
       authoritative: false,
       state: "unsupported",
+      persistedState: "",
       complete: false,
+      malformed: false,
       message: "This Rails setup API does not expose authoritative actuator provisioning state.",
       recovery: "",
-      raw: undefined,
+      logicalNodeId: "",
+      deviceUid: "",
+      provisioningOperationId: "",
+      zoneExternalId: "",
+      board: "",
+      configStatus: "",
+      provisionedAt: "",
+      lastSeenAt: "",
+      configAcknowledgedAt: "",
+      outputs: [],
     }
   }
 
   const raw = bootstrap.setup_actuator
+  const malformedResult = (message, recovery = "Refresh setup state before continuing.") => ({
+    present: true,
+    supported: true,
+    authoritative: true,
+    state: "malformed",
+    persistedState: "",
+    complete: false,
+    malformed: true,
+    message,
+    recovery,
+    logicalNodeId: "",
+    deviceUid: "",
+    provisioningOperationId: "",
+    zoneExternalId: "",
+    board: "",
+    configStatus: "",
+    provisionedAt: "",
+    lastSeenAt: "",
+    configAcknowledgedAt: "",
+    outputs: [],
+  })
+
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    return malformedResult(
+      "The Pi returned actuator authority state that this installer could not interpret.",
+      "Do not treat this as success. Refresh setup state before continuing.",
+    )
+  }
+
+  const state = boundedText(raw.state, "none", 80).toLowerCase()
+  const persistedState = boundedText(raw.persisted_state || raw.persistedState, "", 80).toLowerCase()
+  const supported = Boolean(raw.supported ?? true)
+  const authoritative = Boolean(raw.authoritative ?? true)
+  const actuator = raw.actuator && typeof raw.actuator === "object" && !Array.isArray(raw.actuator) ? raw.actuator : {}
+  const logicalNodeId = boundedText(actuator.logical_node_id || actuator.logicalNodeId, "", 120)
+  const explicitUnsupported = !supported || !authoritative || state === "unsupported"
+  const complete = !explicitUnsupported && state === "ready" && raw.complete === true
+  const contradictory = raw.complete === true && state !== "ready"
+
+  if (state === "ready" && raw.complete !== true) {
     return {
+      present: true,
       supported: true,
       authoritative: true,
       state: "malformed",
+      persistedState: persistedState || state,
       complete: false,
-      message: "The Pi returned actuator authority state that this installer could not interpret.",
-      recovery: "Refresh setup state before continuing.",
-      raw,
+      malformed: true,
+      message: boundedText(raw.message, "Rails reported actuator ready without confirmed completion."),
+      recovery: boundedText(raw.recovery, "Refresh setup state before continuing. Do not use local actuator completion as success."),
+      logicalNodeId,
+      deviceUid: boundedText(actuator.device_uid || actuator.deviceUid, "", 120),
+      provisioningOperationId: boundedText(actuator.provisioning_operation_id || actuator.provisioningOperationId, "", 160),
+      zoneExternalId: boundedText(actuator.zone_external_id || actuator.zoneExternalId, "", 120),
+      board: boundedText(actuator.board, "", 80),
+      configStatus: boundedText(actuator.config_status || actuator.configStatus, "", 80),
+      provisionedAt: boundedText(actuator.provisioned_at || actuator.provisionedAt, "", 80),
+      lastSeenAt: boundedText(actuator.last_seen_at || actuator.lastSeenAt, "", 80),
+      configAcknowledgedAt: boundedText(actuator.config_acknowledged_at || actuator.configAcknowledgedAt, "", 80),
+      outputs: normalizeOutputSummaries(raw.outputs),
     }
   }
 
-  const state = String(raw.state || "none").toLowerCase()
-  const complete = state === "ready" && raw.complete === true
-  return {
-    supported: Boolean(raw.supported ?? true),
-    authoritative: Boolean(raw.authoritative ?? true),
-    state: complete ? "ready" : state,
-    complete,
-    message: raw.message || "",
-    recovery: raw.recovery || "",
-    raw,
+  const knownStates = new Set(["none", "pending_observation", "observed", "configured", "ready", "stale", "conflict", "inactive", "unsupported"])
+  const effectiveState = explicitUnsupported ? "unsupported" : (knownStates.has(state) ? state : "unknown")
+  const fallbackMessages = {
+    none: "No Rails actuator provisioning record exists yet.",
+    pending_observation: "Rails is waiting to observe the actuator after provisioning.",
+    observed: "Rails has observed the actuator but has not confirmed setup readiness.",
+    configured: "Rails has actuator configuration evidence, but setup readiness is not complete.",
+    ready: "Rails confirmed the current actuator provisioning state.",
+    stale: "The current actuator record is stale and must be refreshed before setup can continue.",
+    conflict: "Rails found a conflicting actuator provisioning state.",
+    inactive: "The actuator record is inactive or superseded.",
+    unsupported: "This Rails setup API explicitly reports actuator authority as unsupported.",
+    unknown: `Rails returned an unsupported actuator state: ${state || "blank"}.`,
   }
+
+  return {
+    present: true,
+    supported,
+    authoritative,
+    state: contradictory ? "unknown" : effectiveState,
+    persistedState: persistedState || state,
+    complete,
+    malformed: false,
+    message: boundedText(raw.message, contradictory ? "Rails reported actuator completion for a non-ready state." : fallbackMessages[effectiveState]),
+    recovery: boundedText(raw.recovery, contradictory || effectiveState === "unknown" || effectiveState === "unsupported"
+      ? "Refresh setup state before continuing. Do not reprovision automatically."
+      : ""),
+    logicalNodeId,
+    deviceUid: boundedText(actuator.device_uid || actuator.deviceUid, "", 120),
+    provisioningOperationId: boundedText(actuator.provisioning_operation_id || actuator.provisioningOperationId, "", 160),
+    zoneExternalId: boundedText(actuator.zone_external_id || actuator.zoneExternalId, "", 120),
+    board: boundedText(actuator.board, "", 80),
+    configStatus: boundedText(actuator.config_status || actuator.configStatus, "", 80),
+    provisionedAt: boundedText(actuator.provisioned_at || actuator.provisionedAt, "", 80),
+    lastSeenAt: boundedText(actuator.last_seen_at || actuator.lastSeenAt, "", 80),
+    configAcknowledgedAt: boundedText(actuator.config_acknowledged_at || actuator.configAcknowledgedAt, "", 80),
+    outputs: normalizeOutputSummaries(raw.outputs),
+  }
+}
+
+export const reconcileActuatorStateFromBootstrap = ({
+  bootstrap = {},
+  completed = {},
+  actuatorNodeId = "",
+  actuatorProvisioningAttempt = null,
+} = {}) => {
+  const setupActuator = normalizeSetupActuator(bootstrap)
+  if (!setupActuator.present) {
+    return {
+      setupActuator,
+      completed: { ...completed },
+      actuatorNodeId,
+      actuatorProvisioningAttempt,
+      changed: false,
+    }
+  }
+
+  const nextCompleted = { ...completed, actuator: setupActuator.complete === true }
+  const nextActuatorNodeId = setupActuator.logicalNodeId || actuatorNodeId
+  const railsOperationId = setupActuator.provisioningOperationId
+  const nextAttempt = railsOperationId
+    ? {
+        ...(actuatorProvisioningAttempt || {}),
+        operationId: railsOperationId,
+        logicalNodeId: setupActuator.logicalNodeId || actuatorProvisioningAttempt?.logicalNodeId || "",
+        state: setupActuator.state,
+        complete: setupActuator.complete,
+      }
+    : actuatorProvisioningAttempt
+
+  return {
+    setupActuator,
+    completed: nextCompleted,
+    actuatorNodeId: nextActuatorNodeId,
+    actuatorProvisioningAttempt: nextAttempt,
+    changed: nextCompleted.actuator !== Boolean(completed.actuator) ||
+      nextActuatorNodeId !== actuatorNodeId ||
+      (nextAttempt?.operationId || "") !== (actuatorProvisioningAttempt?.operationId || "") ||
+      (nextAttempt?.state || "") !== (actuatorProvisioningAttempt?.state || ""),
+  }
+}
+
+export const effectiveActuatorDone = ({ bootstrap = {}, completed = {}, setupActuator = null } = {}) => {
+  const actuatorAuthority = setupActuator || normalizeSetupActuator(bootstrap)
+  if (actuatorAuthority.present) {
+    return actuatorAuthority.complete === true
+  }
+
+  return Boolean(completed.actuator)
 }
 
 export const effectiveFirstZoneReady = (status = {}) => {
@@ -795,7 +950,7 @@ export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {}, wa
     wateringAttempt,
   })
   const sensorDone = Boolean(status.assigned_node_ready) || Boolean(completed.sensor)
-  const actuatorDone = Boolean(completed.actuator)
+  const actuatorDone = effectiveActuatorDone({ bootstrap, completed })
 
   if (!piVerifiedUrl) {
     return { id: "step-pi", label: "Step 1: Find The Pi" }

@@ -7,6 +7,7 @@ import {
   buildWateringStatusRequest,
   classifyPiDiscoveryError,
   classifyWateringStatus,
+  effectiveActuatorDone,
   effectiveFirstZoneReady,
   effectiveWateringDone,
   isActuatorProvisioningRecordUnsupported,
@@ -15,6 +16,7 @@ import {
   normalizeSetupWatering,
   normalizeSensorChannels,
   normalizePiUrl,
+  reconcileActuatorStateFromBootstrap,
   reconcileWateringStateFromBootstrap,
   wateringAttemptFromStartResponse,
 } from "../src/lib/installer_core.js"
@@ -277,6 +279,49 @@ const setupWatering = (overrides = {}) => ({
     idempotency_key: "rails-key",
   },
   ...overrides,
+})
+
+const setupActuator = (overrides = {}) => ({
+  supported: true,
+  authoritative: true,
+  state: "pending_observation",
+  persisted_state: overrides.state || "pending_observation",
+  complete: false,
+  message: "Rails is waiting to observe the actuator after provisioning.",
+  recovery: "",
+  actuator: {
+    logical_node_id: "actuator-zone1",
+    device_uid: "device-001",
+    provisioning_operation_id: "provision-001",
+    zone_external_id: "zone1",
+    board: "pico_w",
+    config_status: "pending",
+    last_seen_at: "2026-07-27T12:00:00Z",
+    config_acknowledged_at: "2026-07-27T12:01:00Z",
+    id: 42,
+    config_error: "present",
+  },
+  outputs: [
+    { output_index: 1, state: "available", id: 101 },
+    { output_index: 2, state: "assigned", node_id: "sensor-zone1-ch0" },
+  ],
+  internal_debug: "do not keep this",
+  ...overrides,
+})
+
+const actuatorBootstrap = (setupActuatorPayload) => ({
+  status: {
+    connection_ready: true,
+    first_zone_ready: true,
+    zone_ready: true,
+    assigned_node_ready: true,
+    reading_ready: true,
+    calibration_ready: true,
+    watering_ready: true,
+  },
+  crop_profiles: [{ id: 1 }],
+  assigned_node: { node_id: "sensor-zone1", calibration_configured: true },
+  ...(setupActuatorPayload === undefined ? {} : { setup_actuator: setupActuatorPayload }),
 })
 
 test("normalizeSetupWatering distinguishes absent older Rails from explicit no attempt", () => {
@@ -665,39 +710,237 @@ test("actuator provisioning record request requires the returned operation id", 
   }), /operation id/)
 })
 
-test("setup actuator authority is surfaced without controlling step selection yet", () => {
-  const setupActuator = normalizeSetupActuator({
-    setup_actuator: {
-      supported: true,
-      authoritative: true,
-      state: "ready",
-      complete: true,
-      actuator: { logical_node_id: "actuator-zone1" },
-      outputs: [{ output_index: 1, state: "available" }],
-    },
-  })
+test("setup actuator normalization strips internal fields and exposes installer authority shape", () => {
+  const result = normalizeSetupActuator({ setup_actuator: setupActuator({ state: "ready", complete: true }) })
 
-  assert.equal(setupActuator.authoritative, true)
-  assert.equal(setupActuator.complete, true)
+  assert.equal(result.present, true)
+  assert.equal(result.supported, true)
+  assert.equal(result.authoritative, true)
+  assert.equal(result.state, "ready")
+  assert.equal(result.persistedState, "ready")
+  assert.equal(result.complete, true)
+  assert.equal(result.logicalNodeId, "actuator-zone1")
+  assert.equal(result.deviceUid, "device-001")
+  assert.equal(result.provisioningOperationId, "provision-001")
+  assert.equal(result.zoneExternalId, "zone1")
+  assert.equal(result.board, "pico_w")
+  assert.equal(result.configStatus, "pending")
+  assert.equal(result.lastSeenAt, "2026-07-27T12:00:00Z")
+  assert.equal(result.configAcknowledgedAt, "2026-07-27T12:01:00Z")
+  assert.deepEqual(result.outputs, [
+    { outputIndex: 1, state: "available" },
+    { outputIndex: 2, state: "assigned" },
+  ])
+  assert.equal(Object.hasOwn(result, "raw"), false)
+  assert.equal(Object.hasOwn(result, "internal_debug"), false)
+  assert.equal(Object.hasOwn(result, "id"), false)
+})
+
+test("actuator authority distinguishes absent older Rails from explicit none", () => {
+  const absent = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(undefined),
+    completed: { actuator: true },
+    actuatorNodeId: "actuator-zone-local",
+  })
+  assert.equal(absent.setupActuator.present, false)
+  assert.equal(absent.completed.actuator, true)
+  assert.equal(absent.actuatorNodeId, "actuator-zone-local")
+  assert.equal(effectiveActuatorDone({ bootstrap: actuatorBootstrap(undefined), completed: { actuator: true } }), true)
+
+  const none = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({ state: "none", complete: false, actuator: null, outputs: [] })),
+    completed: { actuator: true },
+    actuatorNodeId: "actuator-zone-local",
+  })
+  assert.equal(none.setupActuator.present, true)
+  assert.equal(none.completed.actuator, false)
+  assert.equal(none.actuatorNodeId, "actuator-zone-local")
+  assert.equal(effectiveActuatorDone({ bootstrap: actuatorBootstrap(setupActuator({ state: "none", complete: false, actuator: null })) , completed: { actuator: true } }), false)
+})
+
+test("Rails ready and complete is the only actuator authority success", () => {
   assert.deepEqual(
     nextInstallerStep({
       piVerifiedUrl: "http://victory-garden.local:3000/",
-      bootstrap: {
-        status: {
-          connection_ready: true,
-          first_zone_ready: true,
-          zone_ready: true,
-          assigned_node_ready: true,
-          calibration_ready: false,
-          watering_ready: false,
-        },
-        crop_profiles: [{ id: 1 }],
-        setup_actuator: setupActuator.raw,
+      bootstrap: actuatorBootstrap(setupActuator({ state: "ready", complete: true })),
+      completed: { sensor: true, actuator: false, reading: true, calibration: true, watering: true },
+    }),
+    { id: "step-finish", label: "Finish: Open The Dashboard" },
+  )
+
+  const readyIncomplete = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({ state: "ready", complete: false })),
+    completed: { actuator: true },
+  })
+  assert.equal(readyIncomplete.setupActuator.state, "malformed")
+  assert.equal(readyIncomplete.completed.actuator, false)
+
+  const nonReadyComplete = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({ state: "configured", complete: true })),
+    completed: { actuator: true },
+  })
+  assert.equal(nonReadyComplete.setupActuator.state, "unknown")
+  assert.equal(nonReadyComplete.completed.actuator, false)
+})
+
+test("Rails non-ready actuator states rewind stale local actuator completion", () => {
+  for (const state of ["pending_observation", "observed", "configured", "stale", "conflict", "inactive"]) {
+    const bootstrap = actuatorBootstrap(setupActuator({ state, complete: false }))
+    const result = reconcileActuatorStateFromBootstrap({
+      bootstrap,
+      completed: { actuator: true, sensor: true, reading: true, calibration: true, watering: true },
+      actuatorNodeId: "actuator-zone-local",
+    })
+
+    assert.equal(result.completed.actuator, false, state)
+    assert.equal(result.actuatorNodeId, "actuator-zone1", state)
+    assert.deepEqual(
+      nextInstallerStep({
+        piVerifiedUrl: "http://victory-garden.local:3000/",
+        bootstrap,
+        completed: { sensor: true, actuator: true, reading: true, calibration: true, watering: true },
+      }),
+      { id: "step-actuator", label: "Step 6: Flash The Actuator Pico" },
+      state,
+    )
+  }
+})
+
+test("unsupported unknown and malformed actuator authority never fall back to local success", () => {
+  const cases = [
+    setupActuator({ supported: false, state: "unsupported", complete: false }),
+    setupActuator({ authoritative: false, state: "ready", complete: true }),
+    setupActuator({ state: "future_ready", complete: false }),
+    "not an object",
+    null,
+  ]
+
+  for (const payload of cases) {
+    const result = reconcileActuatorStateFromBootstrap({
+      bootstrap: actuatorBootstrap(payload),
+      completed: { actuator: true },
+    })
+
+    assert.equal(result.setupActuator.present, true)
+    assert.equal(result.completed.actuator, false)
+    assert.equal(result.setupActuator.complete, false)
+  }
+})
+
+test("actuator reconciliation adopts Rails identity and preserves matching local operation metadata", () => {
+  const result = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({
+      state: "pending_observation",
+      complete: false,
+      actuator: {
+        logical_node_id: "actuator-zone-b",
+        provisioning_operation_id: "provision-001",
+        zone_external_id: "zone-b",
       },
-      completed: { sensor: true, actuator: false },
+    })),
+    completed: { actuator: true },
+    actuatorNodeId: "actuator-zone-a",
+    actuatorProvisioningAttempt: {
+      operationId: "provision-001",
+      logicalNodeId: "actuator-zone-a",
+      board: "pico_w",
+      state: "usb_acknowledged",
+    },
+  })
+
+  assert.equal(result.actuatorNodeId, "actuator-zone-b")
+  assert.equal(result.completed.actuator, false)
+  assert.equal(result.actuatorProvisioningAttempt.operationId, "provision-001")
+  assert.equal(result.actuatorProvisioningAttempt.board, "pico_w")
+  assert.equal(result.actuatorProvisioningAttempt.logicalNodeId, "actuator-zone-b")
+  assert.equal(result.actuatorProvisioningAttempt.state, "pending_observation")
+})
+
+test("actuator bootstrap ready restores completion while non-ready rewinds without erasing unrelated input", () => {
+  const restoredCompleted = {
+    sensor: true,
+    actuator: false,
+    reading: true,
+    calibration: true,
+    watering: true,
+  }
+
+  const ready = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({ state: "ready", complete: true })),
+    completed: restoredCompleted,
+    actuatorNodeId: "",
+  })
+  assert.equal(ready.completed.actuator, true)
+  assert.equal(ready.actuatorNodeId, "actuator-zone1")
+  assert.equal(ready.completed.reading, true)
+
+  const pending = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({ state: "pending_observation", complete: false })),
+    completed: { ...restoredCompleted, actuator: true },
+    actuatorNodeId: "actuator-zone1",
+  })
+  assert.equal(pending.completed.actuator, false)
+  assert.equal(pending.completed.reading, true)
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: actuatorBootstrap(setupActuator({ state: "pending_observation", complete: false })),
+      completed: { ...restoredCompleted, actuator: true },
     }),
     { id: "step-actuator", label: "Step 6: Flash The Actuator Pico" },
   )
+})
+
+test("actuator reconciliation is pure and does not describe automatic provisioning or retries", () => {
+  const result = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({ state: "stale", complete: false, recovery: "refresh_required" })),
+    completed: { actuator: true },
+  })
+
+  assert.equal(result.completed.actuator, false)
+  assert.equal(result.setupActuator.recovery, "refresh_required")
+  assert.equal(Object.hasOwn(result, "provision"), false)
+  assert.equal(Object.hasOwn(result, "retry"), false)
+  assert.equal(Object.hasOwn(result, "mutation"), false)
+})
+
+test("provisioning mutation pending response does not create durable local actuator completion", () => {
+  const result = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({
+      state: "pending_observation",
+      complete: false,
+      actuator: {
+        logical_node_id: "actuator-zone1",
+        provisioning_operation_id: "provision-002",
+      },
+    })),
+    completed: { actuator: false },
+    actuatorProvisioningAttempt: {
+      operationId: "provision-002",
+      logicalNodeId: "actuator-zone1",
+      state: "usb_acknowledged",
+      complete: false,
+    },
+  })
+
+  assert.equal(result.completed.actuator, false)
+  assert.equal(result.actuatorProvisioningAttempt.operationId, "provision-002")
+  assert.equal(result.actuatorProvisioningAttempt.complete, false)
+})
+
+test("post-provisioning ready refresh advances only after Rails says ready", () => {
+  const pending = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({ state: "pending_observation", complete: false })),
+    completed: { actuator: false },
+  })
+  assert.equal(pending.completed.actuator, false)
+
+  const ready = reconcileActuatorStateFromBootstrap({
+    bootstrap: actuatorBootstrap(setupActuator({ state: "ready", complete: true })),
+    completed: pending.completed,
+    actuatorProvisioningAttempt: pending.actuatorProvisioningAttempt,
+  })
+  assert.equal(ready.completed.actuator, true)
 })
 
 test("older Rails actuator provisioning authority endpoint is explicitly detected", () => {

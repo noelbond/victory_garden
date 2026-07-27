@@ -90,7 +90,7 @@ test("characterizes bootstrap lacking actuator authority cannot clear stale loca
   )
 })
 
-test("characterizes future Rails actuator state currently being ignored by step selection", () => {
+test("Rails actuator authority now overrides stale local actuator completion", () => {
   const bootstrap = bootstrapReadyForActuatorBoundary({
     setup_actuator: {
       authoritative: true,
@@ -106,7 +106,7 @@ test("characterizes future Rails actuator state currently being ignored by step 
       bootstrap,
       completed: { sensor: true, actuator: true },
     }),
-    { id: "step-calibration", label: "Step 7: Confirm And Calibrate The Sensors" },
+    { id: "step-actuator", label: "Step 6: Flash The Actuator Pico" },
   )
 
   assert.deepEqual(
@@ -122,7 +122,7 @@ test("characterizes future Rails actuator state currently being ignored by step 
       }),
       completed: { sensor: true, actuator: false },
     }),
-    { id: "step-actuator", label: "Step 6: Flash The Actuator Pico" },
+    { id: "step-calibration", label: "Step 7: Confirm And Calibrate The Sensors" },
   )
 })
 

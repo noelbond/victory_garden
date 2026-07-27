@@ -12,10 +12,10 @@ import {
   effectiveWateringDone,
   isActuatorProvisioningRecordUnsupported,
   nextInstallerStep,
-  normalizeSetupActuator,
   normalizeSensorChannels,
   normalizePiUrl,
   normalizeSetupWatering,
+  reconcileActuatorStateFromBootstrap,
   reconcileWateringStateFromBootstrap,
   retryAsyncOperation,
   wateringAttemptFromStartResponse,
@@ -73,6 +73,8 @@ const state = {
     sensor: "",
     actuator: "",
   },
+  setupActuator: null,
+  actuatorProvisioningAttempt: null,
   wateringAttempt: null,
   channels: [],
   selectedCropProfileId: null,
@@ -270,6 +272,8 @@ const installerSetupState = () => ({
   completed: { ...state.completed },
   provisioned: { ...state.provisioned },
   messages: { ...state.messages },
+  setupActuator: state.setupActuator,
+  actuatorProvisioningAttempt: state.actuatorProvisioningAttempt,
 })
 
 const piApiFailureStatus = (action, error, fallbackDetail, fallbackRecovery) => {
@@ -434,6 +438,8 @@ const sessionSnapshot = () => ({
   completed: { ...state.completed },
   provisioned: { ...state.provisioned },
   messages: { ...state.messages },
+  setupActuator: state.setupActuator ? { ...state.setupActuator, outputs: (state.setupActuator.outputs || []).map((output) => ({ ...output })) } : null,
+  actuatorProvisioningAttempt: state.actuatorProvisioningAttempt ? { ...state.actuatorProvisioningAttempt } : null,
   wateringAttempt: state.wateringAttempt ? { ...state.wateringAttempt } : null,
   savedAt: new Date().toISOString(),
 })
@@ -493,6 +499,8 @@ const resetInstallerState = () => {
     sensor: "",
     actuator: "",
   }
+  state.setupActuator = null
+  state.actuatorProvisioningAttempt = null
   state.channels = []
   state.selectedCropProfileId = null
   state.sensorDeviceId = ""
@@ -681,7 +689,7 @@ const recordActuatorProvisioningAttempt = async ({ provisioningPayload, provisio
         status: response.status || state.bootstrap?.status || {},
         setup_actuator: response.setup_actuator,
       }
-      renderSetupActuatorAuthority(normalizeSetupActuator(state.bootstrap))
+      applySetupActuatorReconciliation(state.bootstrap)
     }
 
     return response
@@ -870,6 +878,8 @@ const restoreSessionState = (session) => {
     sensor: session.messages?.sensor || state.messages.sensor,
     actuator: session.messages?.actuator || state.messages.actuator,
   }
+  state.setupActuator = session.setupActuator ? { ...session.setupActuator, outputs: (session.setupActuator.outputs || []).map((output) => ({ ...output })) } : state.setupActuator
+  state.actuatorProvisioningAttempt = session.actuatorProvisioningAttempt ? { ...session.actuatorProvisioningAttempt } : null
   state.wateringAttempt = session.wateringAttempt?.idempotencyKey ? { ...session.wateringAttempt } : null
 }
 
@@ -931,7 +941,7 @@ const renderSetupWateringReconciliation = (setupWatering) => {
 }
 
 const setupActuatorStatusDetail = (setupActuator) => {
-  if (!setupActuator?.authoritative) {
+  if (!setupActuator?.present) {
     return ""
   }
 
@@ -946,22 +956,38 @@ const setupActuatorStatusDetail = (setupActuator) => {
 }
 
 const renderSetupActuatorAuthority = (setupActuator) => {
-  if (!setupActuator?.authoritative) {
+  if (!setupActuator?.present) {
     return
   }
 
-  const logicalNodeId = setupActuator.raw?.actuator?.logical_node_id || state.actuatorNodeId || "the actuator"
+  const logicalNodeId = setupActuator.logicalNodeId || state.actuatorNodeId || "the actuator"
   if (setupActuator.complete) {
     state.messages.actuator = `Rails confirmed ${logicalNodeId} after a matching MQTT config acknowledgement.`
     return
   }
 
   if (setupActuator.state === "none") {
+    state.messages.actuator = "Rails has no current actuator provisioning record. Flash and provision the actuator Pico deliberately when ready."
     return
   }
 
   state.messages.actuator = setupActuatorStatusDetail(setupActuator) ||
     `Rails is tracking ${logicalNodeId}, but actuator readiness is not complete yet.`
+}
+
+const applySetupActuatorReconciliation = (bootstrap) => {
+  const actuatorReconciliation = reconcileActuatorStateFromBootstrap({
+    bootstrap,
+    completed: state.completed,
+    actuatorNodeId: state.actuatorNodeId,
+    actuatorProvisioningAttempt: state.actuatorProvisioningAttempt,
+  })
+  state.setupActuator = actuatorReconciliation.setupActuator
+  state.completed = actuatorReconciliation.completed
+  state.actuatorNodeId = actuatorReconciliation.actuatorNodeId
+  state.actuatorProvisioningAttempt = actuatorReconciliation.actuatorProvisioningAttempt
+  renderSetupActuatorAuthority(actuatorReconciliation.setupActuator)
+  return actuatorReconciliation
 }
 
 const applyBootstrap = (bootstrap) => {
@@ -995,7 +1021,7 @@ const applyBootstrap = (bootstrap) => {
   })
   state.completed = wateringReconciliation.completed
   state.wateringAttempt = wateringReconciliation.wateringAttempt
-  renderSetupActuatorAuthority(normalizeSetupActuator(bootstrap))
+  applySetupActuatorReconciliation(bootstrap)
   setConnectionForm(bootstrap.connection_setting)
   renderCropProfiles(bootstrap.crop_profiles)
   setZoneForm(bootstrap.first_zone)
@@ -2740,6 +2766,14 @@ const flashBoard = async (kind) => {
       state.messages.sensor = `Sensor ${provisioned.node_id} was provisioned with ${state.channels.length} channels. Move it to the real probe hardware while the installer waits for all channels to appear on the Pi.`
     } else {
       state.actuatorNodeId = provisioned.node_id
+      state.actuatorProvisioningAttempt = {
+        operationId: provisioned.operation_id || "",
+        logicalNodeId: provisioned.node_id,
+        zoneId: provisioned.zone_id || provisioningPayload.zoneId || "",
+        board: device.board,
+        state: "usb_acknowledged",
+        complete: false,
+      }
       await recordActuatorProvisioningAttempt({
         provisioningPayload,
         provisioned,
@@ -2765,11 +2799,22 @@ const flashBoard = async (kind) => {
     } else {
       const onlineNode = await waitForActuatorNodeReady(provisioned.node_id, statusElement)
       state.actuatorNodeId = onlineNode.node_id || provisioned.node_id
-      state.completed[kind] = true
-      state.messages[kind] = `Actuator ${onlineNode.node_id || provisioned.node_id} is online. Move on to reading, calibration, and watering validation.`
+      if (state.setupActuator?.present) {
+        state.completed[kind] = state.setupActuator.complete === true
+        if (state.completed[kind]) {
+          state.messages[kind] = `Rails confirmed ${state.setupActuator.logicalNodeId || onlineNode.node_id || provisioned.node_id} after a matching MQTT config acknowledgement.`
+        } else {
+          renderSetupActuatorAuthority(state.setupActuator)
+        }
+      } else {
+        state.completed[kind] = true
+        state.messages[kind] = `Actuator ${onlineNode.node_id || provisioned.node_id} is online. Move on to reading, calibration, and watering validation.`
+      }
       saveSessionState()
       void logInstallerInfo("hardware", "actuator_online", "Actuator Pico is online.", {
         nodeId: onlineNode.node_id || provisioned.node_id,
+        railsAuthorityPresent: Boolean(state.setupActuator?.present),
+        railsAuthorityState: state.setupActuator?.state || "absent",
       })
       statusElement.textContent = state.messages[kind]
     }
