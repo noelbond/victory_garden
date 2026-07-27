@@ -70,6 +70,10 @@ struct ExportSupportBundleInput {
 #[derive(Serialize, Deserialize)]
 struct SetupStatus {
     connection_ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first_zone_ready: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    watering_targets_ready: Option<bool>,
     zone_ready: bool,
     detected_node_ready: bool,
     assigned_node_ready: bool,
@@ -1992,6 +1996,62 @@ mod tests {
         assert!(!should_retry_provision_error(
             "VG_PROVISION_ERROR provisioning fields cannot be blank"
         ));
+    }
+
+    #[test]
+    fn setup_status_carries_explicit_readiness_fields_to_frontend_json() {
+        let parsed: SetupBootstrapResponse = serde_json::from_value(json!({
+            "status": {
+                "connection_ready": true,
+                "first_zone_ready": false,
+                "watering_targets_ready": true,
+                "zone_ready": true,
+                "detected_node_ready": false,
+                "assigned_node_ready": false,
+                "reading_ready": false,
+                "calibration_ready": false,
+                "watering_ready": false
+            },
+            "connection_setting": {},
+            "crop_profiles": [],
+            "first_zone": null,
+            "detected_node": null,
+            "assigned_node": null
+        }))
+        .unwrap();
+
+        let frontend_json = serde_json::to_value(parsed).unwrap();
+        let status = frontend_json.get("status").unwrap();
+        assert_eq!(status.get("first_zone_ready").unwrap(), false);
+        assert_eq!(status.get("watering_targets_ready").unwrap(), true);
+        assert_eq!(status.get("zone_ready").unwrap(), true);
+    }
+
+    #[test]
+    fn setup_status_omits_explicit_readiness_fields_for_legacy_bootstrap() {
+        let parsed: SetupBootstrapResponse = serde_json::from_value(json!({
+            "status": {
+                "connection_ready": true,
+                "zone_ready": true,
+                "detected_node_ready": false,
+                "assigned_node_ready": false,
+                "reading_ready": false,
+                "calibration_ready": false,
+                "watering_ready": false
+            },
+            "connection_setting": {},
+            "crop_profiles": [],
+            "first_zone": null,
+            "detected_node": null,
+            "assigned_node": null
+        }))
+        .unwrap();
+
+        let frontend_json = serde_json::to_value(parsed).unwrap();
+        let status = frontend_json.get("status").unwrap();
+        assert!(status.get("first_zone_ready").is_none());
+        assert!(status.get("watering_targets_ready").is_none());
+        assert_eq!(status.get("zone_ready").unwrap(), true);
     }
 
     #[test]

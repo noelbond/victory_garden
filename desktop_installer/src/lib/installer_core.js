@@ -306,6 +306,14 @@ export const buildPicoProvisioningPayload = ({ bootstrap, piVerifiedUrl, form, k
   }
 }
 
+export const effectiveFirstZoneReady = (status = {}) => {
+  if (Object.prototype.hasOwnProperty.call(status, "first_zone_ready")) {
+    return Boolean(status.first_zone_ready)
+  }
+
+  return Boolean(status.zone_ready)
+}
+
 export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {} }) => {
   const status = bootstrap?.status || {}
   const readingDone = Boolean(completed.reading)
@@ -323,7 +331,7 @@ export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {} }) 
   if (!(bootstrap?.crop_profiles || []).length) {
     return { id: "step-crop", label: "Step 3: Crop Profile Library" }
   }
-  if (!status.zone_ready) {
+  if (!effectiveFirstZoneReady(status)) {
     return { id: "step-zone", label: "Step 4: Create The First Bed" }
   }
   if (!sensorDone) {

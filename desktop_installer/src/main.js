@@ -5,6 +5,7 @@ import {
   buildPicoProvisioningPayload,
   classifyPiConnectivityError,
   classifyPiDiscoveryError,
+  effectiveFirstZoneReady,
   nextInstallerStep,
   normalizeSensorChannels,
   normalizePiUrl,
@@ -862,7 +863,7 @@ const focusResumeStep = (step) => {
 }
 
 const connectionReady = () => Boolean(state.bootstrap?.status?.connection_ready)
-const zoneReady = () => Boolean(state.bootstrap?.status?.zone_ready)
+const zoneReady = () => effectiveFirstZoneReady(state.bootstrap?.status)
 const sensorDetectedReady = () => Boolean(state.bootstrap?.status?.detected_node_ready)
 const sensorAssignedReady = () => Boolean(state.bootstrap?.status?.assigned_node_ready)
 const readingReady = () => state.completed.reading

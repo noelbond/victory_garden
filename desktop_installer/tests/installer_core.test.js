@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import {
   buildPicoProvisioningPayload,
   classifyPiDiscoveryError,
+  effectiveFirstZoneReady,
   nextInstallerStep,
   normalizeSensorChannels,
   normalizePiUrl,
@@ -62,6 +63,104 @@ test("nextInstallerStep walks the unified installer flow in order", () => {
       completed: { actuator: true, reading: true, calibration: true, watering: true },
     }),
     { id: "step-finish", label: "Finish: Open The Dashboard" },
+  )
+})
+
+test("effectiveFirstZoneReady uses explicit false before legacy fallback", () => {
+  assert.equal(effectiveFirstZoneReady({
+    first_zone_ready: true,
+    watering_targets_ready: false,
+    zone_ready: false,
+  }), true)
+
+  assert.equal(effectiveFirstZoneReady({
+    first_zone_ready: false,
+    watering_targets_ready: true,
+    zone_ready: true,
+  }), false)
+
+  assert.equal(effectiveFirstZoneReady({ zone_ready: true }), true)
+  assert.equal(effectiveFirstZoneReady({ zone_ready: false }), false)
+})
+
+test("nextInstallerStep gates hardware setup on first_zone_ready when present", () => {
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: {
+          connection_ready: true,
+          first_zone_ready: true,
+          watering_targets_ready: false,
+          zone_ready: false,
+          assigned_node_ready: true,
+          reading_ready: true,
+          calibration_ready: true,
+          watering_ready: true,
+        },
+        crop_profiles: [{ id: 1 }],
+        first_zone: { id: 1, name: "Front Planter", crop_profile_id: 1 },
+      },
+      completed: { sensor: true, actuator: true, reading: true, calibration: true, watering: true },
+    }),
+    { id: "step-finish", label: "Finish: Open The Dashboard" },
+  )
+})
+
+test("nextInstallerStep keeps explicit false first_zone_ready authoritative", () => {
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: {
+          connection_ready: true,
+          first_zone_ready: false,
+          watering_targets_ready: true,
+          zone_ready: true,
+          assigned_node_ready: true,
+          reading_ready: true,
+          calibration_ready: true,
+          watering_ready: true,
+        },
+        crop_profiles: [{ id: 1 }],
+      },
+      completed: { sensor: true, actuator: true, reading: true, calibration: true, watering: true },
+    }),
+    { id: "step-zone", label: "Step 4: Create The First Bed" },
+  )
+})
+
+test("nextInstallerStep falls back to legacy zone_ready only when first_zone_ready is absent", () => {
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: {
+          connection_ready: true,
+          zone_ready: true,
+          assigned_node_ready: false,
+        },
+        crop_profiles: [{ id: 1 }],
+      },
+      completed: {},
+    }),
+    { id: "step-sensor", label: "Step 5: Flash The Sensor Pico" },
+  )
+
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: {
+          connection_ready: true,
+          zone_ready: false,
+          assigned_node_ready: true,
+        },
+        crop_profiles: [{ id: 1 }],
+      },
+      completed: { sensor: true, actuator: true, reading: true, calibration: true, watering: true },
+    }),
+    { id: "step-zone", label: "Step 4: Create The First Bed" },
   )
 })
 
