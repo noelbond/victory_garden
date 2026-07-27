@@ -1,6 +1,8 @@
 require "test_helper"
 
 class SetupApiTest < ActionDispatch::IntegrationTest
+  include ActiveJob::TestHelper
+
   test "bootstrap returns current setup state" do
     setting = ConnectionSetting.create!(
       mqtt_host: "broker.local",
@@ -36,6 +38,8 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal crop.crop_name, body.dig("crop_profiles", 0, "crop_name")
     assert_equal zone.name, body.dig("first_zone", "name")
     assert_nil body["assigned_node"]
+    assert_equal "none", body.dig("setup_watering", "state")
+    assert_equal false, body.dig("setup_watering", "complete")
   end
 
   test "connection update persists settings" do
@@ -392,6 +396,11 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal true, response_body.fetch("queued")
     event = WateringEvent.find_by!(idempotency_key: response_body.fetch("idempotency_key"))
     assert_equal "queued", event.status
+    assert_equal true, event.setup_validation?
+    assert_equal true, event.setup_current?
+    assert_equal "zone", event.setup_target_kind
+    assert_equal event.idempotency_key, response_body.dig("setup_watering", "idempotency_key")
+    assert_equal "in_progress", response_body.dig("setup_watering", "state")
 
     get "/setup_api/watering_status",
         params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
@@ -429,6 +438,38 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal event.idempotency_key, body.dig("event", "idempotency_key")
     assert_equal status.id, body.dig("actuator_status", "id")
     assert_equal event.idempotency_key, body.dig("actuator_status", "idempotency_key")
+    assert_equal true, body.dig("setup_watering", "complete")
+    assert_equal "completed", body.dig("setup_watering", "state")
+  end
+
+  test "manual watering command does not create setup validation event" do
+    zone = create(:zone)
+
+    assert_enqueued_with(job: CommandPublishJob) do
+      WateringCommand.start(zone)
+    end
+
+    event = WateringEvent.order(:id).last
+    assert_equal "manual_trigger", event.reason
+    assert_equal false, event.setup_validation?
+    assert_equal false, event.setup_current?
+  end
+
+  test "automatic watering event does not create setup validation event" do
+    zone = create(:zone)
+    payload = {
+      "action" => "water",
+      "zone_id" => zone.zone_id,
+      "runtime_seconds" => 10,
+      "idempotency_key" => "automatic-controller-event",
+      "timestamp" => Time.current.utc.iso8601
+    }
+
+    event = ControllerEventIngestor.new(payload).call
+
+    assert_equal "below_dry_threshold", event.reason
+    assert_equal false, event.setup_validation?
+    assert_equal false, event.setup_current?
   end
 
   test "watering status reports explicit in-progress outcomes" do
@@ -523,19 +564,275 @@ class SetupApiTest < ActionDispatch::IntegrationTest
   test "bootstrap watering readiness requires completed setup watering event" do
     zone = create(:zone)
 
-    setup_watering_event(zone: zone, status: "completed", idempotency_key: "completed-ready")
+    setup_validation_event(zone: zone, status: "completed", idempotency_key: "completed-ready")
     get "/setup_api/bootstrap", as: :json
     assert_response :success
     assert_equal true, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "completed", response.parsed_body.dig("setup_watering", "state")
+    assert_equal true, response.parsed_body.dig("setup_watering", "complete")
 
     %w[stopped fault timeout unknown].each do |status|
       WateringEvent.delete_all
-      setup_watering_event(zone: zone, status: status, idempotency_key: "bootstrap-#{status}")
+      setup_validation_event(zone: zone, status: status, idempotency_key: "bootstrap-#{status}")
 
       get "/setup_api/bootstrap", as: :json
       assert_response :success
       assert_equal false, response.parsed_body.dig("status", "watering_ready"), "#{status} should not satisfy watering readiness"
+      assert_equal "recovery", response.parsed_body.dig("setup_watering", "state")
     end
+  end
+
+  test "bootstrap ignores completed ordinary and automatic watering events" do
+    zone = create(:zone)
+    WateringEvent.create!(
+      zone: zone,
+      command: "start_watering",
+      runtime_seconds: 10,
+      reason: "manual_trigger",
+      issued_at: 5.minutes.ago,
+      idempotency_key: "ordinary-completed",
+      status: "completed"
+    )
+    ControllerEventIngestor.new(
+      "action" => "water",
+      "zone_id" => zone.zone_id,
+      "runtime_seconds" => 10,
+      "idempotency_key" => "automatic-completed",
+      "timestamp" => 4.minutes.ago.utc.iso8601
+    ).call.update!(status: "completed")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    assert_equal false, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "none", response.parsed_body.dig("setup_watering", "state")
+  end
+
+  test "historical completed setup validation does not count after supersession" do
+    zone = create(:zone)
+    historical = setup_validation_event(zone: zone, status: "completed", idempotency_key: "historical-setup-completed")
+    historical.supersede_setup_validation!(reason: "retry")
+    setup_validation_event(zone: zone, status: "running", idempotency_key: "current-running-setup")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    assert_equal false, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "in_progress", response.parsed_body.dig("setup_watering", "state")
+    assert_equal "current-running-setup", response.parsed_body.dig("setup_watering", "idempotency_key")
+  end
+
+  test "completed setup validation for different zone does not count" do
+    first_zone = create(:zone, zone_id: "zone-a")
+    other_zone = create(:zone, zone_id: "zone-b")
+    setup_validation_event(zone: other_zone, status: "completed", idempotency_key: "other-zone-completed")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    assert_equal first_zone.id, response.parsed_body.dig("first_zone", "id")
+    assert_equal false, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "target_changed", response.parsed_body.dig("setup_watering", "state")
+    assert_equal "zone_changed", WateringEvent.find_by!(idempotency_key: "other-zone-completed").setup_invalidation_reason
+  end
+
+  test "completed setup validation for different node channel does not count" do
+    zone = create(:zone, irrigation_line: nil)
+    older_node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 1, last_seen_at: 2.minutes.ago)
+    current_node = create(:node, node_id: "sensor-zone1-ch1", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 2, last_seen_at: Time.current)
+    setup_validation_event(zone: zone, node: older_node, status: "completed", idempotency_key: "older-node-completed")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    assert_equal current_node.node_id, response.parsed_body.dig("assigned_node", "node_id")
+    assert_equal false, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "target_changed", response.parsed_body.dig("setup_watering", "state")
+    assert_equal "node_changed", WateringEvent.find_by!(idempotency_key: "older-node-completed").setup_invalidation_reason
+  end
+
+  test "completed setup validation for changed output does not count" do
+    zone = create(:zone, irrigation_line: 1)
+    event = setup_validation_event(zone: zone, status: "completed", idempotency_key: "changed-output-completed")
+    zone.update!(irrigation_line: 2)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    assert_equal false, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "target_changed", response.parsed_body.dig("setup_watering", "state")
+    assert_equal "target_configuration_changed", event.reload.setup_invalidation_reason
+  end
+
+  test "unrelated target metadata change does not invalidate completed validation" do
+    zone = create(:zone, irrigation_line: nil)
+    node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 1)
+    event = setup_validation_event(zone: zone, node: node, status: "completed", idempotency_key: "node-name-change-completed")
+    node.update!(name: "Kitchen Basil")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    assert_equal true, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "completed", response.parsed_body.dig("setup_watering", "state")
+    assert_nil event.reload.setup_invalidated_at
+  end
+
+  test "pending current setup validation blocks second start without publishing another command" do
+    zone = create(:zone)
+    setup_validation_event(zone: zone, status: "queued", idempotency_key: "pending-current")
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post "/setup_api/start_watering",
+           params: { zone_id: zone.id },
+           as: :json
+    end
+
+    assert_response :conflict
+    assert_equal ["Watering validation is already active for setup."], response.parsed_body.fetch("errors")
+    assert_equal 1, WateringEvent.setup_validations.count
+    assert_equal "pending-current", response.parsed_body.dig("setup_watering", "idempotency_key")
+  end
+
+  test "running current setup validation blocks second start" do
+    zone = create(:zone)
+    setup_validation_event(zone: zone, status: "running", idempotency_key: "running-current")
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post "/setup_api/start_watering",
+           params: { zone_id: zone.id },
+           as: :json
+    end
+
+    assert_response :conflict
+    assert_equal 1, WateringEvent.setup_validations.count
+    assert_equal "running-current", WateringEvent.current_setup_validation.first.idempotency_key
+  end
+
+  test "terminal recovery setup validation can be deliberately superseded" do
+    zone = create(:zone)
+    old_event = setup_validation_event(zone: zone, status: "fault", idempotency_key: "faulted-current")
+
+    assert_enqueued_with(job: CommandPublishJob) do
+      post "/setup_api/start_watering",
+           params: { zone_id: zone.id },
+           as: :json
+    end
+
+    assert_response :success
+    assert_equal false, old_event.reload.setup_current?
+    assert_equal "retry", old_event.setup_supersession_reason
+    assert_equal 2, WateringEvent.setup_validations.count
+    assert_equal response.parsed_body.fetch("idempotency_key"), WateringEvent.current_setup_validation.first.idempotency_key
+  end
+
+  test "invalidated setup validation can be deliberately superseded" do
+    zone = create(:zone, irrigation_line: 1)
+    old_event = setup_validation_event(zone: zone, status: "completed", idempotency_key: "invalidated-current")
+    zone.update!(irrigation_line: 2)
+
+    get "/setup_api/bootstrap", as: :json
+    assert_equal "target_changed", response.parsed_body.dig("setup_watering", "state")
+
+    assert_enqueued_with(job: CommandPublishJob) do
+      post "/setup_api/start_watering",
+           params: { zone_id: zone.id },
+           as: :json
+    end
+
+    assert_response :success
+    assert_equal false, old_event.reload.setup_current?
+    assert_equal "retry", old_event.setup_supersession_reason
+  end
+
+  test "missing referenced node fails setup readiness safely" do
+    zone = create(:zone, irrigation_line: nil)
+    node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 1)
+    event = setup_validation_event(zone: zone, node: node, status: "completed", idempotency_key: "missing-node-completed")
+    node.destroy!
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    assert_equal false, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "target_changed", response.parsed_body.dig("setup_watering", "state")
+    assert_equal "node_missing", event.reload.setup_invalidation_reason
+  end
+
+  test "deleting assignment fails setup readiness safely" do
+    zone = create(:zone, irrigation_line: nil)
+    node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 1)
+    event = setup_validation_event(zone: zone, node: node, status: "completed", idempotency_key: "assignment-removed-completed")
+    node.update!(zone: nil)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    assert_equal false, response.parsed_body.dig("status", "watering_ready")
+    assert_equal "target_changed", response.parsed_body.dig("setup_watering", "state")
+    assert_equal "node_missing", event.reload.setup_invalidation_reason
+  end
+
+  test "bootstrap and keyed watering status agree for current setup lifecycle" do
+    zone = create(:zone)
+    event = setup_validation_event(zone: zone, status: "completed", idempotency_key: "agree-completed")
+
+    get "/setup_api/bootstrap", as: :json
+    assert_response :success
+    assert_equal true, response.parsed_body.dig("setup_watering", "complete")
+    assert_equal "success", response.parsed_body.dig("setup_watering", "outcome")
+
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+        as: :json
+    assert_response :success
+    assert_equal true, response.parsed_body.fetch("complete")
+    assert_equal "success", response.parsed_body.fetch("outcome")
+    assert_equal "completed", response.parsed_body.dig("setup_watering", "state")
+  end
+
+  test "watering status without node parameter does not invalidate current node setup attempt" do
+    zone = create(:zone, irrigation_line: nil)
+    node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 1)
+    event = setup_validation_event(zone: zone, node: node, status: "running", idempotency_key: "node-status-no-param")
+
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+        as: :json
+
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal "in_progress", response.parsed_body.fetch("outcome")
+    assert_nil event.reload.setup_invalidated_at
+  end
+
+  test "rollback during setup validation start leaves no partial current state" do
+    zone = create(:zone)
+
+    stub_singleton_method(WateringCommand, :start_setup_validation, ->(target_zone, node: nil, enqueue: true) {
+      runtime_seconds = target_zone.crop_profile.max_pulse_runtime_sec
+      WateringEvent.create!(
+        zone: target_zone,
+        command: "start_watering",
+        runtime_seconds: runtime_seconds,
+        reason: "setup_validation",
+        issued_at: Time.current,
+        idempotency_key: "rollback-created",
+        status: "queued",
+        setup_validation: true,
+        setup_current: true,
+        **WateringEvent.setup_target_attributes(zone: target_zone, node: node, runtime_seconds: runtime_seconds)
+      )
+      raise ActiveRecord::Rollback
+    }) do
+      post "/setup_api/start_watering",
+           params: { zone_id: zone.id },
+           as: :json
+    end
+
+    assert_response :conflict
+    assert_empty WateringEvent.where(idempotency_key: "rollback-created")
+    assert_empty WateringEvent.current_setup_validation
   end
 
   test "watering status treats unrecognized response-boundary status as unsupported recovery" do
@@ -591,5 +888,23 @@ class SetupApiTest < ActionDispatch::IntegrationTest
       idempotency_key: idempotency_key,
       status: status
     )
+  end
+
+  def setup_validation_event(zone:, status:, idempotency_key:, issued_at: Time.current, node: nil, current: true)
+    runtime_seconds = (node&.effective_crop_profile || zone.crop_profile).max_pulse_runtime_sec
+    attrs = {
+      zone: zone,
+      node_id: node&.node_id,
+      command: "start_watering",
+      runtime_seconds: runtime_seconds,
+      reason: "setup_validation",
+      issued_at: issued_at,
+      idempotency_key: idempotency_key,
+      status: status,
+      setup_validation: true,
+      setup_current: current
+    }.merge(WateringEvent.setup_target_attributes(zone: zone, node: node, runtime_seconds: runtime_seconds))
+    attrs[:setup_superseded_at] = 1.minute.ago unless current
+    WateringEvent.create!(attrs)
   end
 end

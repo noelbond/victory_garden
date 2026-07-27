@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_21_090000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_26_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -150,11 +150,32 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_21_090000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.string "node_id"
+    t.boolean "setup_validation", default: false, null: false
+    t.boolean "setup_current", default: false, null: false
+    t.datetime "setup_superseded_at"
+    t.string "setup_supersession_reason"
+    t.datetime "setup_invalidated_at"
+    t.string "setup_invalidation_reason"
+    t.string "setup_target_kind"
+    t.string "setup_target_zone_external_id"
+    t.string "setup_target_node_id"
+    t.integer "setup_target_irrigation_line"
+    t.bigint "setup_target_crop_profile_id"
+    t.string "setup_target_fingerprint"
     t.index ["idempotency_key"], name: "index_watering_events_on_idempotency_key", unique: true
     t.index ["node_id", "issued_at"], name: "index_watering_events_on_node_id_and_issued_at"
+    t.index ["setup_current"], name: "idx_watering_events_one_current_setup_validation", unique: true, where: "(setup_validation AND setup_current)"
+    t.index ["setup_target_fingerprint"], name: "idx_watering_events_setup_target_fingerprint", where: "setup_validation"
+    t.index ["setup_validation", "setup_current"], name: "idx_watering_events_setup_current_lookup", where: "setup_validation"
+    t.index ["setup_validation", "status", "issued_at"], name: "idx_watering_events_setup_status_issued_at", where: "setup_validation"
     t.index ["zone_id", "issued_at"], name: "index_watering_events_on_zone_id_and_issued_at"
     t.index ["zone_id", "status"], name: "index_watering_events_on_zone_id_and_status"
     t.index ["zone_id"], name: "index_watering_events_on_zone_id"
+    t.check_constraint "NOT setup_current OR setup_validation", name: "chk_watering_events_setup_current_requires_validation"
+    t.check_constraint "NOT setup_validation OR command::text = 'start_watering'::text", name: "chk_watering_events_setup_validation_start"
+    t.check_constraint "NOT setup_validation OR setup_target_fingerprint IS NOT NULL", name: "chk_watering_events_setup_target_fingerprint"
+    t.check_constraint "setup_target_kind IS NULL OR (setup_target_kind::text = ANY (ARRAY['zone'::character varying, 'node'::character varying]::text[]))", name: "chk_watering_events_setup_target_kind"
+    t.check_constraint "setup_target_kind::text <> 'node'::text OR setup_target_node_id IS NOT NULL", name: "chk_watering_events_setup_node_target_has_node"
   end
 
   create_table "zones", force: :cascade do |t|

@@ -111,6 +111,19 @@ class ApplicationController < ActionController::Base
   end
 
   def onboarding_watering_complete?
-    WateringEvent.where(command: "start_watering", status: "completed").exists?
+    event = current_setup_watering_event
+    zone, node = current_setup_watering_target
+    event&.setup_ready_for?(zone: zone, node: node) || false
+  end
+
+  def current_setup_watering_event
+    WateringEvent.current_setup_validation.order(issued_at: :desc, id: :desc).first
+  end
+
+  def current_setup_watering_target
+    node = Node.assigned.order(last_seen_at: :desc, created_at: :desc).detect(&:watering_configured?)
+    return [node.zone, node] if node.present?
+
+    [Zone.order(:created_at, :id).first, nil]
   end
 end

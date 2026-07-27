@@ -4,8 +4,11 @@ class SetupApiController < ApplicationController
   skip_forgery_protection
 
   def bootstrap
+    setup_watering = authoritative_setup_watering_event
+
     render json: {
       status: setup_status_payload,
+      setup_watering: setup_watering_payload(setup_watering),
       connection_setting: connection_setting_payload(connection_setting_record),
       crop_profiles: CropProfile.order(:crop_name).map { |profile| crop_profile_payload(profile) },
       first_zone: first_zone_payload,
@@ -201,6 +204,15 @@ class SetupApiController < ApplicationController
       return
     end
 
+    existing_setup_attempt = authoritative_setup_watering_event
+    if existing_setup_attempt&.setup_unresolved?
+      render json: {
+        errors: ["Watering validation is already active for setup."],
+        setup_watering: setup_watering_payload(existing_setup_attempt)
+      }, status: :conflict
+      return
+    end
+
     active_scope = zone.watering_events.blocking_start_commands
     active_scope = active_scope.where(node_id: node.node_id) if node.present?
     if active_scope.exists?
@@ -208,7 +220,42 @@ class SetupApiController < ApplicationController
       return
     end
 
-    result = node.present? ? WateringCommand.start_node(node) : WateringCommand.start(zone)
+    blocked_event = nil
+    result = nil
+
+    begin
+      WateringEvent.transaction do
+        current = authoritative_setup_watering_event(lock: true)
+
+        if current&.setup_unresolved?
+          blocked_event = current
+          next
+        end
+
+        current&.supersede_setup_validation!(reason: "retry")
+        result = WateringCommand.start_setup_validation(zone, node: node, enqueue: false)
+      end
+    rescue ActiveRecord::RecordNotUnique
+      blocked_event = authoritative_setup_watering_event
+    end
+
+    if blocked_event.present?
+      render json: {
+        errors: ["Watering validation is already active for setup."],
+        setup_watering: setup_watering_payload(blocked_event)
+      }, status: :conflict
+      return
+    end
+
+    if result.blank?
+      render json: {
+        errors: ["Watering validation could not be started."],
+        setup_watering: setup_watering_payload(authoritative_setup_watering_event)
+      }, status: :conflict
+      return
+    end
+
+    CommandPublishJob.perform_later(result.payload)
 
     render json: {
       queued: true,
@@ -218,6 +265,7 @@ class SetupApiController < ApplicationController
       message: "Watering command queued.",
       idempotency_key: result.payload[:idempotency_key],
       issued_at: result.payload[:issued_at].utc.iso8601,
+      setup_watering: setup_watering_payload(result.event),
       zone: zone_payload(zone),
       node: node.present? ? node_payload(node) : nil
     }
@@ -295,6 +343,7 @@ class SetupApiController < ApplicationController
     device_grouped = assigned_node&.device_id.present?
     assigned_channels = (device_grouped ? Node.where(device_id: assigned_node.device_id) : Node.where(id: assigned_node&.id)).to_a
     expected_channel_count = device_grouped ? Node::EXPECTED_CHANNELS_PER_DEVICE : 1
+    setup_watering = authoritative_setup_watering_event
 
     {
       connection_ready: onboarding_step_state(:connection),
@@ -307,7 +356,7 @@ class SetupApiController < ApplicationController
       calibration_ready: assigned_node.present? &&
         assigned_channels.size == expected_channel_count &&
         assigned_channels.all?(&:calibration_configured?),
-      watering_ready: onboarding_step_state(:watering)
+      watering_ready: setup_watering_ready?(setup_watering)
     }
   end
 
@@ -434,15 +483,22 @@ class SetupApiController < ApplicationController
   end
 
   def watering_status_response(event:, actuator_status:, zone:, node:, outcome_override: nil)
-    outcome = outcome_override || watering_outcome_for(event&.status)
+    setup_event = event&.setup_validation?
+    if setup_event && event.setup_current?
+      target_zone, target_node = current_setup_watering_target
+      persist_setup_target_invalidation(event, zone: target_zone, node: target_node)
+    end
+    event.reload if setup_event && event.persisted?
+    outcome = outcome_override || (setup_event ? event.setup_outcome : watering_outcome_for(event&.status))
 
     {
-      complete: event.present? && event.status == "completed",
-      terminal: watering_terminal_outcome?(outcome),
+      complete: watering_status_complete?(event, zone: zone, node: node),
+      terminal: setup_event ? event.setup_terminal? : watering_terminal_outcome?(outcome),
       outcome: outcome,
       message: watering_status_message(outcome),
       event: event.present? ? watering_event_payload(event) : nil,
       actuator_status: actuator_status.present? ? actuator_status_payload(actuator_status) : nil,
+      setup_watering: setup_event ? setup_watering_payload(event) : nil,
       zone: zone_payload(zone),
       node: node.present? ? node_payload(node) : nil
     }
@@ -480,11 +536,102 @@ class SetupApiController < ApplicationController
       "timed_out" => "Watering timed out before completion was confirmed.",
       "unknown" => "The watering result could not be interpreted.",
       "unsupported" => "The watering result is not supported by this setup API.",
+      "target_changed" => "The watering validation target changed. Run a new watering validation after checking the setup target.",
+      "superseded" => "This watering validation was superseded by a newer setup attempt.",
       "missing_zone" => "No setup zone is available for watering validation.",
       "missing_idempotency_key" => "The watering attempt idempotency key is required for setup validation.",
       "invalid_idempotency_key" => "The watering attempt idempotency key is invalid.",
       "not_found" => "The current watering attempt could not be found or confirmed."
     }.fetch(outcome, "The watering result could not be interpreted.")
+  end
+
+  def watering_status_complete?(event, zone:, node:)
+    return false if event.blank?
+    return event.status == "completed" unless event.setup_validation?
+
+    target_zone, target_node = event.setup_current? ? current_setup_watering_target : [zone, node]
+    event.setup_ready_for?(zone: target_zone, node: target_node)
+  end
+
+  def setup_watering_ready?(event)
+    zone, node = current_setup_watering_target
+    event&.setup_ready_for?(zone: zone, node: node) || false
+  end
+
+  def setup_watering_payload(event, zone: nil, node: nil)
+    if zone.nil? && node.nil?
+      zone, node = current_setup_watering_target
+    end
+
+    if event.blank?
+      return {
+        state: "none",
+        complete: false,
+        terminal: false,
+        outcome: "none",
+        message: "No setup watering validation has been started.",
+        idempotency_key: nil,
+        target_matches_current: false,
+        event: nil,
+        target: nil
+      }
+    end
+
+    target_matches = event.setup_target_matches?(zone: zone, node: node)
+    {
+      state: event.setup_lifecycle_state,
+      complete: event.setup_ready_for?(zone: zone, node: node),
+      terminal: event.setup_terminal?,
+      outcome: event.setup_outcome,
+      message: watering_status_message(event.setup_outcome),
+      idempotency_key: event.idempotency_key,
+      target_matches_current: target_matches,
+      invalidated_at: event.setup_invalidated_at&.utc&.iso8601,
+      invalidation_reason: event.setup_invalidation_reason,
+      superseded_at: event.setup_superseded_at&.utc&.iso8601,
+      supersession_reason: event.setup_supersession_reason,
+      event: watering_event_payload(event),
+      target: setup_watering_target_payload(event)
+    }
+  end
+
+  def setup_watering_target_payload(event)
+    {
+      kind: event.setup_target_kind,
+      zone_id: event.setup_target_zone_external_id,
+      node_id: event.setup_target_node_id,
+      irrigation_line: event.setup_target_irrigation_line,
+      crop_profile_id: event.setup_target_crop_profile_id,
+      runtime_seconds: event.runtime_seconds
+    }
+  end
+
+  def authoritative_setup_watering_event(lock: false)
+    scope = WateringEvent.current_setup_validation.order(issued_at: :desc, id: :desc)
+    scope = scope.lock if lock
+    event = scope.first
+    return nil if event.blank?
+
+    zone, node = current_setup_watering_target
+    persist_setup_target_invalidation(event, zone: zone, node: node)
+    event.reload
+  end
+
+  def persist_setup_target_invalidation(event, zone:, node:)
+    return if event.blank? || !event.setup_validation?
+    return if event.setup_invalidated_at.present?
+    return if event.setup_target_matches?(zone: zone, node: node)
+
+    event.invalidate_setup_validation!(reason: setup_target_invalidation_reason(event, zone: zone, node: node))
+  end
+
+  def setup_target_invalidation_reason(event, zone:, node:)
+    return "target_missing" if zone.blank?
+    return "node_missing" if event.setup_target_kind == "node" && node.blank?
+    return "zone_changed" if event.zone_id != zone.id
+    return "node_changed" if event.setup_target_node_id.present? && event.setup_target_node_id != node&.node_id
+
+    "target_configuration_changed"
   end
 
   def first_zone_payload

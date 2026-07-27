@@ -21,6 +21,15 @@ class WateringEventTest < ActiveSupport::TestCase
     assert WateringEvent.new(valid_attrs).valid?
   end
 
+  test "migration defaults leave existing events non-setup" do
+    event = WateringEvent.create!(valid_attrs)
+
+    assert_equal false, event.setup_validation?
+    assert_equal false, event.setup_current?
+    assert_nil event.setup_superseded_at
+    assert_nil event.setup_invalidated_at
+  end
+
   test "requires command" do
     event = WateringEvent.new(valid_attrs.merge(command: nil))
     assert_not event.valid?
@@ -91,5 +100,101 @@ class WateringEventTest < ActiveSupport::TestCase
 
     assert_not_includes WateringEvent.blocking_start_commands, stale
     assert_includes WateringEvent.blocking_start_commands, fresh
+  end
+
+  test "setup validation records target fingerprint and matches current target" do
+    event = setup_validation_event(zone: zone)
+
+    assert event.setup_validation?
+    assert event.setup_current?
+    assert_equal "zone", event.setup_target_kind
+    assert_equal zone.zone_id, event.setup_target_zone_external_id
+    assert_equal zone.irrigation_line, event.setup_target_irrigation_line
+    assert event.setup_target_matches?(zone: zone, node: nil)
+    assert event.setup_ready_for?(zone: zone, node: nil) == false
+
+    event.update!(status: "completed")
+    assert event.setup_ready_for?(zone: zone, node: nil)
+  end
+
+  test "setup validation target mismatch is not ready" do
+    event = setup_validation_event(zone: zone, status: "completed")
+    zone.update!(irrigation_line: zone.irrigation_line + 10)
+
+    assert_not event.setup_target_matches?(zone: zone, node: nil)
+    assert_not event.setup_ready_for?(zone: zone, node: nil)
+  end
+
+  test "node setup validation matches only the same configured node target" do
+    node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 2)
+    event = setup_validation_event(zone: zone, node: node, status: "completed")
+
+    assert_equal "node", event.setup_target_kind
+    assert_equal node.node_id, event.setup_target_node_id
+    assert event.setup_ready_for?(zone: zone, node: node)
+
+    other = create(:node, node_id: "sensor-zone1-ch1", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 3)
+    assert_not event.setup_ready_for?(zone: zone, node: other)
+    assert_not event.setup_ready_for?(zone: zone, node: nil)
+  end
+
+  test "setup validation cannot be current without setup validation" do
+    event = WateringEvent.new(valid_attrs.merge(setup_current: true))
+
+    assert_not event.valid?
+    assert_includes event.errors[:setup_current], "requires setup validation"
+  end
+
+  test "setup validation requires start watering and target metadata" do
+    event = WateringEvent.new(valid_attrs.merge(
+      command: "stop_watering",
+      runtime_seconds: nil,
+      setup_validation: true,
+      setup_current: true
+    ))
+
+    assert_not event.valid?
+    assert_includes event.errors[:command], "must be start_watering for setup validation"
+    assert_includes event.errors[:setup_target_kind], "can't be blank"
+    assert_includes event.errors[:setup_target_fingerprint], "can't be blank"
+  end
+
+  test "database constraint rejects two current setup validations" do
+    setup_validation_event(zone: zone, idempotency_key: "zone1-current-one")
+
+    assert_raises ActiveRecord::RecordNotUnique do
+      WateringEvent.transaction(requires_new: true) do
+        setup_validation_event(zone: zone, idempotency_key: "zone1-current-two")
+      end
+    end
+  end
+
+  test "superseded setup validation cannot satisfy readiness" do
+    event = setup_validation_event(zone: zone, status: "completed")
+
+    event.supersede_setup_validation!(reason: "retry")
+
+    assert_equal false, event.setup_current?
+    assert_not event.setup_ready_for?(zone: zone, node: nil)
+    assert_equal "superseded", event.setup_lifecycle_state
+  end
+
+  private
+
+  def setup_validation_event(zone:, node: nil, status: "queued", idempotency_key: "zone1-setup-validation")
+    runtime_seconds = (node&.effective_crop_profile || zone.crop_profile).max_pulse_runtime_sec
+
+    WateringEvent.create!(
+      valid_attrs.merge(
+        zone: zone,
+        node_id: node&.node_id,
+        runtime_seconds: runtime_seconds,
+        reason: "setup_validation",
+        idempotency_key: idempotency_key,
+        status: status,
+        setup_validation: true,
+        setup_current: true
+      ).merge(WateringEvent.setup_target_attributes(zone: zone, node: node, runtime_seconds: runtime_seconds))
+    )
   end
 end
