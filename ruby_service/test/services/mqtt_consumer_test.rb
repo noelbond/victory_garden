@@ -8,7 +8,44 @@ class MqttConsumerTest < ActiveSupport::TestCase
   end
 
   teardown do
+    MqttConsumer.status_path = MqttConsumer::STATUS_PATH
     FileUtils.remove_entry(@status_dir) if @status_dir && Dir.exist?(@status_dir)
+  end
+
+  test "status path defaults to the production status file" do
+    assert_equal MqttConsumer::STATUS_PATH, MqttConsumer.status_path
+  end
+
+  test "status path can be overridden and restored" do
+    original_path = MqttConsumer.status_path
+
+    MqttConsumer.status_path = @status_path
+    consumer = MqttConsumer.new
+
+    assert_equal @status_path, MqttConsumer.status_path
+    assert @status_path.exist?
+    assert_equal @status_path, consumer.instance_variable_get(:@status_path)
+  ensure
+    MqttConsumer.status_path = original_path
+  end
+
+  test "independent status paths survive unrelated cleanup" do
+    other_dir = Dir.mktmpdir("mqtt-consumer-other")
+    other_path = Pathname.new(File.join(other_dir, "mqtt_consumer_status.json"))
+
+    MqttConsumer.status_path = @status_path
+    MqttConsumer.new
+    MqttConsumer.status_path = other_path
+    MqttConsumer.new
+
+    FileUtils.remove_entry(@status_dir)
+    @status_dir = nil
+
+    assert_not @status_path.exist?
+    assert other_path.exist?
+  ensure
+    MqttConsumer.status_path = MqttConsumer::STATUS_PATH
+    FileUtils.remove_entry(other_dir) if other_dir && Dir.exist?(other_dir)
   end
 
   test "parse_json ignores empty retained clears" do
