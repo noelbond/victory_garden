@@ -280,6 +280,9 @@ struct SetupStartWateringResponse {
 #[derive(Serialize, Deserialize)]
 struct SetupWateringStatusResponse {
     complete: bool,
+    terminal: Option<bool>,
+    outcome: Option<String>,
+    message: Option<String>,
     event: Option<SetupWateringEvent>,
     actuator_status: Option<SetupActuatorStatus>,
     zone: Option<SetupZone>,
@@ -2052,6 +2055,60 @@ mod tests {
         assert!(status.get("first_zone_ready").is_none());
         assert!(status.get("watering_targets_ready").is_none());
         assert_eq!(status.get("zone_ready").unwrap(), true);
+    }
+
+    #[test]
+    fn setup_watering_status_carries_terminal_outcome_fields() {
+        let parsed: SetupWateringStatusResponse = serde_json::from_value(json!({
+            "complete": false,
+            "terminal": true,
+            "outcome": "faulted",
+            "message": "The actuator reported a watering fault.",
+            "event": {
+                "id": 42,
+                "zone_id": "zone1",
+                "node_id": "sensor-zone1-ch0",
+                "command": "start_watering",
+                "status": "fault",
+                "reason": "setup_validation",
+                "runtime_seconds": 10,
+                "issued_at": "2026-07-26T12:00:00Z",
+                "idempotency_key": "setup-key-1"
+            },
+            "actuator_status": null,
+            "zone": null,
+            "node": null
+        }))
+        .unwrap();
+
+        assert!(!parsed.complete);
+        assert_eq!(parsed.terminal, Some(true));
+        assert_eq!(parsed.outcome.as_deref(), Some("faulted"));
+        assert_eq!(
+            parsed.message.as_deref(),
+            Some("The actuator reported a watering fault.")
+        );
+        assert_eq!(
+            parsed.event.unwrap().idempotency_key,
+            "setup-key-1".to_string()
+        );
+    }
+
+    #[test]
+    fn setup_watering_status_accepts_legacy_payload_without_terminal_outcome_fields() {
+        let parsed: SetupWateringStatusResponse = serde_json::from_value(json!({
+            "complete": false,
+            "event": null,
+            "actuator_status": null,
+            "zone": null,
+            "node": null
+        }))
+        .unwrap();
+
+        assert!(!parsed.complete);
+        assert_eq!(parsed.terminal, None);
+        assert_eq!(parsed.outcome, None);
+        assert_eq!(parsed.message, None);
     }
 
     #[test]

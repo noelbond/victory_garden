@@ -314,11 +314,168 @@ export const effectiveFirstZoneReady = (status = {}) => {
   return Boolean(status.zone_ready)
 }
 
-export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {} }) => {
+export const wateringAttemptFromStartResponse = (response = {}, { zoneId = "", nodeId = "" } = {}) => {
+  const idempotencyKey = String(response.idempotency_key || response.idempotencyKey || "").trim()
+  if (!idempotencyKey) {
+    return null
+  }
+
+  return {
+    idempotencyKey,
+    zoneId: zoneId || response.zone?.id || response.zone?.zone_id || "",
+    nodeId: nodeId || response.node?.node_id || "",
+    status: "started",
+    outcome: "pending",
+  }
+}
+
+export const buildWateringStatusRequest = ({ baseUrl, zoneId, nodeId = "", attempt = {} }) => ({
+  input: {
+    baseUrl,
+    zoneId,
+    nodeId,
+    idempotencyKey: attempt.idempotencyKey || "",
+  },
+})
+
+const eventStatus = (status = {}) => String(status.event?.status || "").toLowerCase()
+const eventKey = (status = {}) => String(status.event?.idempotency_key || status.event?.idempotencyKey || "").trim()
+const responseOutcome = (status = {}) => String(status.outcome || "").toLowerCase()
+
+export const classifyWateringStatus = (status = {}, expectedIdempotencyKey = "") => {
+  const expectedKey = String(expectedIdempotencyKey || "").trim()
+  const actualKey = eventKey(status)
+  const outcome = responseOutcome(status)
+  const currentStatus = eventStatus(status)
+
+  if (!expectedKey) {
+    return {
+      state: "recovery",
+      outcome: "missing_idempotency_key",
+      complete: false,
+      terminal: true,
+      correlated: false,
+      message: "The watering attempt idempotency key is missing, so setup cannot verify this cycle.",
+      recovery: "Start watering again only after confirming the output is off and it is safe to deliberately retry.",
+      autoRetry: false,
+    }
+  }
+
+  if (!status.event) {
+    return {
+      state: "recovery",
+      outcome: outcome || "not_found",
+      complete: false,
+      terminal: Boolean(status.terminal ?? true),
+      correlated: false,
+      message: status.message || "The current watering attempt could not be found or confirmed.",
+      recovery: "Do not substitute an older watering result. Inspect the actuator state before deliberately retrying.",
+      autoRetry: false,
+    }
+  }
+
+  if (actualKey !== expectedKey) {
+    return {
+      state: "recovery",
+      outcome: "mismatched_idempotency_key",
+      complete: false,
+      terminal: true,
+      correlated: false,
+      message: "The watering status response was for a different watering attempt.",
+      recovery: "Do not use this result for setup. Inspect the actuator state before deliberately retrying.",
+      autoRetry: false,
+    }
+  }
+
+  if (currentStatus === "completed" && status.complete === true) {
+    return {
+      state: "success",
+      outcome: "success",
+      complete: true,
+      terminal: true,
+      correlated: true,
+      message: status.message || "Watering completed successfully.",
+      recovery: "",
+      autoRetry: false,
+    }
+  }
+
+  if (["queued", "requested", "command_sent", "published", "acknowledged", "running"].includes(currentStatus)) {
+    return {
+      state: "in_progress",
+      outcome: "in_progress",
+      complete: false,
+      terminal: false,
+      correlated: true,
+      message: status.message || "Watering is still in progress.",
+      recovery: "",
+      autoRetry: false,
+    }
+  }
+
+  const recoveryMessages = {
+    stopped: {
+      outcome: "stopped",
+      message: "Watering stopped before completion was confirmed.",
+      recovery: "Inspect the actuator and plant bed, then deliberately retry when safe.",
+    },
+    fault: {
+      outcome: "faulted",
+      message: "The actuator reported a watering fault.",
+      recovery: "Inspect the actuator fault before retrying. The installer will not automatically issue another watering command.",
+    },
+    faulted: {
+      outcome: "faulted",
+      message: "The actuator reported a watering fault.",
+      recovery: "Inspect the actuator fault before retrying. The installer will not automatically issue another watering command.",
+    },
+    timeout: {
+      outcome: "timed_out",
+      message: "The final actuator state could not be confirmed before timeout.",
+      recovery: "Verify the output is off before deliberately retrying.",
+    },
+    timed_out: {
+      outcome: "timed_out",
+      message: "The final actuator state could not be confirmed before timeout.",
+      recovery: "Verify the output is off before deliberately retrying.",
+    },
+    unknown: {
+      outcome: "unknown",
+      message: "The watering result could not be interpreted.",
+      recovery: "Do not treat this as success. Inspect the actuator state before deliberately retrying.",
+    },
+  }
+  const recovery = recoveryMessages[currentStatus] || {
+    outcome: outcome || "unsupported",
+    message: status.message || "The watering result could not be interpreted.",
+    recovery: "Do not treat this as success. Inspect the actuator state before deliberately retrying.",
+  }
+
+  return {
+    state: "recovery",
+    outcome: recovery.outcome,
+    complete: false,
+    terminal: true,
+    correlated: true,
+    message: recovery.message,
+    recovery: recovery.recovery,
+    autoRetry: false,
+  }
+}
+
+export const effectiveWateringDone = ({ status = {}, completed = {}, wateringAttempt = null } = {}) => {
+  if (wateringAttempt && wateringAttempt.status !== "completed") {
+    return false
+  }
+
+  return Boolean(status.watering_ready) || Boolean(completed.watering)
+}
+
+export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {}, wateringAttempt = null }) => {
   const status = bootstrap?.status || {}
   const readingDone = Boolean(completed.reading)
   const calibrationDone = Boolean(status.calibration_ready || bootstrap?.assigned_node?.calibration_configured) || Boolean(completed.calibration)
-  const wateringDone = Boolean(status.watering_ready) || Boolean(completed.watering)
+  const wateringDone = effectiveWateringDone({ status, completed, wateringAttempt })
   const sensorDone = Boolean(status.assigned_node_ready) || Boolean(completed.sensor)
   const actuatorDone = Boolean(completed.actuator)
 

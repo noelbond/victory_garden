@@ -2,14 +2,18 @@ import "./styles.css"
 import { invoke } from "@tauri-apps/api/core"
 import {
   asErrorMessage,
+  buildWateringStatusRequest,
   buildPicoProvisioningPayload,
   classifyPiConnectivityError,
   classifyPiDiscoveryError,
+  classifyWateringStatus,
   effectiveFirstZoneReady,
+  effectiveWateringDone,
   nextInstallerStep,
   normalizeSensorChannels,
   normalizePiUrl,
   retryAsyncOperation,
+  wateringAttemptFromStartResponse,
 } from "./lib/installer_core.js"
 
 // The Rust backend's EXPECTED_SENSOR_CHANNEL_COUNT is the single source of
@@ -64,6 +68,7 @@ const state = {
     sensor: "",
     actuator: "",
   },
+  wateringAttempt: null,
   channels: [],
   selectedCropProfileId: null,
   sensorDeviceId: "",
@@ -409,6 +414,7 @@ const hasRecoverableSessionState = () => (
   Boolean(state.piVerifiedUrl) ||
   Object.values(state.completed).some(Boolean) ||
   Object.values(state.provisioned).some(Boolean) ||
+  Boolean(state.wateringAttempt?.idempotencyKey) ||
   Boolean(state.sensorDeviceId) ||
   state.channels.length > 0 ||
   Boolean(state.actuatorNodeId)
@@ -423,6 +429,7 @@ const sessionSnapshot = () => ({
   completed: { ...state.completed },
   provisioned: { ...state.provisioned },
   messages: { ...state.messages },
+  wateringAttempt: state.wateringAttempt ? { ...state.wateringAttempt } : null,
   savedAt: new Date().toISOString(),
 })
 
@@ -814,6 +821,7 @@ const restoreSessionState = (session) => {
     sensor: session.messages?.sensor || state.messages.sensor,
     actuator: session.messages?.actuator || state.messages.actuator,
   }
+  state.wateringAttempt = session.wateringAttempt?.idempotencyKey ? { ...session.wateringAttempt } : null
 }
 
 const applyBootstrap = (bootstrap) => {
@@ -848,6 +856,7 @@ const currentResumeStep = () => {
     piVerifiedUrl: state.piVerifiedUrl,
     bootstrap: state.bootstrap,
     completed: state.completed,
+    wateringAttempt: state.wateringAttempt,
   })
 }
 
@@ -868,7 +877,11 @@ const sensorDetectedReady = () => Boolean(state.bootstrap?.status?.detected_node
 const sensorAssignedReady = () => Boolean(state.bootstrap?.status?.assigned_node_ready)
 const readingReady = () => state.completed.reading
 const calibrationReady = () => Boolean(state.bootstrap?.status?.calibration_ready) || state.completed.calibration
-const wateringReady = () => Boolean(state.bootstrap?.status?.watering_ready) || state.completed.watering
+const wateringReady = () => effectiveWateringDone({
+  status: state.bootstrap?.status,
+  completed: state.completed,
+  wateringAttempt: state.wateringAttempt,
+})
 
 const formatCalibrationSummary = (value) => (
   Number.isFinite(value) ? `${value} raw avg from 10 readings` : "Not captured yet"
@@ -1961,14 +1974,12 @@ const waitForWateringCompletion = async (zone, target, idempotencyKey = "") => {
   while (Date.now() < deadline) {
     const status = await invokePiApiWithRetry(
       "fetch_setup_watering_status",
-      {
-        input: {
-          baseUrl: state.piVerifiedUrl,
-          zoneId: zone.id,
-          nodeId: target?.nodeId || "",
-          idempotencyKey,
-        },
-      },
+      buildWateringStatusRequest({
+        baseUrl: state.piVerifiedUrl,
+        zoneId: zone.id,
+        nodeId: target?.nodeId || "",
+        attempt: { idempotencyKey },
+      }),
       {
         attempts: 4,
         delayMs: 2000,
@@ -1977,14 +1988,36 @@ const waitForWateringCompletion = async (zone, target, idempotencyKey = "") => {
         },
       },
     )
+    const classification = classifyWateringStatus(status, idempotencyKey)
 
-    if (status.complete && status.event) {
+    if (classification.state === "success") {
       state.completed.watering = true
+      state.wateringAttempt = {
+        idempotencyKey,
+        zoneId: zone.id,
+        nodeId: target?.nodeId || "",
+        status: "completed",
+        outcome: classification.outcome,
+      }
+      saveSessionState()
       const actuatorState = status.actuator_status?.state || status.event.status
       elements.wateringDetailSummary.textContent = `${actuatorState} at ${status.event.issued_at || "unknown time"}`
       elements.wateringStatus.textContent = `Confirmed a completed watering cycle for ${target?.name || target?.nodeId || zone.name || zone.zone_id}.`
       await refreshBootstrapFromPi()
       return
+    }
+
+    if (classification.state === "recovery") {
+      state.completed.watering = false
+      state.wateringAttempt = {
+        idempotencyKey,
+        zoneId: zone.id,
+        nodeId: target?.nodeId || "",
+        status: "recovery",
+        outcome: classification.outcome,
+      }
+      saveSessionState()
+      throw new Error(`${classification.message} ${classification.recovery}`.trim())
     }
 
     const currentState = status.actuator_status?.state || status.event?.status || "waiting"
@@ -2016,6 +2049,8 @@ const runFirstWatering = async () => {
 
   state.flashing.watering = true
   state.completed.watering = false
+  state.wateringAttempt = null
+  saveSessionState()
   updateUi()
   void logInstallerInfo("watering", "start", "Starting watering validation.", {
     zoneId: zone.id,
@@ -2051,16 +2086,19 @@ const runFirstWatering = async () => {
         throw error
       }
 
-      void logInstallerWarn("watering", "reuse_active_cycle", "Reusing an already-active watering cycle for validation.", {
+      void logInstallerWarn("watering", "uncorrelated_active_cycle", "Cannot reuse an active watering cycle without its idempotency key.", {
         zoneId: zone.id,
         zoneName: zone.name || zone.zone_id,
         nodeId: target.nodeId,
       })
-      elements.wateringStatus.textContent = `A watering cycle is already active for ${target.name || target.nodeId}. Reusing it for validation...`
-      await waitForWateringCompletion(zone, target, "")
-      return
+      throw new Error(`A watering cycle is already active for ${target.name || target.nodeId}, but this installer session does not have its idempotency key. Inspect the actuator state and retry deliberately when safe.`)
     }
 
+    state.wateringAttempt = wateringAttemptFromStartResponse(queued, {
+      zoneId: zone.id,
+      nodeId: target.nodeId,
+    })
+    saveSessionState()
     await waitForWateringCompletion(zone, target, queued.idempotency_key)
     void logInstallerInfo("watering", "success", "Watering validation completed successfully.", {
       zoneId: zone.id,

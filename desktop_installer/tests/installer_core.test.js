@@ -3,11 +3,15 @@ import assert from "node:assert/strict"
 
 import {
   buildPicoProvisioningPayload,
+  buildWateringStatusRequest,
   classifyPiDiscoveryError,
+  classifyWateringStatus,
   effectiveFirstZoneReady,
+  effectiveWateringDone,
   nextInstallerStep,
   normalizeSensorChannels,
   normalizePiUrl,
+  wateringAttemptFromStartResponse,
 } from "../src/lib/installer_core.js"
 
 test("normalizeSensorChannels preserves explicit provisioning and backend channel ids", () => {
@@ -66,6 +70,7 @@ test("nextInstallerStep walks the unified installer flow in order", () => {
   )
 })
 
+
 test("effectiveFirstZoneReady uses explicit false before legacy fallback", () => {
   assert.equal(effectiveFirstZoneReady({
     first_zone_ready: true,
@@ -81,6 +86,159 @@ test("effectiveFirstZoneReady uses explicit false before legacy fallback", () =>
 
   assert.equal(effectiveFirstZoneReady({ zone_ready: true }), true)
   assert.equal(effectiveFirstZoneReady({ zone_ready: false }), false)
+})
+
+test("watering start response retains the attempt idempotency key", () => {
+  assert.deepEqual(
+    wateringAttemptFromStartResponse(
+      {
+        idempotency_key: "attempt-123",
+        zone: { id: 7, zone_id: "zone1" },
+        node: { node_id: "sensor-zone1-ch0" },
+      },
+      { zoneId: 7, nodeId: "sensor-zone1-ch0" },
+    ),
+    {
+      idempotencyKey: "attempt-123",
+      zoneId: 7,
+      nodeId: "sensor-zone1-ch0",
+      status: "started",
+      outcome: "pending",
+    },
+  )
+
+  assert.equal(wateringAttemptFromStartResponse({ queued: true }), null)
+})
+
+test("watering status request carries the attempt idempotency key", () => {
+  assert.deepEqual(
+    buildWateringStatusRequest({
+      baseUrl: "http://victory-garden.local:3000/",
+      zoneId: 12,
+      nodeId: "sensor-zone1-ch0",
+      attempt: { idempotencyKey: "attempt-123" },
+    }),
+    {
+      input: {
+        baseUrl: "http://victory-garden.local:3000/",
+        zoneId: 12,
+        nodeId: "sensor-zone1-ch0",
+        idempotencyKey: "attempt-123",
+      },
+    },
+  )
+})
+
+test("correlated completed watering status is the only setup success", () => {
+  const result = classifyWateringStatus({
+    complete: true,
+    terminal: true,
+    outcome: "success",
+    event: {
+      status: "completed",
+      idempotency_key: "attempt-123",
+    },
+  }, "attempt-123")
+
+  assert.equal(result.state, "success")
+  assert.equal(result.complete, true)
+  assert.equal(result.correlated, true)
+})
+
+test("watering status in-progress outcomes do not advance setup", () => {
+  for (const status of ["running", "acknowledged"]) {
+    const result = classifyWateringStatus({
+      complete: false,
+      terminal: false,
+      event: {
+        status,
+        idempotency_key: "attempt-123",
+      },
+    }, "attempt-123")
+
+    assert.equal(result.state, "in_progress")
+    assert.equal(result.complete, false)
+    assert.equal(result.terminal, false)
+  }
+})
+
+test("watering status recovery outcomes do not advance and never auto retry", () => {
+  for (const status of ["stopped", "fault", "timeout", "unknown"]) {
+    const result = classifyWateringStatus({
+      complete: false,
+      terminal: true,
+      event: {
+        status,
+        idempotency_key: "attempt-123",
+      },
+    }, "attempt-123")
+
+    assert.equal(result.state, "recovery", status)
+    assert.equal(result.complete, false, status)
+    assert.equal(result.terminal, true, status)
+    assert.equal(result.autoRetry, false, status)
+    assert.match(result.recovery, /retry|success|Inspect|Verify|Do not treat/)
+  }
+})
+
+test("missing event and mismatched idempotency key do not advance setup", () => {
+  const missing = classifyWateringStatus({
+    complete: false,
+    terminal: true,
+    outcome: "not_found",
+    event: null,
+  }, "attempt-123")
+  assert.equal(missing.state, "recovery")
+  assert.equal(missing.correlated, false)
+
+  const mismatched = classifyWateringStatus({
+    complete: true,
+    terminal: true,
+    event: {
+      status: "completed",
+      idempotency_key: "historical-attempt",
+    },
+  }, "attempt-123")
+  assert.equal(mismatched.state, "recovery")
+  assert.equal(mismatched.outcome, "mismatched_idempotency_key")
+  assert.equal(mismatched.complete, false)
+})
+
+test("historical local watering completion does not satisfy current in-progress attempt", () => {
+  assert.equal(
+    effectiveWateringDone({
+      status: { watering_ready: false },
+      completed: { watering: true },
+      wateringAttempt: {
+        idempotencyKey: "attempt-123",
+        status: "running",
+      },
+    }),
+    false,
+  )
+
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: {
+          connection_ready: true,
+          zone_ready: true,
+          assigned_node_ready: true,
+          reading_ready: true,
+          calibration_ready: true,
+          watering_ready: false,
+        },
+        crop_profiles: [{ id: 1 }],
+      },
+      completed: { sensor: true, actuator: true, reading: true, calibration: true, watering: true },
+      wateringAttempt: {
+        idempotencyKey: "attempt-123",
+        status: "running",
+      },
+    }),
+    { id: "step-watering", label: "Step 9: Confirm The First Watering" },
+  )
 })
 
 test("nextInstallerStep gates hardware setup on first_zone_ready when present", () => {
