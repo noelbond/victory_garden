@@ -70,6 +70,8 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
       status: "completed"
     )
     ConnectionSetting.create!(mqtt_host: "127.0.0.1", mqtt_port: 1883, mqtt_username: "victory_garden", mqtt_password: "secret123", irrigation_line_count: 1)
+    create_ready_setup_actuator!(line_count: 1)
+    complete_current_setup_watering!(idempotency_key: "zone1-bootstrap-setup-validation")
 
     get root_path
     assert_response :success
