@@ -10,9 +10,52 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_26_180000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_27_100000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "actuator_devices", force: :cascade do |t|
+    t.string "logical_node_id", null: false
+    t.string "device_uid"
+    t.string "provisioning_operation_id"
+    t.string "zone_external_id"
+    t.string "board"
+    t.string "firmware_kind", default: "actuator", null: false
+    t.string "firmware_version"
+    t.integer "irrigation_line_count"
+    t.string "state", default: "pending_observation", null: false
+    t.datetime "provisioned_at"
+    t.datetime "last_seen_at"
+    t.datetime "config_acknowledged_at"
+    t.string "config_status"
+    t.text "config_error"
+    t.boolean "current", default: false, null: false
+    t.datetime "superseded_at"
+    t.string "supersession_reason"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["current"], name: "idx_actuator_devices_one_current", unique: true, where: "current"
+    t.index ["device_uid"], name: "idx_actuator_devices_unique_device_uid", unique: true, where: "(device_uid IS NOT NULL)"
+    t.index ["logical_node_id"], name: "idx_actuator_devices_current_logical_node", unique: true, where: "current"
+    t.index ["logical_node_id"], name: "idx_actuator_devices_logical_node"
+    t.check_constraint "NOT current OR superseded_at IS NULL", name: "chk_actuator_devices_current_not_superseded"
+    t.check_constraint "firmware_kind::text = 'actuator'::text", name: "chk_actuator_devices_firmware_kind"
+    t.check_constraint "irrigation_line_count IS NULL OR irrigation_line_count > 0", name: "chk_actuator_devices_irrigation_line_count_positive"
+    t.check_constraint "state::text = ANY (ARRAY['pending_observation'::character varying, 'observed'::character varying, 'configured'::character varying, 'ready'::character varying, 'stale'::character varying, 'conflict'::character varying, 'inactive'::character varying]::text[])", name: "chk_actuator_devices_state"
+    t.check_constraint "superseded_at IS NULL OR NOT current", name: "chk_actuator_devices_superseded_not_current"
+  end
+
+  create_table "actuator_outputs", force: :cascade do |t|
+    t.bigint "actuator_device_id", null: false
+    t.integer "output_index", null: false
+    t.string "state", default: "unknown", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["actuator_device_id", "output_index"], name: "idx_actuator_outputs_device_output", unique: true
+    t.index ["actuator_device_id"], name: "index_actuator_outputs_on_actuator_device_id"
+    t.check_constraint "output_index > 0", name: "chk_actuator_outputs_output_index_positive"
+    t.check_constraint "state::text = ANY (ARRAY['available'::character varying, 'assigned'::character varying, 'disabled'::character varying, 'faulted'::character varying, 'unknown'::character varying]::text[])", name: "chk_actuator_outputs_state"
+  end
 
   create_table "actuator_statuses", force: :cascade do |t|
     t.bigint "zone_id", null: false
@@ -193,6 +236,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_26_180000) do
     t.index ["zone_id"], name: "index_zones_on_zone_id", unique: true
   end
 
+  add_foreign_key "actuator_outputs", "actuator_devices"
   add_foreign_key "actuator_statuses", "zones"
   add_foreign_key "faults", "zones"
   add_foreign_key "nodes", "crop_profiles"

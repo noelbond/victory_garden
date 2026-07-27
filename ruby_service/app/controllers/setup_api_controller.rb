@@ -9,6 +9,7 @@ class SetupApiController < ApplicationController
     render json: {
       status: setup_status_payload,
       setup_watering: setup_watering_payload(setup_watering),
+      setup_actuator: SetupActuatorAuthority.bootstrap_payload,
       connection_setting: connection_setting_payload(connection_setting_record),
       crop_profiles: CropProfile.order(:crop_name).map { |profile| crop_profile_payload(profile) },
       first_zone: first_zone_payload,
@@ -190,6 +191,27 @@ class SetupApiController < ApplicationController
     end
   end
 
+  def record_actuator_provisioning
+    result = ActuatorProvisioningRecorder.call(actuator_provisioning_params)
+    setup_actuator = SetupActuatorAuthority.new(result.actuator).bootstrap_payload
+
+    if result.success?
+      render json: {
+        recorded: true,
+        setup_actuator: setup_actuator,
+        status: setup_status_payload,
+        message: "Rails recorded the current actuator provisioning attempt and is waiting for matching MQTT configuration acknowledgement."
+      }, status: result.status
+    else
+      render json: {
+        recorded: false,
+        errors: result.errors,
+        setup_actuator: setup_actuator,
+        status: setup_status_payload
+      }, status: result.status
+    end
+  end
+
   def start_watering
     node = setup_node_from_params
     zone = node&.zone || assignable_zone
@@ -344,12 +366,13 @@ class SetupApiController < ApplicationController
     assigned_channels = (device_grouped ? Node.where(device_id: assigned_node.device_id) : Node.where(id: assigned_node&.id)).to_a
     expected_channel_count = device_grouped ? Node::EXPECTED_CHANNELS_PER_DEVICE : 1
     setup_watering = authoritative_setup_watering_event
+    watering_targets_ready = watering_targets_ready?
 
     {
       connection_ready: onboarding_step_state(:connection),
       first_zone_ready: first_zone_ready?,
-      watering_targets_ready: watering_targets_ready?,
-      zone_ready: onboarding_step_state(:zone),
+      watering_targets_ready: watering_targets_ready,
+      zone_ready: watering_targets_ready,
       detected_node_ready: onboarding_step_state(:detected_node),
       assigned_node_ready: onboarding_step_state(:assigned_node),
       reading_ready: onboarding_step_state(:reading),
@@ -365,7 +388,7 @@ class SetupApiController < ApplicationController
   end
 
   def watering_targets_ready?
-    onboarding_step_state(:zone)
+    SetupWateringTargetAuthority.call.ready?
   end
 
   def connection_setting_payload(setting)
@@ -452,6 +475,22 @@ class SetupApiController < ApplicationController
       publish_reason: reading.publish_reason,
       battery_percent: reading.battery_percent,
       wifi_rssi: reading.wifi_rssi
+    }
+  end
+
+  def actuator_provisioning_params
+    permitted = params.require(:actuator_provisioning).permit(
+      :logical_node_id,
+      :provisioning_operation_id,
+      :zone_external_id,
+      :board
+    )
+
+    {
+      logical_node_id: permitted[:logical_node_id],
+      provisioning_operation_id: permitted[:provisioning_operation_id],
+      zone_external_id: permitted[:zone_external_id],
+      board: permitted[:board]
     }
   end
 

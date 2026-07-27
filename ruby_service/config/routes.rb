@@ -53,6 +53,7 @@ Rails.application.routes.draw do
   post "setup_api/request_reading", to: "setup_api#request_reading"
   get "setup_api/reading_status", to: "setup_api#reading_status"
   patch "setup_api/calibration", to: "setup_api#update_calibration"
+  post "setup_api/actuator_provisioning", to: "setup_api#record_actuator_provisioning"
   post "setup_api/start_watering", to: "setup_api#start_watering"
   get "setup_api/watering_status", to: "setup_api#watering_status"
 end

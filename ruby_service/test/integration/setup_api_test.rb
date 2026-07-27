@@ -30,8 +30,8 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     body = response.parsed_body
     assert_equal true, body.dig("status", "connection_ready")
     assert_equal true, body.dig("status", "first_zone_ready")
-    assert_equal true, body.dig("status", "watering_targets_ready")
-    assert_equal true, body.dig("status", "zone_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
+    assert_equal false, body.dig("status", "zone_ready")
     assert_equal setting.mqtt_host, body.dig("connection_setting", "mqtt_host")
     assert_equal setting.mqtt_username, body.dig("connection_setting", "provisioning_mqtt_username")
     assert_equal "secret123", body.dig("connection_setting", "provisioning_mqtt_password")
@@ -40,6 +40,11 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_nil body["assigned_node"]
     assert_equal "none", body.dig("setup_watering", "state")
     assert_equal false, body.dig("setup_watering", "complete")
+    assert_equal true, body.dig("setup_actuator", "supported")
+    assert_equal true, body.dig("setup_actuator", "authoritative")
+    assert_equal "none", body.dig("setup_actuator", "state")
+    assert_equal false, body.dig("setup_actuator", "complete")
+    assert_nil body.dig("setup_actuator", "actuator")
   end
 
   test "connection update persists settings" do
@@ -60,6 +65,137 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal "192.168.4.33", setting.mqtt_host
     assert_equal 4, setting.irrigation_line_count
     assert_equal "victory_garden", setting.mqtt_username
+  end
+
+  test "bootstrap exposes ready setup actuator without internal database ids" do
+    actuator = ActuatorDevice.create!(
+      logical_node_id: "actuator-zone1",
+      firmware_kind: "actuator",
+      state: "ready",
+      current: true,
+      irrigation_line_count: 2,
+      device_uid: nil,
+      zone_external_id: "zone1",
+      board: "pico_w",
+      config_status: "applied",
+      config_acknowledged_at: Time.current
+    )
+    ActuatorOutput.create!(actuator_device: actuator, output_index: 1, state: "assigned")
+    ActuatorOutput.create!(actuator_device: actuator, output_index: 2, state: "available")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    setup_actuator = response.parsed_body.fetch("setup_actuator")
+    assert_equal true, setup_actuator.fetch("supported")
+    assert_equal true, setup_actuator.fetch("authoritative")
+    assert_equal "ready", setup_actuator.fetch("state")
+    assert_equal true, setup_actuator.fetch("complete")
+    assert_equal "actuator-zone1", setup_actuator.dig("actuator", "logical_node_id")
+    assert_equal "actuator", setup_actuator.dig("actuator", "firmware_kind")
+    assert_equal 2, setup_actuator.dig("actuator", "irrigation_line_count")
+    assert_nil setup_actuator.dig("actuator", "id")
+    assert_equal [1, 2], setup_actuator.fetch("outputs").map { |output| output.fetch("output_index") }
+    assert_nil setup_actuator.fetch("outputs").first["id"]
+  end
+
+  test "setup API records actuator provisioning attempt as pending authority" do
+    ConnectionSetting.create!(irrigation_line_count: 2)
+
+    post "/setup_api/actuator_provisioning",
+      params: {
+        actuator_provisioning: {
+          logical_node_id: "actuator-zone1",
+          provisioning_operation_id: "provision-001",
+          zone_external_id: "zone1",
+          board: "pico_w"
+        }
+      },
+      as: :json
+
+    assert_response :accepted
+    body = response.parsed_body
+    assert_equal true, body.fetch("recorded")
+    assert_equal "pending_observation", body.dig("setup_actuator", "state")
+    assert_equal false, body.dig("setup_actuator", "complete")
+    assert_equal "pending", body.dig("setup_actuator", "actuator", "config_status")
+    assert_equal "provision-001", body.dig("setup_actuator", "actuator", "provisioning_operation_id")
+    assert_equal [1, 2], body.fetch("setup_actuator").fetch("outputs").map { |output| output.fetch("output_index") }
+    assert_nil body.dig("setup_actuator", "actuator", "id")
+    assert_equal "actuator-zone1", ActuatorDevice.current_device.logical_node_id
+  end
+
+  test "setup API rejects invalid actuator provisioning identifiers without creating authority" do
+    ConnectionSetting.create!(irrigation_line_count: 2)
+
+    post "/setup_api/actuator_provisioning",
+      params: {
+        actuator_provisioning: {
+          logical_node_id: "actuator zone1",
+          provisioning_operation_id: "provision-001",
+          zone_external_id: "zone1",
+          board: "pico_w"
+        }
+      },
+      as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal false, response.parsed_body.fetch("recorded")
+    assert_equal "none", response.parsed_body.dig("setup_actuator", "state")
+    assert_nil ActuatorDevice.current_device
+  end
+
+  test "setup API derives line count and ignores client-provided lifecycle or secrets" do
+    ConnectionSetting.create!(irrigation_line_count: 2)
+
+    post "/setup_api/actuator_provisioning",
+      params: {
+        actuator_provisioning: {
+          logical_node_id: "actuator-zone1",
+          provisioning_operation_id: "provision-001",
+          zone_external_id: "zone1",
+          board: "pico_w",
+          state: "ready",
+          current: false,
+          irrigation_line_count: 99,
+          wifi_password: "wifi-secret",
+          mqtt_password: "mqtt-secret",
+          outputs: [{ output_index: 99, state: "assigned" }]
+        }
+      },
+      as: :json
+
+    assert_response :accepted
+    actuator = ActuatorDevice.current_device
+    assert_equal "pending_observation", actuator.state
+    assert_equal true, actuator.current
+    assert_equal 2, actuator.irrigation_line_count
+    assert_equal [1, 2], actuator.actuator_outputs.order(:output_index).pluck(:output_index)
+    assert_nil actuator.attributes["wifi_password"]
+    assert_nil actuator.attributes["mqtt_password"]
+    assert_nil response.parsed_body.dig("setup_actuator", "actuator", "id")
+    assert_nil response.parsed_body.dig("setup_actuator", "actuator", "mqtt_password")
+  end
+
+  test "bootstrap preserves watering readiness while target readiness requires setup actuator" do
+    ConnectionSetting.create!(irrigation_line_count: 4)
+    zone = create(:zone, irrigation_line: nil)
+    node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 1)
+    event = setup_validation_event(zone: zone, node: node, status: "completed", idempotency_key: "setup-watering-ready")
+    create_ready_actuator(line_count: 4)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal true, body.dig("status", "zone_ready")
+    assert_equal true, body.dig("status", "watering_ready")
+    assert_equal event.idempotency_key, body.dig("setup_watering", "idempotency_key")
+    assert_equal "completed", body.dig("setup_watering", "state")
+    assert_equal "ready", body.dig("setup_actuator", "state")
+    assert_equal true, body.dig("setup_actuator", "complete")
   end
 
   test "crop profile creation returns validation errors" do
@@ -118,8 +254,8 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_response :success
     body = response.parsed_body
     assert_equal true, body.dig("status", "first_zone_ready")
-    assert_equal true, body.dig("status", "watering_targets_ready")
-    assert_equal true, body.dig("status", "zone_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
+    assert_equal false, body.dig("status", "zone_ready")
   end
 
   test "characterizes first zone readiness separately from watering target readiness" do
@@ -148,7 +284,39 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal false, body.dig("status", "zone_ready")
   end
 
-  test "characterizes watering target readiness before calibration and readings" do
+  test "zone ready remains deprecated alias for actuator-backed watering targets" do
+    zone = create(:zone, irrigation_line: 1)
+    create_ready_actuator(line_count: 2)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal body.dig("status", "watering_targets_ready"), body.dig("status", "zone_ready")
+
+    zone.update_column(:irrigation_line, 3)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
+    assert_equal body.dig("status", "watering_targets_ready"), body.dig("status", "zone_ready")
+
+    zone.update_column(:irrigation_line, 2)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal body.dig("status", "watering_targets_ready"), body.dig("status", "zone_ready")
+  end
+
+  test "watering target readiness now requires actuator-backed output before calibration and readings" do
     zone = create(:zone, irrigation_line: nil)
     node = create(
       :node,
@@ -156,14 +324,16 @@ class SetupApiTest < ActionDispatch::IntegrationTest
       zone: zone,
       irrigation_line: 1
     )
+    create_ready_actuator(line_count: 1)
 
     get "/setup_api/bootstrap", as: :json
 
     assert_response :success
     body = response.parsed_body
 
-    # STAB-004 characterization: an assigned node irrigation line makes
-    # `zone_ready` true even before calibration or a first reading.
+    # STAB-004 actuator authority: an assigned node irrigation line may satisfy
+    # target readiness before calibration or readings only when Rails has a
+    # current ready actuator and matching output inventory.
     assert_equal node.node_id, body.dig("assigned_node", "node_id")
     assert_equal true, body.dig("status", "first_zone_ready")
     assert_equal true, body.dig("status", "watering_targets_ready")
@@ -271,6 +441,7 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal crop.id, body.dig("node", "crop_profile_id")
     assert_equal 1, body.dig("node", "irrigation_line")
     assert_equal true, body.dig("node", "watering_configured")
+    create_ready_actuator(line_count: 4)
 
     get "/setup_api/bootstrap", as: :json
 
@@ -906,5 +1077,13 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     }.merge(WateringEvent.setup_target_attributes(zone: zone, node: node, runtime_seconds: runtime_seconds))
     attrs[:setup_superseded_at] = 1.minute.ago unless current
     WateringEvent.create!(attrs)
+  end
+
+  def create_ready_actuator(line_count:)
+    actuator = create(:actuator_device, logical_node_id: "actuator-zone1", state: "ready", current: true, irrigation_line_count: line_count)
+    (1..line_count).each do |index|
+      create(:actuator_output, actuator_device: actuator, output_index: index, state: "assigned")
+    end
+    actuator
   end
 end

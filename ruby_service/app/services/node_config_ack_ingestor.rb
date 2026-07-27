@@ -4,6 +4,9 @@ class NodeConfigAckIngestor
   end
 
   def call
+    actuator = ActuatorConfigAckReconciler.call(@payload)
+    return actuator if actuator.present?
+
     node = Node.find_by!(node_id: @payload.fetch("node_id"))
 
     updates = {
