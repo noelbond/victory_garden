@@ -61,4 +61,27 @@ class NodeConfigAckIngestorTest < ActiveSupport::TestCase
     assert_equal "pending", node.config_status
     assert node.config_acknowledged_at.present?
   end
+
+  test "matching actuator ack reconciles current actuator instead of requiring a generic node row" do
+    actuator = create(:actuator_device, logical_node_id: "actuator-zone1", state: "pending_observation", current: true, irrigation_line_count: 2)
+
+    result = NodeConfigAckIngestor.new(
+      "node_id" => "actuator-zone1",
+      "status" => "applied",
+      "timestamp" => "2026-07-27T12:00:00Z"
+    ).call
+
+    assert_equal actuator.id, result.id
+    assert_equal "ready", result.state
+    assert_nil Node.find_by(node_id: "actuator-zone1")
+  end
+
+  test "unmatched actuator-like ack keeps the existing generic node not found behavior" do
+    assert_raises(ActiveRecord::RecordNotFound) do
+      NodeConfigAckIngestor.new(
+        "node_id" => "actuator-zone-missing",
+        "status" => "applied"
+      ).call
+    end
+  end
 end

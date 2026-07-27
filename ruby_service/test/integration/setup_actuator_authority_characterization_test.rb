@@ -131,16 +131,19 @@ class SetupActuatorAuthorityCharacterizationTest < ActionDispatch::IntegrationTe
     assert_equal "none", response.parsed_body.dig("setup_actuator", "state")
   end
 
-  test "currently actuator config ack requires an existing generic node row" do
-    assert_raises(ActiveRecord::RecordNotFound) do
-      NodeConfigAckIngestor.new(
-        "node_id" => "actuator-zone1",
-        "status" => "applied",
-        "timestamp" => Time.current.iso8601,
-        "config_version" => "2026-07-27T12:00:00Z",
-        "zone_id" => "zone1"
-      ).call
-    end
+  test "matching actuator config ack updates current actuator authority without a generic node row" do
+    create(:actuator_device, logical_node_id: "actuator-zone1", state: "pending_observation", current: true, irrigation_line_count: 2)
+
+    result = NodeConfigAckIngestor.new(
+      "node_id" => "actuator-zone1",
+      "status" => "applied",
+      "timestamp" => Time.current.iso8601,
+      "config_version" => "2026-07-27T12:00:00Z",
+      "zone_id" => "zone1"
+    ).call
+
+    assert_equal "ready", result.state
+    assert_nil Node.find_by(node_id: "actuator-zone1")
   end
 
   test "currently generic actuator-like nodes do not create actuator authority conflicts" do
