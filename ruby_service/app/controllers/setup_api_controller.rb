@@ -268,6 +268,8 @@ class SetupApiController < ApplicationController
 
     {
       connection_ready: onboarding_step_state(:connection),
+      first_zone_ready: first_zone_ready?,
+      watering_targets_ready: watering_targets_ready?,
       zone_ready: onboarding_step_state(:zone),
       detected_node_ready: onboarding_step_state(:detected_node),
       assigned_node_ready: onboarding_step_state(:assigned_node),
@@ -277,6 +279,14 @@ class SetupApiController < ApplicationController
         assigned_channels.all?(&:calibration_configured?),
       watering_ready: onboarding_step_state(:watering)
     }
+  end
+
+  def first_zone_ready?
+    Zone.joins(:crop_profile).exists?
+  end
+
+  def watering_targets_ready?
+    onboarding_step_state(:zone)
   end
 
   def connection_setting_payload(setting)

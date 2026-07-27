@@ -27,6 +27,9 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_response :success
     body = response.parsed_body
     assert_equal true, body.dig("status", "connection_ready")
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal true, body.dig("status", "zone_ready")
     assert_equal setting.mqtt_host, body.dig("connection_setting", "mqtt_host")
     assert_equal setting.mqtt_username, body.dig("connection_setting", "provisioning_mqtt_username")
     assert_equal "secret123", body.dig("connection_setting", "provisioning_mqtt_password")
@@ -103,7 +106,67 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     body = response.parsed_body
     assert_equal "Front Planter", body.dig("first_zone", "name")
     assert_equal crop.id, body.dig("first_zone", "crop_profile_id")
+    assert_equal true, body.dig("status", "first_zone_ready")
     assert_equal setting.irrigation_line_count, 2
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal true, body.dig("status", "zone_ready")
+  end
+
+  test "characterizes first zone readiness separately from watering target readiness" do
+    crop = create(:crop_profile, crop_name: "Lettuce")
+
+    patch "/setup_api/zone",
+          params: {
+            zone: {
+              name: "Front Planter",
+              crop_profile_id: crop.id,
+              publish_interval_ms: 7_200_000,
+              active: true
+            }
+          },
+          as: :json
+
+    assert_response :success
+    body = response.parsed_body
+
+    # STAB-004 characterization: a persisted zone with a crop profile is not
+    # currently enough for setup `zone_ready`.
+    assert_equal "Front Planter", body.dig("first_zone", "name")
+    assert_nil body.dig("first_zone", "irrigation_line")
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
+    assert_equal false, body.dig("status", "zone_ready")
+  end
+
+  test "characterizes watering target readiness before calibration and readings" do
+    zone = create(:zone, irrigation_line: nil)
+    node = create(
+      :node,
+      node_id: "sensor-zone1-ch0",
+      zone: zone,
+      irrigation_line: 1
+    )
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+
+    # STAB-004 characterization: an assigned node irrigation line makes
+    # `zone_ready` true even before calibration or a first reading.
+    assert_equal node.node_id, body.dig("assigned_node", "node_id")
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal true, body.dig("status", "zone_ready")
+    assert_equal true, body.dig("status", "assigned_node_ready")
+    assert_equal false, body.dig("status", "reading_ready")
+    assert_equal false, body.dig("status", "calibration_ready")
   end
 
   test "node status reports whether a provisioned node has appeared" do
@@ -204,6 +267,13 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal crop.id, body.dig("node", "crop_profile_id")
     assert_equal 1, body.dig("node", "irrigation_line")
     assert_equal true, body.dig("node", "watering_configured")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal true, body.dig("status", "zone_ready")
   end
 
   test "request reading queues a targeted reading command and reports reading status" do
