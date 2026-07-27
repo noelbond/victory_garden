@@ -40,6 +40,11 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_nil body["assigned_node"]
     assert_equal "none", body.dig("setup_watering", "state")
     assert_equal false, body.dig("setup_watering", "complete")
+    assert_equal true, body.dig("setup_actuator", "supported")
+    assert_equal true, body.dig("setup_actuator", "authoritative")
+    assert_equal "none", body.dig("setup_actuator", "state")
+    assert_equal false, body.dig("setup_actuator", "complete")
+    assert_nil body.dig("setup_actuator", "actuator")
   end
 
   test "connection update persists settings" do
@@ -60,6 +65,58 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal "192.168.4.33", setting.mqtt_host
     assert_equal 4, setting.irrigation_line_count
     assert_equal "victory_garden", setting.mqtt_username
+  end
+
+  test "bootstrap exposes ready setup actuator without internal database ids" do
+    actuator = ActuatorDevice.create!(
+      logical_node_id: "actuator-zone1",
+      firmware_kind: "actuator",
+      state: "ready",
+      current: true,
+      irrigation_line_count: 2,
+      device_uid: nil,
+      zone_external_id: "zone1",
+      board: "pico_w",
+      config_status: "applied",
+      config_acknowledged_at: Time.current
+    )
+    ActuatorOutput.create!(actuator_device: actuator, output_index: 1, state: "assigned")
+    ActuatorOutput.create!(actuator_device: actuator, output_index: 2, state: "available")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    setup_actuator = response.parsed_body.fetch("setup_actuator")
+    assert_equal true, setup_actuator.fetch("supported")
+    assert_equal true, setup_actuator.fetch("authoritative")
+    assert_equal "ready", setup_actuator.fetch("state")
+    assert_equal true, setup_actuator.fetch("complete")
+    assert_equal "actuator-zone1", setup_actuator.dig("actuator", "logical_node_id")
+    assert_equal "actuator", setup_actuator.dig("actuator", "firmware_kind")
+    assert_equal 2, setup_actuator.dig("actuator", "irrigation_line_count")
+    assert_nil setup_actuator.dig("actuator", "id")
+    assert_equal [1, 2], setup_actuator.fetch("outputs").map { |output| output.fetch("output_index") }
+    assert_nil setup_actuator.fetch("outputs").first["id"]
+  end
+
+  test "bootstrap preserves watering and target readiness while adding setup actuator" do
+    ConnectionSetting.create!(irrigation_line_count: 4)
+    zone = create(:zone, irrigation_line: nil)
+    node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 1)
+    event = setup_validation_event(zone: zone, node: node, status: "completed", idempotency_key: "setup-watering-ready")
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal true, body.dig("status", "zone_ready")
+    assert_equal true, body.dig("status", "watering_ready")
+    assert_equal event.idempotency_key, body.dig("setup_watering", "idempotency_key")
+    assert_equal "completed", body.dig("setup_watering", "state")
+    assert_equal "none", body.dig("setup_actuator", "state")
+    assert_equal false, body.dig("setup_actuator", "complete")
   end
 
   test "crop profile creation returns validation errors" do

@@ -9,6 +9,7 @@ class SetupApiController < ApplicationController
     render json: {
       status: setup_status_payload,
       setup_watering: setup_watering_payload(setup_watering),
+      setup_actuator: SetupActuatorAuthority.bootstrap_payload,
       connection_setting: connection_setting_payload(connection_setting_record),
       crop_profiles: CropProfile.order(:crop_name).map { |profile| crop_profile_payload(profile) },
       first_zone: first_zone_payload,
