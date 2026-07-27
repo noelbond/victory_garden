@@ -255,6 +255,34 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal reading.id, body.dig("reading", "id")
   end
 
+  test "characterizes environmental-only reading as setup reading complete" do
+    zone = create(:zone, publish_interval_ms: 3_600_000)
+    node = create(:node, node_id: "sensor-zone1", zone: zone)
+    requested_at = Time.current.utc
+    reading = SensorReading.create!(
+      zone: zone,
+      node_id: node.node_id,
+      recorded_at: requested_at + 2.seconds,
+      air_temperature_c: 24.5,
+      humidity_percent: 58,
+      publish_reason: "periodic"
+    )
+
+    get "/setup_api/reading_status",
+        params: { node_id: node.node_id, since: requested_at.iso8601 },
+        as: :json
+
+    assert_response :success
+    body = response.parsed_body
+
+    # STAB-004 characterization: the setup API treats any persisted reading
+    # for the node as complete, even without moisture values.
+    assert_equal true, body.fetch("complete")
+    assert_equal reading.id, body.dig("reading", "id")
+    assert_nil body.dig("reading", "moisture_raw")
+    assert_nil body.dig("reading", "moisture_percent")
+  end
+
   test "calibration update saves dry and wet raw values for the assigned node" do
     zone = create(:zone)
     node = Node.create!(node_id: "sensor-zone1", last_seen_at: Time.current, zone: zone)
@@ -317,5 +345,49 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal true, body.fetch("complete")
     assert_equal event.id, body.dig("event", "id")
     assert_equal status.id, body.dig("actuator_status", "id")
+  end
+
+  test "characterizes setup watering completion for current event statuses" do
+    zone = create(:zone)
+    terminal_statuses = %w[completed stopped fault timeout unknown]
+    active_statuses = %w[queued command_sent acknowledged running]
+
+    terminal_statuses.each_with_index do |status, index|
+      event = WateringEvent.create!(
+        zone: zone,
+        command: "start_watering",
+        runtime_seconds: 10,
+        reason: "setup_characterization",
+        issued_at: (index + 10).minutes.ago,
+        idempotency_key: "setup-terminal-#{status}",
+        status: status
+      )
+
+      get "/setup_api/watering_status",
+          params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+          as: :json
+
+      assert_response :success
+      assert_equal true, response.parsed_body.fetch("complete"), "#{status} should currently complete setup"
+    end
+
+    active_statuses.each_with_index do |status, index|
+      event = WateringEvent.create!(
+        zone: zone,
+        command: "start_watering",
+        runtime_seconds: 10,
+        reason: "setup_characterization",
+        issued_at: (index + 1).minutes.ago,
+        idempotency_key: "setup-active-#{status}",
+        status: status
+      )
+
+      get "/setup_api/watering_status",
+          params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+          as: :json
+
+      assert_response :success
+      assert_equal false, response.parsed_body.fetch("complete"), "#{status} should not currently complete setup"
+    end
   end
 end

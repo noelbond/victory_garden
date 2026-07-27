@@ -65,6 +65,28 @@ test("nextInstallerStep walks the unified installer flow in order", () => {
   )
 })
 
+test("nextInstallerStep characterizes local completion winning over bootstrap gaps", () => {
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: {
+          connection_ready: true,
+          zone_ready: true,
+          assigned_node_ready: true,
+          reading_ready: false,
+          calibration_ready: false,
+          watering_ready: false,
+        },
+        crop_profiles: [{ id: 1 }],
+        assigned_node: { node_id: "sensor-zone1", calibration_configured: false },
+      },
+      completed: { actuator: true, reading: true, calibration: true, watering: true },
+    }),
+    { id: "step-finish", label: "Finish: Open The Dashboard" },
+  )
+})
+
 test("buildPicoProvisioningPayload uses Pi-managed broker credentials", () => {
   const payload = buildPicoProvisioningPayload({
     bootstrap: {
