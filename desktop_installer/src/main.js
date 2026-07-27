@@ -2,12 +2,14 @@ import "./styles.css"
 import { invoke } from "@tauri-apps/api/core"
 import {
   asErrorMessage,
+  buildActuatorRegistrationRetryRequest,
   buildActuatorProvisioningRecordRequest,
   buildWateringStatusRequest,
   buildPicoProvisioningPayload,
   classifyPiConnectivityError,
   classifyPiDiscoveryError,
   classifyWateringStatus,
+  deriveActuatorRecovery,
   effectiveFirstZoneReady,
   effectiveWateringDone,
   isActuatorProvisioningRecordUnsupported,
@@ -132,6 +134,11 @@ const elements = {
   actuatorDetectedDetail: document.querySelector("#actuator-detected-detail"),
   actuatorStatus: document.querySelector("#actuator-status"),
   actuatorFlash: document.querySelector("#flash-actuator"),
+  actuatorRecoveryActions: document.querySelector("#actuator-recovery-actions"),
+  actuatorRefreshStatus: document.querySelector("#actuator-refresh-status"),
+  actuatorRetryRegistration: document.querySelector("#actuator-retry-registration"),
+  actuatorReprovisionSame: document.querySelector("#actuator-reprovision-same"),
+  actuatorReplace: document.querySelector("#actuator-replace"),
   requestReading: document.querySelector("#request-reading"),
   readingStatus: document.querySelector("#reading-status"),
   readingNodeSummary: document.querySelector("#reading-node-summary"),
@@ -540,6 +547,9 @@ const resetStepStatusText = () => {
   renderStatus(elements.actuatorStatus, buildStatus({
     summary: "Click Detect Pico after the Actuator Pico appears in BOOTSEL mode.",
   }))
+  if (elements.actuatorRecoveryActions) {
+    elements.actuatorRecoveryActions.hidden = true
+  }
   elements.readingNodeSummary.textContent = "No sensor node assigned yet"
   elements.readingDetailSummary.textContent = "No reading confirmed yet"
   renderStatus(elements.readingStatus, buildStatus({
@@ -652,7 +662,7 @@ const validateZoneForm = () => {
   return null
 }
 
-const picoProvisioningPayload = (kind) => {
+const picoProvisioningPayload = (kind, options = {}) => {
   return buildPicoProvisioningPayload({
     bootstrap: state.bootstrap,
     piVerifiedUrl: state.piVerifiedUrl,
@@ -662,6 +672,7 @@ const picoProvisioningPayload = (kind) => {
       mqttPort: elements.mqttPort.value,
     },
     kind,
+    nodeId: options.nodeId || "",
   })
 }
 
@@ -955,24 +966,63 @@ const setupActuatorStatusDetail = (setupActuator) => {
   return pieces.join(" ")
 }
 
-const renderSetupActuatorAuthority = (setupActuator) => {
-  if (!setupActuator?.present) {
+const configureActuatorRecoveryActions = (recovery) => {
+  if (!elements.actuatorRecoveryActions) {
     return
   }
 
+  const hasAction = recovery?.blocking && (
+    recovery.canRefresh ||
+    recovery.canRetryRegistration ||
+    recovery.canReprovisionSame ||
+    recovery.canReplace
+  )
+
+  elements.actuatorRecoveryActions.hidden = !hasAction
+  elements.actuatorRefreshStatus.hidden = !recovery?.canRefresh
+  elements.actuatorRetryRegistration.hidden = !recovery?.canRetryRegistration
+  elements.actuatorReprovisionSame.hidden = !recovery?.canReprovisionSame
+  elements.actuatorReplace.hidden = !recovery?.canReplace
+
+  elements.actuatorRefreshStatus.disabled = state.flashing.actuator || state.refreshInFlight || !state.piVerifiedUrl
+  elements.actuatorRetryRegistration.disabled = state.flashing.actuator || !state.piVerifiedUrl
+  elements.actuatorReprovisionSame.disabled = state.flashing.actuator
+  elements.actuatorReplace.disabled = state.flashing.actuator
+}
+
+const renderSetupActuatorAuthority = (setupActuator) => {
+  if (!setupActuator?.present) {
+    configureActuatorRecoveryActions(null)
+    return
+  }
+
+  const recovery = deriveActuatorRecovery({
+    setupActuator,
+    localState: {
+      actuatorNodeId: state.actuatorNodeId,
+      actuatorProvisioningAttempt: state.actuatorProvisioningAttempt,
+    },
+  })
   const logicalNodeId = setupActuator.logicalNodeId || state.actuatorNodeId || "the actuator"
   if (setupActuator.complete) {
     state.messages.actuator = `Rails confirmed ${logicalNodeId} after a matching MQTT config acknowledgement.`
+    configureActuatorRecoveryActions(recovery)
     return
   }
 
   if (setupActuator.state === "none") {
     state.messages.actuator = "Rails has no current actuator provisioning record. Flash and provision the actuator Pico deliberately when ready."
+    configureActuatorRecoveryActions(recovery)
     return
   }
 
-  state.messages.actuator = setupActuatorStatusDetail(setupActuator) ||
+  const identityDetail = recovery.identityMismatch
+    ? `Rails current actuator is ${recovery.railsLogicalNodeId}; this installer last had ${recovery.localLogicalNodeId}.`
+    : (recovery.railsLogicalNodeId ? `Rails current actuator: ${recovery.railsLogicalNodeId}.` : "")
+  const operationDetail = recovery.provisioningOperationId ? `Provisioning operation: ${recovery.provisioningOperationId}.` : ""
+  state.messages.actuator = [setupActuatorStatusDetail(setupActuator), identityDetail, operationDetail].filter(Boolean).join(" ") ||
     `Rails is tracking ${logicalNodeId}, but actuator readiness is not complete yet.`
+  configureActuatorRecoveryActions(recovery)
 }
 
 const applySetupActuatorReconciliation = (bootstrap) => {
@@ -2724,7 +2774,96 @@ const saveZone = async () => {
   }
 }
 
-const flashBoard = async (kind) => {
+const confirmActuatorReplacement = () => window.confirm("This will replace the current setup actuator in Rails after the new controller accepts provisioning. The previous actuator record will remain in history.")
+
+const retryActuatorRegistration = async () => {
+  if (!state.piVerifiedUrl) {
+    return
+  }
+
+  let request = null
+  try {
+    request = buildActuatorRegistrationRetryRequest({
+      baseUrl: state.piVerifiedUrl,
+      attempt: state.actuatorProvisioningAttempt || {},
+    })
+  } catch (error) {
+    renderStatus(elements.actuatorStatus, buildStatus({
+      summary: "Rails registration cannot be retried yet.",
+      detail: "The installer does not have a complete acknowledged actuator operation to retry.",
+      recovery: "Reprovision the current actuator deliberately when the board is ready.",
+      technicalDetail: asErrorMessage(error),
+    }))
+    return
+  }
+
+  state.flashing.actuator = true
+  state.completed.actuator = false
+  state.messages.actuator = `Retrying Rails registration for ${state.actuatorProvisioningAttempt?.logicalNodeId || "the actuator"} without USB provisioning.`
+  updateUi()
+
+  try {
+    const response = await invokePiApiWithRetry("record_setup_actuator_provisioning", request, {
+      attempts: 1,
+      timeoutMs: 10000,
+      context: "Retrying actuator provisioning authority registration",
+    })
+    if (response?.setup_actuator) {
+      state.bootstrap = {
+        ...(state.bootstrap || {}),
+        status: response.status || state.bootstrap?.status || {},
+        setup_actuator: response.setup_actuator,
+      }
+      applySetupActuatorReconciliation(state.bootstrap)
+    }
+    state.actuatorProvisioningAttempt = {
+      ...(state.actuatorProvisioningAttempt || {}),
+      state: state.setupActuator?.state || "pending_observation",
+      complete: state.setupActuator?.complete === true,
+    }
+    saveSessionState()
+  } catch (error) {
+    state.actuatorProvisioningAttempt = {
+      ...(state.actuatorProvisioningAttempt || {}),
+      state: "rails_registration_failed",
+      complete: false,
+    }
+    state.completed.actuator = false
+    saveSessionState()
+    renderStatus(elements.actuatorStatus, buildStatus({
+      summary: "Rails registration retry failed.",
+      detail: "The installer did not send another USB provisioning command.",
+      recovery: "Refresh status or retry Rails registration again after checking the Pi response.",
+      technicalDetail: asErrorMessage(error),
+    }))
+  } finally {
+    state.flashing.actuator = false
+    updateUi()
+  }
+}
+
+const refreshActuatorRecoveryStatus = async () => {
+  renderStatus(elements.actuatorStatus, buildStatus({
+    summary: "Refreshing actuator authority from Rails...",
+  }))
+  await refreshBootstrapFromPi()
+  updateUi()
+}
+
+const reprovisionCurrentActuator = () => {
+  const logicalNodeId = state.setupActuator?.logicalNodeId || state.actuatorNodeId || ""
+  void flashBoard("actuator", { recoveryAction: "reprovision_same", logicalNodeId })
+}
+
+const replaceActuator = () => {
+  if (!confirmActuatorReplacement()) {
+    return
+  }
+
+  void flashBoard("actuator", { recoveryAction: "replace" })
+}
+
+const flashBoard = async (kind, options = {}) => {
   const device = currentDetectedDevice()
   const statusElement = kind === "sensor" ? elements.sensorStatus : elements.actuatorStatus
 
@@ -2754,7 +2893,7 @@ const flashBoard = async (kind) => {
     void logInstallerInfo("hardware", "flash_complete", `${kind} Pico flash completed.`, result)
     state.messages[kind] = `Installed ${result.flashed_filename}. Waiting for the Pico USB serial port so the installer can provision it.`
     statusElement.textContent = state.messages[kind]
-    const provisioningPayload = picoProvisioningPayload(kind)
+    const provisioningPayload = picoProvisioningPayload(kind, { nodeId: options.logicalNodeId || "" })
     const provisioned = await invoke("provision_pico", {
       input: provisioningPayload,
     })
@@ -2774,14 +2913,23 @@ const flashBoard = async (kind) => {
         state: "usb_acknowledged",
         complete: false,
       }
-      await recordActuatorProvisioningAttempt({
-        provisioningPayload,
-        provisioned,
-        board: device.board,
-        statusElement,
-      })
+      try {
+        await recordActuatorProvisioningAttempt({
+          provisioningPayload,
+          provisioned,
+          board: device.board,
+          statusElement,
+        })
+      } catch (error) {
+        state.actuatorProvisioningAttempt.state = "rails_registration_failed"
+        state.actuatorProvisioningAttempt.complete = false
+        saveSessionState()
+        throw error
+      }
       if (!state.messages.actuator) {
-        state.messages.actuator = `Actuator ${provisioned.node_id} was provisioned. Move it to the real actuator hardware while the installer waits for it to appear on the Pi.`
+        state.messages.actuator = options.recoveryAction === "replace"
+          ? `Replacement actuator ${provisioned.node_id} accepted USB provisioning. Rails registration must complete before it becomes durable setup authority.`
+          : `Actuator ${provisioned.node_id} was provisioned. Move it to the real actuator hardware while the installer waits for it to appear on the Pi.`
       }
     }
     saveSessionState()
@@ -2941,6 +3089,18 @@ const bindEvents = () => {
   })
   elements.actuatorFlash.addEventListener("click", () => {
     void flashBoard("actuator")
+  })
+  elements.actuatorRefreshStatus.addEventListener("click", () => {
+    void refreshActuatorRecoveryStatus()
+  })
+  elements.actuatorRetryRegistration.addEventListener("click", () => {
+    void retryActuatorRegistration()
+  })
+  elements.actuatorReprovisionSame.addEventListener("click", () => {
+    reprovisionCurrentActuator()
+  })
+  elements.actuatorReplace.addEventListener("click", () => {
+    replaceActuator()
   })
   elements.requestReading.addEventListener("click", () => {
     void requestFirstReading()

@@ -2,11 +2,13 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  buildActuatorRegistrationRetryRequest,
   buildActuatorProvisioningRecordRequest,
   buildPicoProvisioningPayload,
   buildWateringStatusRequest,
   classifyPiDiscoveryError,
   classifyWateringStatus,
+  deriveActuatorRecovery,
   effectiveActuatorDone,
   effectiveFirstZoneReady,
   effectiveWateringDone,
@@ -664,6 +666,43 @@ test("buildPicoProvisioningPayload uses Pi-managed broker credentials", () => {
   })
 })
 
+test("actuator reprovisioning can use Rails logical id while sensor provisioning remains unchanged", () => {
+  const bootstrap = {
+    first_zone: {
+      zone_id: "zone1",
+      publish_interval_ms: 3600000,
+    },
+    connection_setting: {
+      provisioning_mqtt_username: "installer-user",
+      provisioning_mqtt_password: "secret",
+    },
+  }
+  const form = {
+    wifiSsid: "GardenNet",
+    wifiPassword: "wifi-secret",
+    mqttPort: "1883",
+  }
+
+  const actuatorPayload = buildPicoProvisioningPayload({
+    bootstrap,
+    piVerifiedUrl: "http://192.168.4.33:3000/",
+    form,
+    kind: "actuator",
+    nodeId: "actuator-rails-current",
+  })
+  const sensorPayload = buildPicoProvisioningPayload({
+    bootstrap,
+    piVerifiedUrl: "http://192.168.4.33:3000/",
+    form,
+    kind: "sensor",
+  })
+
+  assert.equal(actuatorPayload.nodeId, "actuator-rails-current")
+  assert.equal(actuatorPayload.publishIntervalMs, null)
+  assert.equal(sensorPayload.nodeId, "sensor-zone1")
+  assert.equal(sensorPayload.publishIntervalMs, 3600000)
+})
+
 test("actuator provisioning record request uses serial ack operation id and node identity", () => {
   const request = buildActuatorProvisioningRecordRequest({
     baseUrl: "http://victory-garden.local:3000/",
@@ -946,6 +985,160 @@ test("post-provisioning ready refresh advances only after Rails says ready", () 
 test("older Rails actuator provisioning authority endpoint is explicitly detected", () => {
   assert.equal(isActuatorProvisioningRecordUnsupported(new Error("HTTP 404 from /setup_api/actuator_provisioning")), true)
   assert.equal(isActuatorProvisioningRecordUnsupported(new Error("Validation failed")), false)
+})
+
+test("actuator recovery states expose explicit safe actions without completing setup", () => {
+  const expectations = {
+    pending_observation: { action: "refresh", refresh: true, retry: false, same: false, replace: false },
+    observed: { action: "refresh", refresh: true, retry: false, same: true, replace: false },
+    configured: { action: "refresh", refresh: true, retry: false, same: true, replace: false },
+    stale: { action: "refresh", refresh: true, retry: false, same: true, replace: true },
+    conflict: { action: "refresh", refresh: true, retry: false, same: true, replace: true },
+    inactive: { action: "replace", refresh: true, retry: false, same: false, replace: true },
+  }
+
+  for (const [state, expected] of Object.entries(expectations)) {
+    const setupActuatorState = normalizeSetupActuator({ setup_actuator: setupActuator({ state, complete: false }) })
+    const recovery = deriveActuatorRecovery({ setupActuator: setupActuatorState })
+
+    assert.equal(setupActuatorState.complete, false, state)
+    assert.equal(recovery.blocking, true, state)
+    assert.equal(recovery.action, expected.action, state)
+    assert.equal(recovery.canRefresh, expected.refresh, state)
+    assert.equal(recovery.canRetryRegistration, expected.retry, state)
+    assert.equal(recovery.canReprovisionSame, expected.same, state)
+    assert.equal(recovery.canReplace, expected.replace, state)
+  }
+})
+
+test("ready actuator exposes no recovery action or force-ready bypass", () => {
+  const setupActuatorState = normalizeSetupActuator({ setup_actuator: setupActuator({ state: "ready", complete: true }) })
+  const recovery = deriveActuatorRecovery({ setupActuator: setupActuatorState })
+
+  assert.equal(recovery.blocking, false)
+  assert.equal(recovery.action, "none")
+  assert.equal(recovery.canRefresh, false)
+  assert.equal(recovery.canRetryRegistration, false)
+  assert.equal(recovery.canReprovisionSame, false)
+  assert.equal(recovery.canReplace, false)
+  assert.notEqual(recovery.action, "force_ready")
+})
+
+test("conflict recovery presents Rails and local identities without choosing one", () => {
+  const setupActuatorState = normalizeSetupActuator({
+    setup_actuator: setupActuator({ state: "conflict", complete: false }),
+  })
+  const recovery = deriveActuatorRecovery({
+    setupActuator: setupActuatorState,
+    localState: { actuatorNodeId: "actuator-zone-local" },
+  })
+
+  assert.equal(recovery.state, "conflict")
+  assert.equal(recovery.railsLogicalNodeId, "actuator-zone1")
+  assert.equal(recovery.localLogicalNodeId, "actuator-zone-local")
+  assert.equal(recovery.identityMismatch, true)
+  assert.equal(recovery.action, "refresh")
+  assert.equal(recovery.canReplace, true)
+  assert.match(recovery.recovery, /replace/i)
+})
+
+test("registration retry reuses acknowledged metadata and sends no credentials", () => {
+  const request = buildActuatorRegistrationRetryRequest({
+    baseUrl: "http://victory-garden.local:3000/",
+    attempt: {
+      operationId: "provision-001",
+      logicalNodeId: "actuator-zone1",
+      zoneId: "zone1",
+      board: "pico_w",
+      wifiPassword: "secret",
+      mqttPassword: "secret",
+    },
+  })
+
+  assert.deepEqual(request, {
+    input: {
+      baseUrl: "http://victory-garden.local:3000/",
+      logicalNodeId: "actuator-zone1",
+      provisioningOperationId: "provision-001",
+      zoneExternalId: "zone1",
+      board: "pico_w",
+    },
+  })
+  assert.equal(JSON.stringify(request).includes("secret"), false)
+})
+
+test("registration retry requires acknowledged operation metadata", () => {
+  assert.throws(() => buildActuatorRegistrationRetryRequest({
+    baseUrl: "http://victory-garden.local:3000/",
+    attempt: { logicalNodeId: "actuator-zone1" },
+  }), /operation id/)
+})
+
+test("failed Rails registration can be retried without USB while auth validation and conflict are not compatibility", () => {
+  const setupActuatorState = normalizeSetupActuator({ setup_actuator: setupActuator({ state: "stale", complete: false }) })
+  const recovery = deriveActuatorRecovery({
+    setupActuator: setupActuatorState,
+    localState: {
+      actuatorProvisioningAttempt: {
+        state: "rails_registration_failed",
+        operationId: "provision-001",
+        logicalNodeId: "actuator-zone1",
+      },
+    },
+  })
+
+  assert.equal(recovery.action, "retry_registration")
+  assert.equal(recovery.canRetryRegistration, true)
+  assert.equal(isActuatorProvisioningRecordUnsupported(new Error("HTTP 401 Unauthorized")), false)
+  assert.equal(isActuatorProvisioningRecordUnsupported(new Error("HTTP 422 Validation failed")), false)
+  assert.equal(isActuatorProvisioningRecordUnsupported(new Error("HTTP 409 Conflict")), false)
+  assert.equal(isActuatorProvisioningRecordUnsupported(new Error("No route matches /setup_api/actuator_provisioning")), true)
+})
+
+test("restart reconstruction derives stale and conflict recovery without automatic actions", () => {
+  for (const state of ["stale", "conflict"]) {
+    const result = reconcileActuatorStateFromBootstrap({
+      bootstrap: actuatorBootstrap(setupActuator({ state, complete: false })),
+      completed: { actuator: true },
+      actuatorNodeId: "actuator-zone-local",
+      actuatorProvisioningAttempt: {
+        state: "pending_observation",
+        operationId: "provision-001",
+        logicalNodeId: "actuator-zone-local",
+      },
+    })
+    const recovery = deriveActuatorRecovery({
+      setupActuator: result.setupActuator,
+      localState: {
+        actuatorNodeId: result.actuatorNodeId,
+        actuatorProvisioningAttempt: result.actuatorProvisioningAttempt,
+      },
+    })
+
+    assert.equal(result.completed.actuator, false, state)
+    assert.equal(recovery.blocking, true, state)
+    assert.equal(Object.hasOwn(recovery, "autoProvision"), false)
+    assert.equal(Object.hasOwn(recovery, "autoReplace"), false)
+    assert.equal(Object.hasOwn(recovery, "forceReady"), false)
+  }
+})
+
+test("unknown and malformed actuator recovery permits only safe refresh", () => {
+  for (const payload of [
+    setupActuator({ state: "future_state", complete: false, actuator: { id: 12, logical_node_id: "actuator-zone1" } }),
+    "bad payload",
+  ]) {
+    const setupActuatorState = normalizeSetupActuator({ setup_actuator: payload })
+    const recovery = deriveActuatorRecovery({ setupActuator: setupActuatorState })
+
+    assert.equal(recovery.blocking, true)
+    assert.equal(recovery.action, "refresh")
+    assert.equal(recovery.canRefresh, true)
+    assert.equal(recovery.canRetryRegistration, false)
+    assert.equal(recovery.canReplace, false)
+    assert.equal(Object.hasOwn(setupActuatorState, "id"), false)
+    assert.equal(JSON.stringify(setupActuatorState).includes("internal_debug"), false)
+  }
 })
 
 test("classifyPiDiscoveryError distinguishes service startup failures", () => {
