@@ -398,12 +398,22 @@ class SetupApiTest < ActionDispatch::IntegrationTest
         as: :json
     assert_response :success
     assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal false, response.parsed_body.fetch("terminal")
+    assert_equal "in_progress", response.parsed_body.fetch("outcome")
 
     event.update!(status: "completed")
     status = ActuatorStatus.create!(
       zone: zone,
       state: "COMPLETED",
+      idempotency_key: event.idempotency_key,
       recorded_at: event.issued_at + 10.seconds,
+      actual_runtime_seconds: event.runtime_seconds
+    )
+    ActuatorStatus.create!(
+      zone: zone,
+      state: "COMPLETED",
+      idempotency_key: "historical-other-key",
+      recorded_at: event.issued_at + 20.seconds,
       actual_runtime_seconds: event.runtime_seconds
     )
 
@@ -413,51 +423,173 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_response :success
     body = response.parsed_body
     assert_equal true, body.fetch("complete")
+    assert_equal true, body.fetch("terminal")
+    assert_equal "success", body.fetch("outcome")
     assert_equal event.id, body.dig("event", "id")
+    assert_equal event.idempotency_key, body.dig("event", "idempotency_key")
     assert_equal status.id, body.dig("actuator_status", "id")
+    assert_equal event.idempotency_key, body.dig("actuator_status", "idempotency_key")
   end
 
-  test "characterizes setup watering completion for current event statuses" do
+  test "watering status reports explicit in-progress outcomes" do
     zone = create(:zone)
-    terminal_statuses = %w[completed stopped fault timeout unknown]
     active_statuses = %w[queued command_sent acknowledged running]
 
-    terminal_statuses.each_with_index do |status, index|
-      event = WateringEvent.create!(
-        zone: zone,
-        command: "start_watering",
-        runtime_seconds: 10,
-        reason: "setup_characterization",
-        issued_at: (index + 10).minutes.ago,
-        idempotency_key: "setup-terminal-#{status}",
-        status: status
-      )
-
-      get "/setup_api/watering_status",
-          params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
-          as: :json
-
-      assert_response :success
-      assert_equal true, response.parsed_body.fetch("complete"), "#{status} should currently complete setup"
-    end
-
     active_statuses.each_with_index do |status, index|
-      event = WateringEvent.create!(
-        zone: zone,
-        command: "start_watering",
-        runtime_seconds: 10,
-        reason: "setup_characterization",
-        issued_at: (index + 1).minutes.ago,
-        idempotency_key: "setup-active-#{status}",
-        status: status
-      )
+      event = setup_watering_event(zone: zone, status: status, idempotency_key: "setup-active-#{status}", issued_at: (index + 1).minutes.ago)
 
       get "/setup_api/watering_status",
           params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
           as: :json
 
       assert_response :success
-      assert_equal false, response.parsed_body.fetch("complete"), "#{status} should not currently complete setup"
+      assert_equal false, response.parsed_body.fetch("complete"), "#{status} should not complete setup"
+      assert_equal false, response.parsed_body.fetch("terminal"), "#{status} should remain in progress"
+      assert_equal "in_progress", response.parsed_body.fetch("outcome")
     end
+  end
+
+  test "watering status reports recovery outcomes without completing setup" do
+    zone = create(:zone)
+    recovery_statuses = {
+      "stopped" => "stopped",
+      "fault" => "faulted",
+      "timeout" => "timed_out",
+      "unknown" => "unknown"
+    }
+
+    recovery_statuses.each_with_index do |(status, outcome), index|
+      event = setup_watering_event(zone: zone, status: status, idempotency_key: "setup-recovery-#{status}", issued_at: (index + 1).minutes.ago)
+
+      get "/setup_api/watering_status",
+          params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+          as: :json
+
+      assert_response :success
+      assert_equal false, response.parsed_body.fetch("complete"), "#{status} should not complete setup"
+      assert_equal true, response.parsed_body.fetch("terminal"), "#{status} should be terminal recovery"
+      assert_equal outcome, response.parsed_body.fetch("outcome")
+    end
+  end
+
+  test "watering status requires supplied idempotency key and exact matching event" do
+    zone = create(:zone)
+    setup_watering_event(zone: zone, status: "completed", idempotency_key: "historical-completed", issued_at: 5.minutes.ago)
+
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id },
+        as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal true, response.parsed_body.fetch("terminal")
+    assert_equal "missing_idempotency_key", response.parsed_body.fetch("outcome")
+    assert_nil response.parsed_body.fetch("event")
+
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: "missing-key" },
+        as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal true, response.parsed_body.fetch("terminal")
+    assert_equal "not_found", response.parsed_body.fetch("outcome")
+    assert_nil response.parsed_body.fetch("event")
+  end
+
+  test "historical completed event does not satisfy current running or faulted attempts" do
+    zone = create(:zone)
+    setup_watering_event(zone: zone, status: "completed", idempotency_key: "historical-completed", issued_at: 10.minutes.ago)
+
+    running = setup_watering_event(zone: zone, status: "running", idempotency_key: "current-running", issued_at: 1.minute.ago)
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: running.idempotency_key },
+        as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal false, response.parsed_body.fetch("terminal")
+    assert_equal "in_progress", response.parsed_body.fetch("outcome")
+    assert_equal running.id, response.parsed_body.dig("event", "id")
+
+    fault = setup_watering_event(zone: zone, status: "fault", idempotency_key: "current-fault", issued_at: Time.current)
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: fault.idempotency_key },
+        as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal true, response.parsed_body.fetch("terminal")
+    assert_equal "faulted", response.parsed_body.fetch("outcome")
+    assert_equal fault.id, response.parsed_body.dig("event", "id")
+  end
+
+  test "bootstrap watering readiness requires completed setup watering event" do
+    zone = create(:zone)
+
+    setup_watering_event(zone: zone, status: "completed", idempotency_key: "completed-ready")
+    get "/setup_api/bootstrap", as: :json
+    assert_response :success
+    assert_equal true, response.parsed_body.dig("status", "watering_ready")
+
+    %w[stopped fault timeout unknown].each do |status|
+      WateringEvent.delete_all
+      setup_watering_event(zone: zone, status: status, idempotency_key: "bootstrap-#{status}")
+
+      get "/setup_api/bootstrap", as: :json
+      assert_response :success
+      assert_equal false, response.parsed_body.dig("status", "watering_ready"), "#{status} should not satisfy watering readiness"
+    end
+  end
+
+  test "watering status treats unrecognized response-boundary status as unsupported recovery" do
+    zone = create(:zone)
+    event = setup_watering_event(zone: zone, status: "queued", idempotency_key: "published-boundary")
+    event.update_column(:status, "published")
+
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+        as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal false, response.parsed_body.fetch("terminal")
+    assert_equal "in_progress", response.parsed_body.fetch("outcome")
+
+    event.update_column(:status, "faulted")
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+        as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal true, response.parsed_body.fetch("terminal")
+    assert_equal "faulted", response.parsed_body.fetch("outcome")
+
+    event.update_column(:status, "timed_out")
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+        as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal true, response.parsed_body.fetch("terminal")
+    assert_equal "timed_out", response.parsed_body.fetch("outcome")
+
+    event.update_column(:status, "rejected")
+    get "/setup_api/watering_status",
+        params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
+        as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body.fetch("complete")
+    assert_equal true, response.parsed_body.fetch("terminal")
+    assert_equal "unsupported", response.parsed_body.fetch("outcome")
+  end
+
+  private
+
+  def setup_watering_event(zone:, status:, idempotency_key:, issued_at: Time.current)
+    WateringEvent.create!(
+      zone: zone,
+      command: "start_watering",
+      runtime_seconds: 10,
+      reason: "setup_characterization",
+      issued_at: issued_at,
+      idempotency_key: idempotency_key,
+      status: status
+    )
   end
 end

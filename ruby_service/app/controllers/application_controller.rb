@@ -111,6 +111,6 @@ class ApplicationController < ActionController::Base
   end
 
   def onboarding_watering_complete?
-    WateringEvent.where(status: WateringEvent::TERMINAL_STATUSES).exists?
+    WateringEvent.where(command: "start_watering", status: "completed").exists?
   end
 end

@@ -212,6 +212,10 @@ class SetupApiController < ApplicationController
 
     render json: {
       queued: true,
+      complete: false,
+      terminal: false,
+      outcome: "pending",
+      message: "Watering command queued.",
       idempotency_key: result.payload[:idempotency_key],
       issued_at: result.payload[:issued_at].utc.iso8601,
       zone: zone_payload(zone),
@@ -221,11 +225,14 @@ class SetupApiController < ApplicationController
 
   def watering_status
     zone = assignable_zone
-    idempotency_key = params[:idempotency_key].to_s
+    idempotency_key = params[:idempotency_key].to_s.strip
 
     if zone.blank?
       render json: {
         complete: false,
+        terminal: true,
+        outcome: "missing_zone",
+        message: "No setup zone is available for watering validation.",
         event: nil,
         actuator_status: nil,
         zone: nil
@@ -236,18 +243,41 @@ class SetupApiController < ApplicationController
     node = setup_node_from_params
     event_scope = zone.watering_events.order(issued_at: :desc, id: :desc)
     event_scope = event_scope.where(node_id: node.node_id) if node.present?
-    event = idempotency_key.present? ? event_scope.find_by(idempotency_key: idempotency_key) : event_scope.first
     status_scope = zone.actuator_statuses.order(recorded_at: :desc, id: :desc)
     status_scope = status_scope.where(node_id: node.node_id) if node.present?
-    latest_status = status_scope.first
 
-    render json: {
-      complete: event.present? && WateringEvent::TERMINAL_STATUSES.include?(event.status),
-      event: event.present? ? watering_event_payload(event) : nil,
-      actuator_status: latest_status.present? ? actuator_status_payload(latest_status) : nil,
-      zone: zone_payload(zone),
-      node: node.present? ? node_payload(node) : nil
-    }
+    if idempotency_key.blank?
+      render json: watering_status_response(
+        event: nil,
+        actuator_status: nil,
+        zone: zone,
+        node: node,
+        outcome_override: "missing_idempotency_key"
+      )
+      return
+    end
+
+    if idempotency_key.length > 300
+      render json: watering_status_response(
+        event: nil,
+        actuator_status: nil,
+        zone: zone,
+        node: node,
+        outcome_override: "invalid_idempotency_key"
+      ), status: :unprocessable_entity
+      return
+    end
+
+    event = event_scope.find_by(idempotency_key: idempotency_key)
+    latest_status = event.present? ? status_scope.where(idempotency_key: idempotency_key).first : nil
+
+    render json: watering_status_response(
+      event: event,
+      actuator_status: latest_status,
+      zone: zone,
+      node: node,
+      outcome_override: event.present? ? nil : "not_found"
+    )
   end
 
   private
@@ -396,10 +426,65 @@ class SetupApiController < ApplicationController
       zone_id: status.zone.zone_id,
       node_id: status.node_id,
       state: status.state,
+      idempotency_key: status.idempotency_key,
       recorded_at: status.recorded_at&.utc&.iso8601,
       actual_runtime_seconds: status.actual_runtime_seconds,
       flow_ml: status.flow_ml
     }
+  end
+
+  def watering_status_response(event:, actuator_status:, zone:, node:, outcome_override: nil)
+    outcome = outcome_override || watering_outcome_for(event&.status)
+
+    {
+      complete: event.present? && event.status == "completed",
+      terminal: watering_terminal_outcome?(outcome),
+      outcome: outcome,
+      message: watering_status_message(outcome),
+      event: event.present? ? watering_event_payload(event) : nil,
+      actuator_status: actuator_status.present? ? actuator_status_payload(actuator_status) : nil,
+      zone: zone_payload(zone),
+      node: node.present? ? node_payload(node) : nil
+    }
+  end
+
+  def watering_outcome_for(status)
+    case status
+    when "queued", "requested", "command_sent", "published", "acknowledged", "running"
+      "in_progress"
+    when "completed"
+      "success"
+    when "stopped"
+      "stopped"
+    when "fault", "faulted"
+      "faulted"
+    when "timeout", "timed_out"
+      "timed_out"
+    when "unknown"
+      "unknown"
+    else
+      "unsupported"
+    end
+  end
+
+  def watering_terminal_outcome?(outcome)
+    %w[success stopped faulted timed_out unknown unsupported missing_zone missing_idempotency_key invalid_idempotency_key not_found].include?(outcome)
+  end
+
+  def watering_status_message(outcome)
+    {
+      "in_progress" => "Watering is still in progress.",
+      "success" => "Watering completed successfully.",
+      "stopped" => "Watering stopped before completion was confirmed.",
+      "faulted" => "The actuator reported a watering fault.",
+      "timed_out" => "Watering timed out before completion was confirmed.",
+      "unknown" => "The watering result could not be interpreted.",
+      "unsupported" => "The watering result is not supported by this setup API.",
+      "missing_zone" => "No setup zone is available for watering validation.",
+      "missing_idempotency_key" => "The watering attempt idempotency key is required for setup validation.",
+      "invalid_idempotency_key" => "The watering attempt idempotency key is invalid.",
+      "not_found" => "The current watering attempt could not be found or confirmed."
+    }.fetch(outcome, "The watering result could not be interpreted.")
   end
 
   def first_zone_payload
