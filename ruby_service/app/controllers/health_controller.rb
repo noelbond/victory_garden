@@ -170,7 +170,7 @@ class HealthController < ApplicationController
   end
 
   def load_mqtt_consumer_status
-    path = MqttConsumer::STATUS_PATH
+    path = MqttConsumer.status_path
     return {} unless path.exist?
 
     JSON.parse(File.read(path))

@@ -2,8 +2,10 @@ require "test_helper"
 
 class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
   setup do
-    @mqtt_consumer_status_path = MqttConsumer::STATUS_PATH
-    @mqtt_consumer_status_backup = @mqtt_consumer_status_path.exist? ? File.read(@mqtt_consumer_status_path) : nil
+    @mqtt_consumer_status_path_before = MqttConsumer.status_path
+    @mqtt_consumer_status_dir = Dir.mktmpdir("vg-mqtt-consumer-status")
+    @mqtt_consumer_status_path = Pathname.new(File.join(@mqtt_consumer_status_dir, "mqtt_consumer_status.json"))
+    MqttConsumer.status_path = @mqtt_consumer_status_path
     @firstboot_state_dir = Dir.mktmpdir("vg-firstboot")
     @firstboot_state_dir_before = ENV["VG_FIRSTBOOT_STATE_DIR"]
     ENV["VG_FIRSTBOOT_STATE_DIR"] = @firstboot_state_dir
@@ -21,12 +23,8 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
   end
 
   teardown do
-    if @mqtt_consumer_status_backup.nil?
-      File.delete(@mqtt_consumer_status_path) if @mqtt_consumer_status_path.exist?
-    else
-      FileUtils.mkdir_p(@mqtt_consumer_status_path.dirname)
-      File.write(@mqtt_consumer_status_path, @mqtt_consumer_status_backup)
-    end
+    MqttConsumer.status_path = @mqtt_consumer_status_path_before
+    FileUtils.rm_rf(@mqtt_consumer_status_dir) if @mqtt_consumer_status_dir.present?
 
     ENV["VG_FIRSTBOOT_STATE_DIR"] = @firstboot_state_dir_before
     FileUtils.rm_rf(@firstboot_state_dir) if @firstboot_state_dir.present?
@@ -125,20 +123,13 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
   end
 
   test "health page shows degraded mqtt consumer state" do
-    FileUtils.mkdir_p(@mqtt_consumer_status_path.dirname)
-    File.write(
-      @mqtt_consumer_status_path,
-      JSON.pretty_generate(
-        {
-          component: "mqtt_consumer",
-          status: "degraded",
-          connected: false,
-          retry_count: 3,
-          last_error: "MQTT::ProtocolException boom",
-          next_retry_at: "2026-05-26T15:00:10Z",
-          updated_at: "2026-05-26T15:00:06Z"
-        }
-      )
+    write_mqtt_consumer_status!(
+      status: "degraded",
+      connected: false,
+      retry_count: 3,
+      last_error: "MQTT::ProtocolException boom",
+      next_retry_at: "2026-05-26T15:00:10Z",
+      updated_at: "2026-05-26T15:00:06Z"
     )
 
     get health_path
@@ -147,6 +138,45 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "MQTT Consumer"
     assert_includes response.body, "Degraded"
     assert_includes response.body, "Last error: MQTT::ProtocolException boom."
+  end
+
+  test "health page shows connected mqtt consumer state" do
+    write_mqtt_consumer_status!(
+      status: "connected",
+      connected: true,
+      retry_count: 0,
+      last_error: nil,
+      next_retry_at: nil,
+      updated_at: "2026-05-26T15:00:06Z"
+    )
+
+    get health_path
+
+    assert_response :success
+    assert_includes response.body, "MQTT Consumer"
+    assert_includes response.body, "Connected"
+    assert_includes response.body, "subscribed and receiving"
+  end
+
+  test "health page shows unknown mqtt consumer state when status file is missing" do
+    get health_path
+
+    assert_response :success
+    assert_includes response.body, "MQTT Consumer"
+    assert_includes response.body, "Unknown"
+    assert_includes response.body, "waiting for connection"
+  end
+
+  test "health page shows unknown mqtt consumer state when status file is invalid" do
+    FileUtils.mkdir_p(@mqtt_consumer_status_path.dirname)
+    File.write(@mqtt_consumer_status_path, "{")
+
+    get health_path
+
+    assert_response :success
+    assert_includes response.body, "MQTT Consumer"
+    assert_includes response.body, "Unknown"
+    assert_includes response.body, "waiting for connection"
   end
 
   test "onboarding and health surface firstboot failure state and log download" do
@@ -260,5 +290,25 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
     assert_includes response.body, 'for="health-nav-faults"'
     refute_includes response.body, "Stale Readings"
     refute_includes response.body, "Stale Nodes"
+  end
+
+  private
+
+  def write_mqtt_consumer_status!(status:, connected:, retry_count:, last_error:, next_retry_at:, updated_at:)
+    FileUtils.mkdir_p(@mqtt_consumer_status_path.dirname)
+    File.write(
+      @mqtt_consumer_status_path,
+      JSON.pretty_generate(
+        {
+          component: "mqtt_consumer",
+          status: status,
+          connected: connected,
+          retry_count: retry_count,
+          last_error: last_error,
+          next_retry_at: next_retry_at,
+          updated_at: updated_at
+        }
+      )
+    )
   end
 end
