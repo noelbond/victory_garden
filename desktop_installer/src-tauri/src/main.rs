@@ -813,14 +813,8 @@ fn candidate_serial_ports() -> Result<Vec<String>, String> {
 }
 
 fn normalized_serial_port_key(port_name: &str) -> String {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(stripped) = port_name.strip_prefix("/dev/cu.") {
-            return stripped.to_string();
-        }
-        if let Some(stripped) = port_name.strip_prefix("/dev/tty.") {
-            return stripped.to_string();
-        }
+    if let Some(stripped) = port_name.strip_prefix("/dev/cu.") {
+        return format!("/dev/tty.{stripped}");
     }
 
     port_name.to_string()
@@ -2054,6 +2048,21 @@ mod tests {
         assert_eq!(
             normalized_serial_port_key("/dev/cu.usbmodem21101"),
             normalized_serial_port_key("/dev/tty.usbmodem21101")
+        );
+        assert_eq!(
+            normalized_serial_port_key("/dev/cu.usbmodem21101"),
+            "/dev/tty.usbmodem21101"
+        );
+        assert_eq!(
+            normalized_serial_port_key("/dev/tty.usbmodem21101"),
+            "/dev/tty.usbmodem21101"
+        );
+        assert_eq!(normalized_serial_port_key("/dev/ttyUSB0"), "/dev/ttyUSB0");
+        assert_eq!(normalized_serial_port_key("/dev/ttyACM0"), "/dev/ttyACM0");
+        assert_eq!(normalized_serial_port_key("COM3"), "COM3");
+        assert_eq!(
+            normalized_serial_port_key("/tmp/cu.usbmodem21101"),
+            "/tmp/cu.usbmodem21101"
         );
     }
 
