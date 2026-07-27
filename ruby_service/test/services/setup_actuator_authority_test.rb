@@ -109,6 +109,38 @@ class SetupActuatorAuthorityTest < ActiveSupport::TestCase
     end
   end
 
+  test "recovery payloads are state-specific and safe for operator presentation" do
+    expectations = {
+      "pending_observation" => [/waiting to observe/, /Refresh status/],
+      "observed" => [/observed the actuator/, /configuration acknowledgement/],
+      "configured" => [/configuration evidence/, /output inventory/],
+      "stale" => [/not been observed recently enough/, /Reprovision this actuator/],
+      "conflict" => [/provisioning identity/, /replace through the provisioning flow/],
+      "inactive" => [/inactive or superseded/, /Provision a replacement/],
+      "ready" => [/confirmed the current actuator/, nil]
+    }
+
+    expectations.each do |state, (message_pattern, recovery_pattern)|
+      ActuatorOutput.delete_all
+      ActuatorDevice.delete_all
+      actuator = create_current_actuator(state: state, irrigation_line_count: 2, config_error: "raw secret stack")
+      create_outputs(actuator, 1..2)
+
+      payload = SetupActuatorAuthority.bootstrap_payload
+
+      assert_match message_pattern, payload.fetch(:message)
+      if recovery_pattern
+        assert_match recovery_pattern, payload.fetch(:recovery_message)
+      else
+        assert_nil payload.fetch(:recovery_message)
+      end
+      assert_nil payload.dig(:actuator, :id)
+      assert_equal "present", payload.dig(:actuator, :config_error)
+      assert_equal true, payload.fetch(:operator_action_required) unless state == "ready"
+      assert_no_match(/raw secret stack/, payload.to_json)
+    end
+  end
+
   test "superseded actuator is not selected as current" do
     actuator = create(:actuator_device, state: "inactive", current: false, superseded_at: Time.current)
     create_outputs(actuator, 1..2)

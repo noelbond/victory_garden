@@ -21,6 +21,8 @@ class SetupActuatorAuthority
       complete: complete?,
       message: message,
       recovery: recovery,
+      recovery_message: recovery_message,
+      operator_action_required: !complete?,
       actuator: actuator_payload,
       outputs: output_payloads
     }
@@ -38,6 +40,8 @@ class SetupActuatorAuthority
       complete: false,
       message: "No Rails actuator provisioning record exists yet.",
       recovery: nil,
+      recovery_message: "Provision the actuator Pico deliberately when the hardware is ready.",
+      operator_action_required: true,
       actuator: nil,
       outputs: []
     }
@@ -81,6 +85,17 @@ class SetupActuatorAuthority
     end
   end
 
+  def recovery_message
+    {
+      "pending_observation" => "Refresh status after the actuator is connected to its hardware. Reprovision only after a deliberate operator choice.",
+      "observed" => "Refresh status while Rails waits for configuration acknowledgement. Reprovision the same actuator only by explicit operator action.",
+      "configured" => "Refresh status and review actuator output inventory before retrying provisioning.",
+      "stale" => "Refresh status first. Reprovision this actuator or replace it only after deliberate operator confirmation.",
+      "conflict" => "Review the actuator identity conflict. Refresh, reprovision the intended current actuator, or replace through the provisioning flow.",
+      "inactive" => "This actuator is no longer current. Provision a replacement deliberately if this controller should be used for setup."
+    }[effective_state]
+  end
+
   def message
     return "Rails confirmed the current actuator provisioning state." if complete?
 
@@ -89,9 +104,9 @@ class SetupActuatorAuthority
       "pending_observation" => "Rails is waiting to observe the actuator after provisioning.",
       "observed" => "Rails has observed the actuator but has not confirmed setup readiness.",
       "configured" => "Rails has actuator configuration evidence, but setup readiness is not complete.",
-      "stale" => "The current actuator record is stale and must be refreshed before setup can continue.",
-      "conflict" => "Rails found a conflicting actuator provisioning state.",
-      "inactive" => "The actuator record is inactive or superseded.",
+      "stale" => "The current actuator record has not been observed recently enough to trust for setup.",
+      "conflict" => "Rails found a conflicting actuator provisioning identity that requires operator review.",
+      "inactive" => "The actuator record is inactive or superseded and cannot complete setup.",
       "ready" => "Rails cannot confirm a complete actuator output inventory."
     }.fetch(actuator.state, "Rails cannot interpret the actuator provisioning state.")
   end
