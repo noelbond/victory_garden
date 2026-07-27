@@ -99,6 +99,84 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_nil setup_actuator.fetch("outputs").first["id"]
   end
 
+  test "setup API records actuator provisioning attempt as pending authority" do
+    ConnectionSetting.create!(irrigation_line_count: 2)
+
+    post "/setup_api/actuator_provisioning",
+      params: {
+        actuator_provisioning: {
+          logical_node_id: "actuator-zone1",
+          provisioning_operation_id: "provision-001",
+          zone_external_id: "zone1",
+          board: "pico_w"
+        }
+      },
+      as: :json
+
+    assert_response :accepted
+    body = response.parsed_body
+    assert_equal true, body.fetch("recorded")
+    assert_equal "pending_observation", body.dig("setup_actuator", "state")
+    assert_equal false, body.dig("setup_actuator", "complete")
+    assert_equal "pending", body.dig("setup_actuator", "actuator", "config_status")
+    assert_equal "provision-001", body.dig("setup_actuator", "actuator", "provisioning_operation_id")
+    assert_equal [1, 2], body.fetch("setup_actuator").fetch("outputs").map { |output| output.fetch("output_index") }
+    assert_nil body.dig("setup_actuator", "actuator", "id")
+    assert_equal "actuator-zone1", ActuatorDevice.current_device.logical_node_id
+  end
+
+  test "setup API rejects invalid actuator provisioning identifiers without creating authority" do
+    ConnectionSetting.create!(irrigation_line_count: 2)
+
+    post "/setup_api/actuator_provisioning",
+      params: {
+        actuator_provisioning: {
+          logical_node_id: "actuator zone1",
+          provisioning_operation_id: "provision-001",
+          zone_external_id: "zone1",
+          board: "pico_w"
+        }
+      },
+      as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal false, response.parsed_body.fetch("recorded")
+    assert_equal "none", response.parsed_body.dig("setup_actuator", "state")
+    assert_nil ActuatorDevice.current_device
+  end
+
+  test "setup API derives line count and ignores client-provided lifecycle or secrets" do
+    ConnectionSetting.create!(irrigation_line_count: 2)
+
+    post "/setup_api/actuator_provisioning",
+      params: {
+        actuator_provisioning: {
+          logical_node_id: "actuator-zone1",
+          provisioning_operation_id: "provision-001",
+          zone_external_id: "zone1",
+          board: "pico_w",
+          state: "ready",
+          current: false,
+          irrigation_line_count: 99,
+          wifi_password: "wifi-secret",
+          mqtt_password: "mqtt-secret",
+          outputs: [{ output_index: 99, state: "assigned" }]
+        }
+      },
+      as: :json
+
+    assert_response :accepted
+    actuator = ActuatorDevice.current_device
+    assert_equal "pending_observation", actuator.state
+    assert_equal true, actuator.current
+    assert_equal 2, actuator.irrigation_line_count
+    assert_equal [1, 2], actuator.actuator_outputs.order(:output_index).pluck(:output_index)
+    assert_nil actuator.attributes["wifi_password"]
+    assert_nil actuator.attributes["mqtt_password"]
+    assert_nil response.parsed_body.dig("setup_actuator", "actuator", "id")
+    assert_nil response.parsed_body.dig("setup_actuator", "actuator", "mqtt_password")
+  end
+
   test "bootstrap preserves watering and target readiness while adding setup actuator" do
     ConnectionSetting.create!(irrigation_line_count: 4)
     zone = create(:zone, irrigation_line: nil)
