@@ -30,8 +30,8 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     body = response.parsed_body
     assert_equal true, body.dig("status", "connection_ready")
     assert_equal true, body.dig("status", "first_zone_ready")
-    assert_equal true, body.dig("status", "watering_targets_ready")
-    assert_equal true, body.dig("status", "zone_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
+    assert_equal false, body.dig("status", "zone_ready")
     assert_equal setting.mqtt_host, body.dig("connection_setting", "mqtt_host")
     assert_equal setting.mqtt_username, body.dig("connection_setting", "provisioning_mqtt_username")
     assert_equal "secret123", body.dig("connection_setting", "provisioning_mqtt_password")
@@ -177,11 +177,12 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_nil response.parsed_body.dig("setup_actuator", "actuator", "mqtt_password")
   end
 
-  test "bootstrap preserves watering and target readiness while adding setup actuator" do
+  test "bootstrap preserves watering readiness while target readiness requires setup actuator" do
     ConnectionSetting.create!(irrigation_line_count: 4)
     zone = create(:zone, irrigation_line: nil)
     node = create(:node, node_id: "sensor-zone1-ch0", zone: zone, crop_profile: zone.crop_profile, irrigation_line: 1)
     event = setup_validation_event(zone: zone, node: node, status: "completed", idempotency_key: "setup-watering-ready")
+    create_ready_actuator(line_count: 4)
 
     get "/setup_api/bootstrap", as: :json
 
@@ -193,8 +194,8 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal true, body.dig("status", "watering_ready")
     assert_equal event.idempotency_key, body.dig("setup_watering", "idempotency_key")
     assert_equal "completed", body.dig("setup_watering", "state")
-    assert_equal "none", body.dig("setup_actuator", "state")
-    assert_equal false, body.dig("setup_actuator", "complete")
+    assert_equal "ready", body.dig("setup_actuator", "state")
+    assert_equal true, body.dig("setup_actuator", "complete")
   end
 
   test "crop profile creation returns validation errors" do
@@ -253,8 +254,8 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_response :success
     body = response.parsed_body
     assert_equal true, body.dig("status", "first_zone_ready")
-    assert_equal true, body.dig("status", "watering_targets_ready")
-    assert_equal true, body.dig("status", "zone_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
+    assert_equal false, body.dig("status", "zone_ready")
   end
 
   test "characterizes first zone readiness separately from watering target readiness" do
@@ -283,7 +284,39 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal false, body.dig("status", "zone_ready")
   end
 
-  test "characterizes watering target readiness before calibration and readings" do
+  test "zone ready remains deprecated alias for actuator-backed watering targets" do
+    zone = create(:zone, irrigation_line: 1)
+    create_ready_actuator(line_count: 2)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal body.dig("status", "watering_targets_ready"), body.dig("status", "zone_ready")
+
+    zone.update_column(:irrigation_line, 3)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "first_zone_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
+    assert_equal body.dig("status", "watering_targets_ready"), body.dig("status", "zone_ready")
+
+    zone.update_column(:irrigation_line, 2)
+
+    get "/setup_api/bootstrap", as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal body.dig("status", "watering_targets_ready"), body.dig("status", "zone_ready")
+  end
+
+  test "watering target readiness now requires actuator-backed output before calibration and readings" do
     zone = create(:zone, irrigation_line: nil)
     node = create(
       :node,
@@ -291,14 +324,16 @@ class SetupApiTest < ActionDispatch::IntegrationTest
       zone: zone,
       irrigation_line: 1
     )
+    create_ready_actuator(line_count: 1)
 
     get "/setup_api/bootstrap", as: :json
 
     assert_response :success
     body = response.parsed_body
 
-    # STAB-004 characterization: an assigned node irrigation line makes
-    # `zone_ready` true even before calibration or a first reading.
+    # STAB-004 actuator authority: an assigned node irrigation line may satisfy
+    # target readiness before calibration or readings only when Rails has a
+    # current ready actuator and matching output inventory.
     assert_equal node.node_id, body.dig("assigned_node", "node_id")
     assert_equal true, body.dig("status", "first_zone_ready")
     assert_equal true, body.dig("status", "watering_targets_ready")
@@ -406,6 +441,7 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal crop.id, body.dig("node", "crop_profile_id")
     assert_equal 1, body.dig("node", "irrigation_line")
     assert_equal true, body.dig("node", "watering_configured")
+    create_ready_actuator(line_count: 4)
 
     get "/setup_api/bootstrap", as: :json
 
@@ -1041,5 +1077,13 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     }.merge(WateringEvent.setup_target_attributes(zone: zone, node: node, runtime_seconds: runtime_seconds))
     attrs[:setup_superseded_at] = 1.minute.ago unless current
     WateringEvent.create!(attrs)
+  end
+
+  def create_ready_actuator(line_count:)
+    actuator = create(:actuator_device, logical_node_id: "actuator-zone1", state: "ready", current: true, irrigation_line_count: line_count)
+    (1..line_count).each do |index|
+      create(:actuator_output, actuator_device: actuator, output_index: index, state: "assigned")
+    end
+    actuator
   end
 end

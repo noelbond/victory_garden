@@ -366,12 +366,13 @@ class SetupApiController < ApplicationController
     assigned_channels = (device_grouped ? Node.where(device_id: assigned_node.device_id) : Node.where(id: assigned_node&.id)).to_a
     expected_channel_count = device_grouped ? Node::EXPECTED_CHANNELS_PER_DEVICE : 1
     setup_watering = authoritative_setup_watering_event
+    watering_targets_ready = watering_targets_ready?
 
     {
       connection_ready: onboarding_step_state(:connection),
       first_zone_ready: first_zone_ready?,
-      watering_targets_ready: watering_targets_ready?,
-      zone_ready: onboarding_step_state(:zone),
+      watering_targets_ready: watering_targets_ready,
+      zone_ready: watering_targets_ready,
       detected_node_ready: onboarding_step_state(:detected_node),
       assigned_node_ready: onboarding_step_state(:assigned_node),
       reading_ready: onboarding_step_state(:reading),
@@ -387,7 +388,7 @@ class SetupApiController < ApplicationController
   end
 
   def watering_targets_ready?
-    onboarding_step_state(:zone)
+    SetupWateringTargetAuthority.call.ready?
   end
 
   def connection_setting_payload(setting)

@@ -37,10 +37,10 @@ class SetupActuatorAuthorityCharacterizationTest < ActionDispatch::IntegrationTe
     assert_equal false, body.dig("setup_actuator", "complete")
     assert_nil body.dig("setup_actuator", "actuator")
     assert_not body.fetch("status").key?("actuator_ready")
-    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
   end
 
-  test "currently watering target readiness can be true without observed actuator controller evidence" do
+  test "watering target readiness is false without observed actuator controller evidence" do
     ConnectionSetting.create!(irrigation_line_count: 4)
     zone = create(:zone, irrigation_line: nil)
     node = create(
@@ -56,7 +56,7 @@ class SetupActuatorAuthorityCharacterizationTest < ActionDispatch::IntegrationTe
     assert_response :success
     body = response.parsed_body
 
-    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
     assert_equal node.node_id, body.dig("assigned_node", "node_id")
     assert_equal 1, body.dig("assigned_node", "irrigation_line")
     assert_equal "none", body.dig("setup_actuator", "state")
@@ -162,7 +162,7 @@ class SetupActuatorAuthorityCharacterizationTest < ActionDispatch::IntegrationTe
     assert_not body.fetch("status").key?("actuator_conflict")
   end
 
-  test "currently irrigation line evidence does not prove output inventory or physical ownership" do
+  test "irrigation line evidence does not prove output inventory or physical ownership" do
     ConnectionSetting.create!(irrigation_line_count: 4)
     zone = create(:zone, irrigation_line: nil)
     create(
@@ -178,7 +178,7 @@ class SetupActuatorAuthorityCharacterizationTest < ActionDispatch::IntegrationTe
     assert_response :success
     body = response.parsed_body
 
-    assert_equal true, body.dig("status", "watering_targets_ready")
+    assert_equal false, body.dig("status", "watering_targets_ready")
     assert_equal 3, body.dig("assigned_node", "irrigation_line")
     assert_equal "none", body.dig("setup_actuator", "state")
     assert_equal false, body.dig("setup_actuator", "complete")
