@@ -48,6 +48,8 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
       detail: "Pump reported no flow",
       recorded_at: 30.seconds.ago
     )
+    create_ready_setup_actuator!(line_count: 2)
+    complete_current_setup_watering!(idempotency_key: "zone1-setup-validation")
 
     get root_path
 
@@ -110,6 +112,8 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
       idempotency_key: "aggregated-zone-1",
       status: "completed"
     )
+    create_ready_setup_actuator!(line_count: 2)
+    complete_current_setup_watering!(idempotency_key: "aggregated-zone-setup-validation")
 
     get root_path
 
