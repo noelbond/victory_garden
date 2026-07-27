@@ -153,6 +153,7 @@ struct SetupNode {
 #[derive(Serialize, Deserialize)]
 struct SetupBootstrapResponse {
     status: SetupStatus,
+    setup_watering: Option<SetupWateringAttempt>,
     connection_setting: SetupConnectionSetting,
     crop_profiles: Vec<SetupCropProfile>,
     first_zone: Option<SetupZone>,
@@ -269,10 +270,38 @@ struct SetupWateringEvent {
 }
 
 #[derive(Serialize, Deserialize)]
+struct SetupWateringTarget {
+    kind: Option<String>,
+    zone_id: Option<String>,
+    node_id: Option<String>,
+    irrigation_line: Option<u16>,
+    crop_profile_id: Option<u64>,
+    runtime_seconds: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SetupWateringAttempt {
+    state: String,
+    complete: bool,
+    terminal: bool,
+    outcome: String,
+    message: Option<String>,
+    idempotency_key: Option<String>,
+    target_matches_current: Option<bool>,
+    invalidated_at: Option<String>,
+    invalidation_reason: Option<String>,
+    superseded_at: Option<String>,
+    supersession_reason: Option<String>,
+    event: Option<SetupWateringEvent>,
+    target: Option<SetupWateringTarget>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct SetupStartWateringResponse {
     queued: bool,
     idempotency_key: String,
     issued_at: String,
+    setup_watering: Option<SetupWateringAttempt>,
     zone: SetupZone,
     node: Option<SetupNode>,
 }
@@ -285,6 +314,7 @@ struct SetupWateringStatusResponse {
     message: Option<String>,
     event: Option<SetupWateringEvent>,
     actuator_status: Option<SetupActuatorStatus>,
+    setup_watering: Option<SetupWateringAttempt>,
     zone: Option<SetupZone>,
     node: Option<SetupNode>,
 }
@@ -2058,6 +2088,97 @@ mod tests {
     }
 
     #[test]
+    fn setup_bootstrap_carries_setup_watering_attempt_to_frontend_json() {
+        let parsed: SetupBootstrapResponse = serde_json::from_value(json!({
+            "status": {
+                "connection_ready": true,
+                "first_zone_ready": true,
+                "watering_targets_ready": true,
+                "zone_ready": true,
+                "detected_node_ready": true,
+                "assigned_node_ready": true,
+                "reading_ready": true,
+                "calibration_ready": true,
+                "watering_ready": false
+            },
+            "setup_watering": {
+                "state": "in_progress",
+                "complete": false,
+                "terminal": false,
+                "outcome": "in_progress",
+                "message": "Watering is still in progress.",
+                "idempotency_key": "setup-key-1",
+                "target_matches_current": true,
+                "event": {
+                    "id": 42,
+                    "zone_id": "zone1",
+                    "node_id": "sensor-zone1-ch0",
+                    "command": "start_watering",
+                    "status": "running",
+                    "reason": "setup_validation",
+                    "runtime_seconds": 10,
+                    "issued_at": "2026-07-26T12:00:00Z",
+                    "idempotency_key": "setup-key-1"
+                },
+                "target": {
+                    "kind": "node",
+                    "zone_id": "zone1",
+                    "node_id": "sensor-zone1-ch0",
+                    "irrigation_line": 1,
+                    "crop_profile_id": 7,
+                    "runtime_seconds": 10
+                }
+            },
+            "connection_setting": {},
+            "crop_profiles": [],
+            "first_zone": null,
+            "detected_node": null,
+            "assigned_node": null
+        }))
+        .unwrap();
+
+        let frontend_json = serde_json::to_value(parsed).unwrap();
+        let setup_watering = frontend_json.get("setup_watering").unwrap();
+        assert_eq!(setup_watering.get("state").unwrap(), "in_progress");
+        assert_eq!(
+            setup_watering.get("idempotency_key").unwrap(),
+            "setup-key-1"
+        );
+        assert_eq!(
+            setup_watering
+                .get("target")
+                .unwrap()
+                .get("node_id")
+                .unwrap(),
+            "sensor-zone1-ch0"
+        );
+    }
+
+    #[test]
+    fn setup_bootstrap_accepts_null_setup_watering_attempt() {
+        let parsed: SetupBootstrapResponse = serde_json::from_value(json!({
+            "status": {
+                "connection_ready": true,
+                "zone_ready": true,
+                "detected_node_ready": false,
+                "assigned_node_ready": false,
+                "reading_ready": false,
+                "calibration_ready": false,
+                "watering_ready": false
+            },
+            "setup_watering": null,
+            "connection_setting": {},
+            "crop_profiles": [],
+            "first_zone": null,
+            "detected_node": null,
+            "assigned_node": null
+        }))
+        .unwrap();
+
+        assert!(parsed.setup_watering.is_none());
+    }
+
+    #[test]
     fn setup_watering_status_carries_terminal_outcome_fields() {
         let parsed: SetupWateringStatusResponse = serde_json::from_value(json!({
             "complete": false,
@@ -2076,6 +2197,24 @@ mod tests {
                 "idempotency_key": "setup-key-1"
             },
             "actuator_status": null,
+            "setup_watering": {
+                "state": "recovery",
+                "complete": false,
+                "terminal": true,
+                "outcome": "faulted",
+                "message": "The actuator reported a watering fault.",
+                "idempotency_key": "setup-key-1",
+                "target_matches_current": true,
+                "event": null,
+                "target": {
+                    "kind": "node",
+                    "zone_id": "zone1",
+                    "node_id": "sensor-zone1-ch0",
+                    "irrigation_line": 1,
+                    "crop_profile_id": 7,
+                    "runtime_seconds": 10
+                }
+            },
             "zone": null,
             "node": null
         }))
@@ -2091,6 +2230,10 @@ mod tests {
         assert_eq!(
             parsed.event.unwrap().idempotency_key,
             "setup-key-1".to_string()
+        );
+        assert_eq!(
+            parsed.setup_watering.unwrap().outcome,
+            "faulted".to_string()
         );
     }
 

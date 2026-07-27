@@ -12,6 +12,8 @@ import {
   nextInstallerStep,
   normalizeSensorChannels,
   normalizePiUrl,
+  normalizeSetupWatering,
+  reconcileWateringStateFromBootstrap,
   retryAsyncOperation,
   wateringAttemptFromStartResponse,
 } from "./lib/installer_core.js"
@@ -824,6 +826,63 @@ const restoreSessionState = (session) => {
   state.wateringAttempt = session.wateringAttempt?.idempotencyKey ? { ...session.wateringAttempt } : null
 }
 
+const setupWateringStatusDetail = (setupWatering) => {
+  if (!setupWatering?.authoritative) {
+    return ""
+  }
+
+  const pieces = []
+  if (setupWatering.message) {
+    pieces.push(setupWatering.message)
+  }
+  if (setupWatering.recovery) {
+    pieces.push(setupWatering.recovery)
+  }
+  return pieces.join(" ")
+}
+
+const renderSetupWateringReconciliation = (setupWatering) => {
+  if (!setupWatering?.authoritative) {
+    return
+  }
+
+  const target = setupWatering.raw?.target
+  const targetLabel = target?.node_id || target?.zone_id || state.bootstrap?.first_zone?.name || state.bootstrap?.first_zone?.zone_id || "the setup target"
+  const detail = setupWateringStatusDetail(setupWatering)
+
+  if (setupWatering.state === "completed") {
+    elements.wateringDetailSummary.textContent = `Rails confirmed completed watering for ${targetLabel}.`
+    renderStatus(elements.wateringStatus, buildStatus({
+      summary: "The Pi has confirmed the setup watering validation.",
+      detail,
+    }))
+  } else if (setupWatering.state === "in_progress") {
+    elements.wateringDetailSummary.textContent = `Rails is tracking watering for ${targetLabel}.`
+    renderStatus(elements.wateringStatus, buildStatus({
+      summary: "A setup watering validation is still in progress.",
+      detail,
+    }))
+  } else if (setupWatering.state === "recovery" || setupWatering.state === "invalidated" || setupWatering.state === "malformed") {
+    elements.wateringDetailSummary.textContent = `Setup watering is not confirmed for ${targetLabel}.`
+    renderStatus(elements.wateringStatus, buildStatus({
+      summary: setupWatering.state === "invalidated"
+        ? "The configured watering target changed."
+        : "Setup watering needs recovery before continuing.",
+      detail: setupWatering.message,
+      recovery: setupWatering.recovery,
+    }))
+  } else if (setupWatering.state === "superseded" || setupWatering.state === "no_attempt") {
+    elements.wateringDetailSummary.textContent = "No current setup watering validation is confirmed."
+    renderStatus(elements.wateringStatus, buildStatus({
+      summary: setupWatering.state === "superseded"
+        ? "The previous setup watering attempt was superseded."
+        : "No setup watering validation has been started.",
+      detail: setupWatering.message,
+      recovery: setupWatering.recovery,
+    }))
+  }
+}
+
 const applyBootstrap = (bootstrap) => {
   state.bootstrap = bootstrap
   const sensorDevice = bootstrap.assigned_node?.channels?.length ? bootstrap.assigned_node : bootstrap.detected_node
@@ -845,10 +904,20 @@ const applyBootstrap = (bootstrap) => {
     : state.actuatorNodeId
   state.completed.sensor = Boolean(bootstrap.status?.assigned_node_ready) || state.completed.sensor
   state.completed.calibration = Boolean(bootstrap.status?.calibration_ready)
-  state.completed.watering = Boolean(bootstrap.status?.watering_ready)
+  if (!Object.prototype.hasOwnProperty.call(bootstrap, "setup_watering")) {
+    state.completed.watering = Boolean(bootstrap.status?.watering_ready)
+  }
+  const wateringReconciliation = reconcileWateringStateFromBootstrap({
+    bootstrap,
+    completed: state.completed,
+    wateringAttempt: state.wateringAttempt,
+  })
+  state.completed = wateringReconciliation.completed
+  state.wateringAttempt = wateringReconciliation.wateringAttempt
   setConnectionForm(bootstrap.connection_setting)
   renderCropProfiles(bootstrap.crop_profiles)
   setZoneForm(bootstrap.first_zone)
+  renderSetupWateringReconciliation(wateringReconciliation.setupWatering)
 }
 
 const currentResumeStep = () => {
@@ -878,7 +947,9 @@ const sensorAssignedReady = () => Boolean(state.bootstrap?.status?.assigned_node
 const readingReady = () => state.completed.reading
 const calibrationReady = () => Boolean(state.bootstrap?.status?.calibration_ready) || state.completed.calibration
 const wateringReady = () => effectiveWateringDone({
-  status: state.bootstrap?.status,
+  status: Object.prototype.hasOwnProperty.call(state.bootstrap || {}, "setup_watering")
+    ? { ...(state.bootstrap?.status || {}), setup_watering: state.bootstrap.setup_watering }
+    : state.bootstrap?.status,
   completed: state.completed,
   wateringAttempt: state.wateringAttempt,
 })
@@ -1301,6 +1372,7 @@ const refreshBootstrapFromPi = async () => {
     },
   )
   applyBootstrap(bootstrap)
+  void resumeAuthoritativeWateringPoll("bootstrap_refresh")
 }
 
 const resumeInstallerSession = async () => {
@@ -1345,6 +1417,7 @@ const resumeInstallerSession = async () => {
     state.piVerifiedUrl = savedSession.piVerifiedUrl
     elements.wizardUrl.value = savedSession.piVerifiedUrl
     applyBootstrap(bootstrap)
+    void resumeAuthoritativeWateringPoll("session_resume")
 
     if (state.provisioned.sensor && !state.completed.sensor && !state.messages.sensor) {
       state.messages.sensor = "Sensor provisioning was restored from the previous installer session. Move the sensor Pico to the real probe hardware, then wait for it to appear on the Pi."
@@ -2028,6 +2101,96 @@ const waitForWateringCompletion = async (zone, target, idempotencyKey = "") => {
   throw new Error(`Timed out waiting for the watering cycle on ${target?.name || target?.nodeId || zone.name || zone.zone_id}.`)
 }
 
+const setupWateringPollContext = (setupWatering) => {
+  const rawTarget = setupWatering.raw?.target || {}
+  const event = setupWatering.raw?.event || {}
+  const firstZone = state.bootstrap?.first_zone || {}
+  const zoneId = firstZone.id || rawTarget.zone_id || event.zone_id || ""
+  const zone = {
+    ...firstZone,
+    id: zoneId,
+    zone_id: firstZone.zone_id || rawTarget.zone_id || event.zone_id || "",
+    name: firstZone.name || rawTarget.zone_id || event.zone_id || "",
+  }
+  const targetNodeId = rawTarget.node_id || event.node_id || ""
+  const target = targetNodeId
+    ? state.channels.find((channel) => channel.nodeId === targetNodeId) || {
+        nodeId: targetNodeId,
+        name: targetNodeId,
+        irrigationLine: rawTarget.irrigation_line || null,
+      }
+    : wateringTargetChannel()
+
+  return { zone, target }
+}
+
+const resumeAuthoritativeWateringPoll = async (source) => {
+  const setupWatering = normalizeSetupWatering(state.bootstrap || {})
+  if (setupWatering.state !== "in_progress" || !setupWatering.idempotencyKey || state.flashing.watering) {
+    return
+  }
+
+  const { zone, target } = setupWateringPollContext(setupWatering)
+  if (!zone.id) {
+    renderStatus(elements.wateringStatus, buildStatus({
+      summary: "The Pi has an active setup watering attempt, but the target could not be identified.",
+      recovery: "Refresh setup state before retrying. Do not start another watering cycle automatically.",
+    }))
+    return
+  }
+
+  state.flashing.watering = true
+  state.completed.watering = false
+  state.wateringAttempt = {
+    ...(state.wateringAttempt || {}),
+    idempotencyKey: setupWatering.idempotencyKey,
+    zoneId: zone.id,
+    nodeId: target?.nodeId || "",
+    status: "running",
+    outcome: "in_progress",
+  }
+  saveSessionState()
+  updateUi()
+  void logInstallerInfo("watering", "resume_poll", "Resuming Rails-authoritative watering validation polling.", {
+    source,
+    zoneId: zone.id,
+    nodeId: target?.nodeId || "",
+    idempotencyKey: setupWatering.idempotencyKey,
+  })
+
+  try {
+    await waitForWateringCompletion(zone, target, setupWatering.idempotencyKey)
+  } catch (error) {
+    state.completed.watering = false
+    state.wateringAttempt = {
+      ...(state.wateringAttempt || {}),
+      idempotencyKey: setupWatering.idempotencyKey,
+      zoneId: zone.id,
+      nodeId: target?.nodeId || "",
+      status: "recovery",
+      outcome: setupWatering.outcome || "recovery",
+      message: asErrorMessage(error),
+    }
+    saveSessionState()
+    renderStatus(elements.wateringStatus, buildStatus({
+      summary: "Setup watering could not be confirmed after resuming.",
+      detail: setupWatering.message,
+      recovery: setupWatering.recovery || "Inspect the actuator state before deliberately retrying.",
+      technicalDetail: asErrorMessage(error),
+    }))
+    void logInstallerWarn("watering", "resume_poll_recovery", "Rails-authoritative watering polling ended in recovery.", {
+      source,
+      zoneId: zone.id,
+      nodeId: target?.nodeId || "",
+      idempotencyKey: setupWatering.idempotencyKey,
+      error: asErrorMessage(error),
+    })
+  } finally {
+    state.flashing.watering = false
+    updateUi()
+  }
+}
+
 const runFirstWatering = async () => {
   const zone = state.bootstrap?.first_zone
   const target = wateringTargetChannel()
@@ -2082,16 +2245,18 @@ const runFirstWatering = async () => {
       )
     } catch (error) {
       const message = String(error)
-      if (!message.includes("Watering is already active for this target.")) {
+      if (!message.includes("Watering is already active for this target.") && !message.includes("Watering validation is already active for setup.")) {
         throw error
       }
 
-      void logInstallerWarn("watering", "uncorrelated_active_cycle", "Cannot reuse an active watering cycle without its idempotency key.", {
+      await refreshBootstrapFromPi()
+      void logInstallerWarn("watering", "rails_active_validation", "Rails reported an active setup watering validation.", {
         zoneId: zone.id,
         zoneName: zone.name || zone.zone_id,
         nodeId: target.nodeId,
+        railsAttemptKey: state.wateringAttempt?.idempotencyKey || "",
       })
-      throw new Error(`A watering cycle is already active for ${target.name || target.nodeId}, but this installer session does not have its idempotency key. Inspect the actuator state and retry deliberately when safe.`)
+      throw new Error(`A setup watering validation is already active for ${target.name || target.nodeId}. The installer refreshed Rails state and will use the Rails-authoritative attempt instead of starting another cycle.`)
     }
 
     state.wateringAttempt = wateringAttemptFromStartResponse(queued, {
@@ -2186,6 +2351,7 @@ const findPi = async () => {
     state.piVerifiedUrl = probe.url
     elements.wizardUrl.value = probe.url
     applyBootstrap(bootstrap)
+    void resumeAuthoritativeWateringPoll("pi_discovery")
     renderStatus(elements.wizardStatus, buildStatus({
       summary: `Pi found at ${probe.url}.`,
       detail: "The installer loaded the current setup state from the Pi.",

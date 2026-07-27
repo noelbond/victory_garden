@@ -9,8 +9,10 @@ import {
   effectiveFirstZoneReady,
   effectiveWateringDone,
   nextInstallerStep,
+  normalizeSetupWatering,
   normalizeSensorChannels,
   normalizePiUrl,
+  reconcileWateringStateFromBootstrap,
   wateringAttemptFromStartResponse,
 } from "../src/lib/installer_core.js"
 
@@ -236,6 +238,241 @@ test("historical local watering completion does not satisfy current in-progress 
         idempotencyKey: "attempt-123",
         status: "running",
       },
+    }),
+    { id: "step-watering", label: "Step 9: Confirm The First Watering" },
+  )
+})
+
+const readyBootstrap = (setupWatering) => ({
+  status: {
+    connection_ready: true,
+    first_zone_ready: true,
+    zone_ready: true,
+    assigned_node_ready: true,
+    reading_ready: true,
+    calibration_ready: true,
+    watering_ready: setupWatering?.complete === true,
+  },
+  crop_profiles: [{ id: 1 }],
+  setup_watering: setupWatering,
+})
+
+const setupWatering = (overrides = {}) => ({
+  state: "in_progress",
+  complete: false,
+  terminal: false,
+  outcome: "in_progress",
+  message: "Watering is still in progress.",
+  idempotency_key: "rails-key",
+  target: {
+    zone_id: "zone1",
+    node_id: "sensor-zone1-ch0",
+    irrigation_line: 1,
+  },
+  event: {
+    status: "running",
+    idempotency_key: "rails-key",
+  },
+  ...overrides,
+})
+
+test("normalizeSetupWatering distinguishes absent older Rails from explicit no attempt", () => {
+  assert.equal(normalizeSetupWatering({ status: {} }).authoritative, false)
+
+  const none = normalizeSetupWatering({ setup_watering: null })
+  assert.equal(none.authoritative, true)
+  assert.equal(none.state, "no_attempt")
+  assert.equal(none.complete, false)
+})
+
+test("bootstrap pending attempt restores the Rails key and remains incomplete", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap(setupWatering({ state: "pending", event: { status: "queued", idempotency_key: "rails-key" } })),
+    completed: { watering: true },
+    wateringAttempt: { idempotencyKey: "local-key", status: "completed" },
+  })
+
+  assert.equal(result.completed.watering, false)
+  assert.equal(result.wateringAttempt.idempotencyKey, "rails-key")
+  assert.equal(result.wateringAttempt.status, "running")
+})
+
+test("bootstrap running attempt resumes polling with Rails key", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap(setupWatering()),
+    completed: { watering: false },
+    wateringAttempt: null,
+  })
+
+  assert.equal(result.setupWatering.state, "in_progress")
+  assert.equal(result.wateringAttempt.idempotencyKey, "rails-key")
+})
+
+test("bootstrap completed restores completion after restart", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap(setupWatering({
+      state: "completed",
+      complete: true,
+      terminal: true,
+      outcome: "success",
+      message: "Watering completed successfully.",
+      event: { status: "completed", idempotency_key: "rails-key" },
+    })),
+    completed: { watering: false },
+    wateringAttempt: { idempotencyKey: "local-key", status: "running" },
+  })
+
+  assert.equal(result.completed.watering, true)
+  assert.equal(result.wateringAttempt.idempotencyKey, "rails-key")
+  assert.equal(result.wateringAttempt.status, "completed")
+})
+
+test("bootstrap recovery clears local completion and exposes recovery", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap(setupWatering({
+      state: "recovery",
+      terminal: true,
+      outcome: "faulted",
+      message: "The actuator reported a watering fault.",
+    })),
+    completed: { watering: true },
+    wateringAttempt: { idempotencyKey: "local-key", status: "completed" },
+  })
+
+  assert.equal(result.completed.watering, false)
+  assert.equal(result.setupWatering.state, "recovery")
+  assert.equal(result.setupWatering.message, "The actuator reported a watering fault.")
+  assert.equal(result.wateringAttempt.idempotencyKey, "rails-key")
+  assert.equal(result.wateringAttempt.status, "recovery")
+})
+
+test("bootstrap invalidated clears completion and exposes target-change message", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap(setupWatering({
+      state: "target_changed",
+      terminal: true,
+      outcome: "target_changed",
+      message: "The watering validation target changed.",
+    })),
+    completed: { watering: true },
+  })
+
+  assert.equal(result.completed.watering, false)
+  assert.equal(result.setupWatering.state, "invalidated")
+  assert.match(result.setupWatering.recovery, /target|validation/i)
+})
+
+test("bootstrap superseded does not resume the superseded key", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap(setupWatering({
+      state: "superseded",
+      terminal: true,
+      outcome: "superseded",
+      idempotency_key: "old-key",
+    })),
+    completed: { watering: true },
+    wateringAttempt: { idempotencyKey: "old-key", status: "running" },
+  })
+
+  assert.equal(result.completed.watering, false)
+  assert.equal(result.wateringAttempt, null)
+})
+
+test("local and Rails watering conflicts resolve in favor of Rails", () => {
+  const cases = [
+    {
+      name: "local completed plus Rails pending",
+      localCompleted: true,
+      localAttempt: { idempotencyKey: "local-key", status: "completed" },
+      rails: setupWatering({ state: "pending" }),
+      expectedCompleted: false,
+      expectedKey: "rails-key",
+    },
+    {
+      name: "local pending plus Rails completed",
+      localCompleted: false,
+      localAttempt: { idempotencyKey: "local-key", status: "running" },
+      rails: setupWatering({ state: "completed", complete: true, terminal: true, outcome: "success", event: { status: "completed", idempotency_key: "rails-key" } }),
+      expectedCompleted: true,
+      expectedKey: "rails-key",
+    },
+    {
+      name: "local recovery plus Rails pending",
+      localCompleted: false,
+      localAttempt: { idempotencyKey: "local-key", status: "recovery" },
+      rails: setupWatering({ state: "in_progress" }),
+      expectedCompleted: false,
+      expectedKey: "rails-key",
+    },
+  ]
+
+  for (const item of cases) {
+    const result = reconcileWateringStateFromBootstrap({
+      bootstrap: readyBootstrap(item.rails),
+      completed: { watering: item.localCompleted },
+      wateringAttempt: item.localAttempt,
+    })
+
+    assert.equal(result.completed.watering, item.expectedCompleted, item.name)
+    assert.equal(result.wateringAttempt.idempotencyKey, item.expectedKey, item.name)
+  }
+})
+
+test("polling request uses only the Rails-authoritative key after reconciliation", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap(setupWatering({ idempotency_key: "rails-key-b" })),
+    completed: { watering: false },
+    wateringAttempt: { idempotencyKey: "local-key-a", status: "running" },
+  })
+
+  assert.deepEqual(
+    buildWateringStatusRequest({
+      baseUrl: "http://victory-garden.local:3000/",
+      zoneId: 7,
+      nodeId: "sensor-zone1-ch0",
+      attempt: result.wateringAttempt,
+    }),
+    {
+      input: {
+        baseUrl: "http://victory-garden.local:3000/",
+        zoneId: 7,
+        nodeId: "sensor-zone1-ch0",
+        idempotencyKey: "rails-key-b",
+      },
+    },
+  )
+})
+
+test("local pending plus Rails no attempt clears stale local state", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap(null),
+    completed: { watering: true },
+    wateringAttempt: { idempotencyKey: "local-key", status: "running" },
+  })
+
+  assert.equal(result.completed.watering, false)
+  assert.equal(result.wateringAttempt, null)
+})
+
+test("malformed setup watering never yields success", () => {
+  const result = reconcileWateringStateFromBootstrap({
+    bootstrap: readyBootstrap("completed"),
+    completed: { watering: true },
+    wateringAttempt: { idempotencyKey: "local-key", status: "completed" },
+  })
+
+  assert.equal(result.setupWatering.state, "malformed")
+  assert.equal(result.completed.watering, false)
+  assert.equal(result.wateringAttempt, null)
+})
+
+test("step selection cannot be advanced by stale local watering when Rails is authoritative", () => {
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: readyBootstrap(setupWatering({ state: "running" })),
+      completed: { sensor: true, actuator: true, reading: true, calibration: true, watering: true },
+      wateringAttempt: { idempotencyKey: "local-key", status: "completed" },
     }),
     { id: "step-watering", label: "Step 9: Confirm The First Watering" },
   )

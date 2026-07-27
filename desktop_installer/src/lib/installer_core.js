@@ -341,6 +341,233 @@ export const buildWateringStatusRequest = ({ baseUrl, zoneId, nodeId = "", attem
 const eventStatus = (status = {}) => String(status.event?.status || "").toLowerCase()
 const eventKey = (status = {}) => String(status.event?.idempotency_key || status.event?.idempotencyKey || "").trim()
 const responseOutcome = (status = {}) => String(status.outcome || "").toLowerCase()
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key)
+const setupKey = (setup = {}) => String(setup.idempotency_key || setup.idempotencyKey || "").trim()
+
+export const normalizeSetupWatering = (bootstrap = {}) => {
+  if (!hasOwn(bootstrap, "setup_watering")) {
+    return {
+      supported: false,
+      authoritative: false,
+      state: "unsupported",
+      outcome: "unsupported",
+      complete: false,
+      terminal: false,
+      idempotencyKey: "",
+      message: "This Rails setup API does not expose authoritative setup watering state.",
+      recovery: "",
+      raw: undefined,
+    }
+  }
+
+  const raw = bootstrap.setup_watering
+  if (raw == null) {
+    return {
+      supported: true,
+      authoritative: true,
+      state: "no_attempt",
+      outcome: "none",
+      complete: false,
+      terminal: false,
+      idempotencyKey: "",
+      message: "No setup watering validation has been started.",
+      recovery: "Run the first watering validation deliberately when the watering target is ready.",
+      raw,
+    }
+  }
+
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      supported: true,
+      authoritative: true,
+      state: "malformed",
+      outcome: "unsupported",
+      complete: false,
+      terminal: true,
+      idempotencyKey: "",
+      message: "The Pi returned setup watering state that this installer could not interpret.",
+      recovery: "Do not treat this as success. Refresh setup state or retry only after inspecting the actuator state.",
+      raw,
+    }
+  }
+
+  const rawState = String(raw.state || "").toLowerCase()
+  const outcome = String(raw.outcome || "").toLowerCase()
+  const idempotencyKey = setupKey(raw)
+  const message = raw.message || ""
+  const recovery = raw.recovery || ""
+  const terminal = Boolean(raw.terminal)
+
+  if (["none", "no_attempt"].includes(rawState) || outcome === "none") {
+    return {
+      supported: true,
+      authoritative: true,
+      state: "no_attempt",
+      outcome: "none",
+      complete: false,
+      terminal: false,
+      idempotencyKey: "",
+      message: message || "No setup watering validation has been started.",
+      recovery: recovery || "Run the first watering validation deliberately when the watering target is ready.",
+      raw,
+    }
+  }
+
+  if (rawState === "completed" || outcome === "success") {
+    if (raw.complete === true) {
+      return {
+        supported: true,
+        authoritative: true,
+        state: "completed",
+        outcome: "success",
+        complete: true,
+        terminal: true,
+        idempotencyKey,
+        message: message || "Watering completed successfully.",
+        recovery: "",
+        raw,
+      }
+    }
+
+    return {
+      supported: true,
+      authoritative: true,
+      state: "malformed",
+      outcome: "unsupported",
+      complete: false,
+      terminal: true,
+      idempotencyKey,
+      message: message || "The Pi reported completed setup watering without confirmed completion.",
+      recovery: "Do not treat this as success. Refresh setup state or retry only after inspecting the actuator state.",
+      raw,
+    }
+  }
+
+  if (["pending", "in_progress", "running"].includes(rawState) || outcome === "in_progress") {
+    return {
+      supported: true,
+      authoritative: true,
+      state: "in_progress",
+      outcome: "in_progress",
+      complete: false,
+      terminal: false,
+      idempotencyKey,
+      message: message || "Watering is still in progress.",
+      recovery,
+      raw,
+    }
+  }
+
+  if (rawState === "target_changed" || rawState === "invalidated" || outcome === "target_changed") {
+    return {
+      supported: true,
+      authoritative: true,
+      state: "invalidated",
+      outcome: "target_changed",
+      complete: false,
+      terminal: true,
+      idempotencyKey,
+      message: message || "The watering validation target changed.",
+      recovery: recovery || "Review the configured watering target, then deliberately run a new validation when safe.",
+      raw,
+    }
+  }
+
+  if (rawState === "superseded" || outcome === "superseded") {
+    return {
+      supported: true,
+      authoritative: true,
+      state: "superseded",
+      outcome: "superseded",
+      complete: false,
+      terminal: true,
+      idempotencyKey: "",
+      message: message || "This watering validation was superseded by a newer setup attempt.",
+      recovery: recovery || "Refresh setup state and use only the current Rails watering attempt.",
+      raw,
+    }
+  }
+
+  if (
+    rawState === "recovery" ||
+    terminal ||
+    ["stopped", "faulted", "timed_out", "unknown", "unsupported", "not_found", "missing_idempotency_key", "invalid_idempotency_key"].includes(outcome)
+  ) {
+    return {
+      supported: true,
+      authoritative: true,
+      state: "recovery",
+      outcome: outcome || "unsupported",
+      complete: false,
+      terminal: true,
+      idempotencyKey,
+      message: message || "The watering validation needs recovery before setup can continue.",
+      recovery: recovery || "Inspect the actuator state before deliberately retrying.",
+      raw,
+    }
+  }
+
+  return {
+    supported: true,
+    authoritative: true,
+    state: "malformed",
+    outcome: "unsupported",
+    complete: false,
+    terminal: true,
+    idempotencyKey,
+    message: message || "The Pi returned setup watering state that this installer could not interpret.",
+    recovery: recovery || "Do not treat this as success. Refresh setup state or retry only after inspecting the actuator state.",
+    raw,
+  }
+}
+
+export const wateringAttemptFromSetupWatering = (setupWatering = {}) => {
+  if (!setupWatering.idempotencyKey) {
+    return null
+  }
+
+  const target = setupWatering.raw?.target || {}
+  return {
+    idempotencyKey: setupWatering.idempotencyKey,
+    zoneId: target.zone_id || setupWatering.raw?.event?.zone_id || "",
+    nodeId: target.node_id || setupWatering.raw?.event?.node_id || "",
+    status: setupWatering.state === "completed" ? "completed" : setupWatering.state === "in_progress" ? "running" : "recovery",
+    outcome: setupWatering.outcome || "unknown",
+    message: setupWatering.message || "",
+    recovery: setupWatering.recovery || "",
+  }
+}
+
+export const reconcileWateringStateFromBootstrap = ({ bootstrap = {}, completed = {}, wateringAttempt = null } = {}) => {
+  const setupWatering = normalizeSetupWatering(bootstrap)
+  if (!setupWatering.authoritative) {
+    return {
+      setupWatering,
+      completed: { ...completed },
+      wateringAttempt,
+      changed: false,
+    }
+  }
+
+  const nextCompleted = { ...completed, watering: false }
+  let nextAttempt = null
+
+  if (setupWatering.state === "completed") {
+    nextCompleted.watering = true
+    nextAttempt = wateringAttemptFromSetupWatering(setupWatering)
+  } else if (["in_progress", "recovery", "invalidated"].includes(setupWatering.state)) {
+    nextAttempt = wateringAttemptFromSetupWatering(setupWatering)
+  }
+
+  return {
+    setupWatering,
+    completed: nextCompleted,
+    wateringAttempt: nextAttempt,
+    changed: nextCompleted.watering !== Boolean(completed.watering) ||
+      (nextAttempt?.idempotencyKey || "") !== (wateringAttempt?.idempotencyKey || "") ||
+      (nextAttempt?.status || "") !== (wateringAttempt?.status || ""),
+  }
+}
 
 export const classifyWateringStatus = (status = {}, expectedIdempotencyKey = "") => {
   const expectedKey = String(expectedIdempotencyKey || "").trim()
@@ -464,6 +691,13 @@ export const classifyWateringStatus = (status = {}, expectedIdempotencyKey = "")
 }
 
 export const effectiveWateringDone = ({ status = {}, completed = {}, wateringAttempt = null } = {}) => {
+  if (hasOwn(status, "setup_watering")) {
+    const setupWatering = normalizeSetupWatering({ setup_watering: status.setup_watering })
+    if (setupWatering.authoritative) {
+      return setupWatering.state === "completed" && setupWatering.complete === true
+    }
+  }
+
   if (wateringAttempt && wateringAttempt.status !== "completed") {
     return false
   }
@@ -475,7 +709,11 @@ export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {}, wa
   const status = bootstrap?.status || {}
   const readingDone = Boolean(completed.reading)
   const calibrationDone = Boolean(status.calibration_ready || bootstrap?.assigned_node?.calibration_configured) || Boolean(completed.calibration)
-  const wateringDone = effectiveWateringDone({ status, completed, wateringAttempt })
+  const wateringDone = effectiveWateringDone({
+    status: hasOwn(bootstrap, "setup_watering") ? { ...status, setup_watering: bootstrap.setup_watering } : status,
+    completed,
+    wateringAttempt,
+  })
   const sensorDone = Boolean(status.assigned_node_ready) || Boolean(completed.sensor)
   const actuatorDone = Boolean(completed.actuator)
 
