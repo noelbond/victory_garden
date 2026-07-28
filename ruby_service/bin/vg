@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+
+ENV["RAILS_EAGER_LOAD"] = "false"
+
+require_relative "../config/environment"
+require_relative "../lib/vg_cli"
+
+VgCli.run(ARGV)

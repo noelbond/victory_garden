@@ -3,7 +3,11 @@ require "active_support/core_ext/integer/time"
 Rails.application.configure do
   config.enable_reloading = false
 
-  config.eager_load = true
+  # The `vg` CLI (bin/vg) sets RAILS_EAGER_LOAD=false to skip this for its
+  # short-lived, single-command process — eager loading buys thread-safety
+  # for the long-running web/job services, which a one-shot CLI invocation
+  # doesn't need, and it's the majority of `vg`'s ~10s boot time on Pi hardware.
+  config.eager_load = ENV.fetch("RAILS_EAGER_LOAD", "true") != "false"
 
   config.consider_all_requests_local = false
 

@@ -263,7 +263,8 @@ RUBY_SERVICE_DATABASE_PASSWORD=$db_password
 ADMIN_API_TOKEN=$admin_api_token
 RAILS_MASTER_KEY=$master_key
 EOF
-    chmod 600 "$ENV_FILE"
+    chown "root:$RUN_USER" "$ENV_FILE"
+    chmod 640 "$ENV_FILE"
   fi
 
   grep -q '^MQTT_USERNAME=' "$ENV_FILE" || echo 'MQTT_USERNAME=victory_garden' >> "$ENV_FILE"
@@ -272,6 +273,12 @@ EOF
   if [[ -d "$FIRMWARE_BUNDLE_DIR" ]]; then
     grep -q '^VG_FIRMWARE_BUNDLE_ROOT=' "$ENV_FILE" || echo "VG_FIRMWARE_BUNDLE_ROOT=$FIRMWARE_BUNDLE_DIR" >> "$ENV_FILE"
   fi
+
+  # Re-assert ownership/permissions on every run so installs upgraded from an
+  # older install_pi.sh (root-only 600) also become readable by the run user,
+  # e.g. for `vg` and manual `bin/rails console` use.
+  chown "root:$RUN_USER" "$ENV_FILE"
+  chmod 640 "$ENV_FILE"
 }
 
 load_env_file() {
@@ -372,6 +379,7 @@ prepare_rails_db() {
       bundle exec ruby script/load_queue_schema.rb
     fi
     bundle exec bin/rails db:seed
+    bundle exec bin/rails assets:precompile
   "
 }
 
@@ -467,6 +475,11 @@ WantedBy=multi-user.target
 EOF
 }
 
+install_vg_cli() {
+  chmod +x "$REPO_ROOT/deploy/vg"
+  ln -sf "$REPO_ROOT/deploy/vg" /usr/local/bin/vg
+}
+
 restart_services() {
   systemctl disable --now victory-garden-actuator.service >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/victory-garden-actuator.service
@@ -489,6 +502,7 @@ print_status() {
   echo "Victory Garden Pi install complete."
   echo "Web UI: http://$(hostname -I | awk '{print $1}'):3000"
   echo "Health check: http://$(hostname -I | awk '{print $1}'):3000/up"
+  echo "CLI: run 'vg help' for zones/nodes/readings/network/log commands."
 }
 
 ensure_supported_platform
@@ -511,5 +525,6 @@ install_controller_service
 install_mqtt_discovery_service
 install_web_service
 install_mqtt_consumer_service
+install_vg_cli
 restart_services
 print_status

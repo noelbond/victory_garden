@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+ENV_FILE="/etc/victory_garden.env"
+
+if [[ -r "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+export RAILS_ENV=production
+export REPO_ROOT
+
+# Run through a login shell so rbenv (set up in ~/.profile / ~/.bashrc) is on
+# PATH regardless of how `vg` was invoked — interactive shell, plain `ssh
+# host vg ...`, cron, etc. Without this, `bundle` resolves to the system
+# Ruby instead of the rbenv-managed one the gems were installed into.
+exec bash -lc 'cd "$REPO_ROOT/ruby_service" && exec bundle exec bin/vg "$@"' _ "$@"
