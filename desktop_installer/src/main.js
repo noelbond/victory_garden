@@ -104,6 +104,7 @@ const elements = {
   zoneName: document.querySelector("#zone-name"),
   sensorChannelCount: document.querySelector("#sensor-channel-count"),
   zoneFrequencyHours: document.querySelector("#zone-frequency-hours"),
+  zoneIrrigationLine: document.querySelector("#zone-irrigation-line"),
   saveZone: document.querySelector("#save-zone"),
   zoneStatus: document.querySelector("#zone-status"),
   sensorDeviceStatus: document.querySelector("#sensor-device-status"),
@@ -626,6 +627,11 @@ const validateZoneForm = () => {
   const publishIntervalHours = Number(elements.zoneFrequencyHours.value)
   if (!isFinitePositiveInteger(publishIntervalHours, { minimum: 1, maximum: 168 })) {
     return "Enter a reading frequency in whole hours."
+  }
+
+  const irrigationLine = Number(elements.zoneIrrigationLine.value)
+  if (!isFinitePositiveInteger(irrigationLine, { minimum: 1, maximum: 99 })) {
+    return "Enter an irrigation line number for this bed."
   }
 
   return null
@@ -2368,6 +2374,7 @@ const saveZone = async () => {
         baseUrl: state.piVerifiedUrl,
         name: elements.zoneName.value.trim(),
         publishIntervalHours: Number(elements.zoneFrequencyHours.value),
+        irrigationLine: Number(elements.zoneIrrigationLine.value),
       },
     }, {
       attempts: 4,

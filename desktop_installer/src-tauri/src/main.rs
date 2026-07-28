@@ -314,6 +314,7 @@ struct SaveZoneInput {
     base_url: String,
     name: String,
     publish_interval_hours: u16,
+    irrigation_line: u16,
 }
 
 #[derive(Deserialize)]
@@ -1387,6 +1388,7 @@ fn save_setup_zone(input: SaveZoneInput) -> Result<SetupZoneResponse, String> {
         "zone": {
             "name": input.name,
             "publish_interval_ms": u32::from(input.publish_interval_hours) * 3_600_000,
+            "irrigation_line": input.irrigation_line,
             "active": true
         }
     })
