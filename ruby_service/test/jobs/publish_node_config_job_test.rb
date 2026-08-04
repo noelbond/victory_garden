@@ -104,4 +104,19 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
     assert_equal "error", node.reload.config_status
     assert_equal "broker unavailable", node.config_error
   end
+
+  test "marks node config status error when publish raises an MQTT::Exception" do
+    # MQTT::Exception (e.g. MQTT::NotConnectedException, a real failure mode
+    # for this call) is not a StandardError subclass -- a bare
+    # `rescue StandardError` would silently miss it entirely.
+    node = Node.create!(node_id: "pico-error-mqtt", last_seen_at: Time.current)
+
+    assert_nothing_raised do
+      with_publish_node_config_stub(->(**) { raise MQTT::NotConnectedException }) do
+        PublishNodeConfigJob.perform_now(node.id)
+      end
+    end
+
+    assert_equal "error", node.reload.config_status
+  end
 end

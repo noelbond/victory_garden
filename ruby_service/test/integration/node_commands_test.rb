@@ -36,6 +36,87 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
     assert_equal "zone1", payload[:zone_id]
     assert_equal "sensor-zone1", payload[:node_id]
     assert_match(/request-reading\z/, payload[:command_id])
+
+    # Scheduled independently of RequestReadingJob (not from inside it), so
+    # a publish failure still surfaces as a fault instead of leaving this
+    # command stuck "queued" forever and silently blocking future requests.
+    timeout_job = enqueued_jobs.find { |job| job[:job] == NodeCommandTimeoutJob }
+    timeout_payload = timeout_job[:args].first.with_indifferent_access
+    assert_equal payload[:command_id], timeout_payload[:command_id]
+    assert_equal RequestReadingJob::TIMEOUT_SECONDS, timeout_payload[:timeout_seconds]
+  end
+
+  test "request reading debounces a second call for the same node within the window" do
+    # test env runs on :null_store, which makes the debounce a no-op (every
+    # read misses), so this needs a real cache to actually observe it.
+    original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    begin
+      zone = create(:zone, zone_id: "zone1")
+      node = Node.create!(node_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+
+      assert_enqueued_jobs 1, only: RequestReadingJob do
+        post request_reading_node_path(node)
+        post request_reading_node_path(node)
+      end
+
+      first_command_id = enqueued_jobs.last[:args].first.with_indifferent_access[:command_id]
+
+      # The debounce cache window passing alone doesn't matter if the
+      # earlier command is still unresolved (status stays "queued" here
+      # since the job never actually runs against a real MQTT broker in
+      # test) -- it keeps folding into the same command instead of piling
+      # up a new one, even once the cache entry itself is gone.
+      Rails.cache.delete("reading_request_debounce:#{node.node_id}")
+      assert_no_enqueued_jobs only: RequestReadingJob do
+        post request_reading_node_path(node)
+      end
+      assert_equal "queued", NodeCommand.find_by(command_id: first_command_id).status
+
+      # Once the earlier command resolves, a fresh request is allowed again.
+      NodeCommand.find_by(command_id: first_command_id).update!(status: "acknowledged")
+      Rails.cache.delete("reading_request_debounce:#{node.node_id}")
+
+      assert_enqueued_jobs 1, only: RequestReadingJob do
+        post request_reading_node_path(node)
+      end
+
+      second_command_id = enqueued_jobs.select { |job| job[:job] == RequestReadingJob }.last[:args].first.with_indifferent_access[:command_id]
+      refute_equal first_command_id, second_command_id
+    ensure
+      Rails.cache = original_cache
+    end
+  end
+
+  test "request reading folds into an already-pending command even outside the debounce cache" do
+    zone = create(:zone, zone_id: "zone1", publish_interval_ms: 3_600_000)
+    node = Node.create!(node_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+    NodeCommand.create!(
+      zone: zone,
+      node_id: node.node_id,
+      command: "request_reading",
+      command_id: "sensor-zone1-existing-request-reading",
+      status: "command_sent",
+      issued_at: 5.seconds.ago
+    )
+
+    assert_no_enqueued_jobs only: RequestReadingJob do
+      post request_reading_node_path(node)
+    end
+
+    assert_equal 1, NodeCommand.where(node_id: node.node_id, command: "request_reading").count
+  end
+
+  test "request reading on an offline node redirects with alert and does not enqueue job" do
+    zone = create(:zone, zone_id: "zone1", publish_interval_ms: 3_600_000)
+    node = Node.create!(node_id: "sensor-zone1", zone: zone, last_seen_at: 3.hours.ago)
+
+    assert_no_enqueued_jobs only: RequestReadingJob do
+      post request_reading_node_path(node)
+    end
+
+    assert_redirected_to node_path(node)
+    assert_includes flash[:alert], "offline"
   end
 
   test "request reading from health page redirects back to health" do
@@ -47,12 +128,94 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
     assert_redirected_to health_path(health_tab: "nodes")
   end
 
+  test "manually water queues a targeted start command for a configured node" do
+    crop = create(:crop_profile, max_pulse_runtime_sec: 45)
+    zone = create(:zone, zone_id: "zone1", crop_profile: crop)
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: Time.current, irrigation_line: 1)
+
+    assert_enqueued_with(job: CommandPublishJob) do
+      post manually_water_node_path(node)
+    end
+
+    assert_redirected_to node_path(node)
+    assert_equal "Watering command queued for #{node.display_name}.", flash[:notice]
+    event = WateringEvent.order(:id).last
+    assert_equal zone, event.zone
+    assert_equal node.node_id, event.node_id
+    assert_equal "start_watering", event.command
+    assert_equal "manual_trigger", event.reason
+  end
+
+  test "manually water on unassigned node redirects with alert and does not enqueue job" do
+    node = Node.create!(node_id: "unassigned-node-water", last_seen_at: Time.current)
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post manually_water_node_path(node)
+    end
+
+    assert_redirected_to node_path(node)
+    assert_equal "Assign the node before watering it.", flash[:alert]
+  end
+
+  test "manually water on node without a pump relay assigned redirects with alert" do
+    crop = create(:crop_profile, max_pulse_runtime_sec: 45)
+    zone = create(:zone, zone_id: "zone1", crop_profile: crop)
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: Time.current)
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post manually_water_node_path(node)
+    end
+
+    assert_redirected_to node_path(node)
+    assert_equal "Assign a crop profile and pump output before watering #{node.display_name}.", flash[:alert]
+  end
+
+  test "manually water on an offline node redirects with alert and does not enqueue job" do
+    crop = create(:crop_profile, max_pulse_runtime_sec: 45)
+    zone = create(:zone, zone_id: "zone1", crop_profile: crop, publish_interval_ms: 3_600_000)
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: 3.hours.ago, irrigation_line: 1)
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post manually_water_node_path(node)
+    end
+
+    assert_redirected_to node_path(node)
+    assert_includes flash[:alert], "offline"
+  end
+
+  test "manually water while a start command is already active for the node redirects with alert" do
+    crop = create(:crop_profile, max_pulse_runtime_sec: 45)
+    zone = create(:zone, zone_id: "zone1", crop_profile: crop)
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: Time.current, irrigation_line: 1)
+    WateringCommand.start_node(node)
+    clear_enqueued_jobs
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post manually_water_node_path(node)
+    end
+
+    assert_redirected_to node_path(node)
+    assert_equal "Watering is already active for #{node.display_name}.", flash[:alert]
+  end
+
+  test "manually water from health page redirects back to health" do
+    crop = create(:crop_profile, max_pulse_runtime_sec: 45)
+    zone = create(:zone, zone_id: "zone1", crop_profile: crop)
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: Time.current, irrigation_line: 1)
+
+    post manually_water_node_path(node), params: { return_to: health_path(health_tab: "nodes") }
+
+    assert_redirected_to health_path(health_tab: "nodes")
+  end
+
   test "reboot enqueues a targeted reboot for an assigned node" do
     zone = create(:zone, zone_id: "zone1")
     node = Node.create!(node_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
 
-    assert_enqueued_with(job: RebootNodeJob) do
-      post reboot_node_path(node)
+    assert_difference -> { NodeCommand.count }, 1 do
+      assert_enqueued_with(job: RebootNodeJob) do
+        post reboot_node_path(node)
+      end
     end
 
     assert_redirected_to node_path(node)
@@ -60,6 +223,21 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
     assert_equal "zone1", payload[:zone_id]
     assert_equal "sensor-zone1", payload[:node_id]
     assert_match(/reboot\z/, payload[:command_id])
+
+    command = NodeCommand.order(:id).last
+    assert_equal zone, command.zone
+    assert_equal "sensor-zone1", command.node_id
+    assert_equal "reboot", command.command
+    assert_equal "queued", command.status
+    assert_equal payload[:command_id], command.command_id
+
+    # Scheduled independently of RebootNodeJob (not from inside it), so a
+    # publish failure still surfaces as a fault instead of leaving this
+    # command stuck "queued" forever.
+    timeout_job = enqueued_jobs.find { |job| job[:job] == NodeCommandTimeoutJob }
+    timeout_payload = timeout_job[:args].first.with_indifferent_access
+    assert_equal command.command_id, timeout_payload[:command_id]
+    assert_equal RebootNodeJob::TIMEOUT_SECONDS, timeout_payload[:timeout_seconds]
   end
 
   test "reboot from health page redirects back to health" do
@@ -88,6 +266,7 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_includes response.body, "Request Reading"
+    assert_includes response.body, "Manually Water"
     assert_includes response.body, "Reboot Node"
     assert_includes response.body, "Republish Config"
     assert_includes response.body, "Sensor Calibration"

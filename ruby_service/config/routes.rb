@@ -18,7 +18,6 @@ Rails.application.routes.draw do
 
   resources :zones do
     member do
-      post :water_now
       post :stop_watering
       post :toggle_active
     end
@@ -32,6 +31,7 @@ Rails.application.routes.draw do
       patch :unassign
       post :publish_config
       post :request_reading
+      post :manually_water
       post :reboot
       patch :crop_profile
       patch :update_calibration

@@ -1,6 +1,11 @@
 class PublishNodeConfigJob < ApplicationJob
   queue_as :default
-  retry_on StandardError, attempts: 3, wait: 5.seconds
+  # MQTT::Exception is caught explicitly alongside StandardError because the
+  # mqtt gem's exceptions inherit from Ruby's root Exception, not
+  # StandardError -- retry_on alone would silently never catch a genuine
+  # MQTT protocol/connection failure. Pre-existing gap (not introduced
+  # today), found while adding the same retry_on pattern elsewhere.
+  retry_on StandardError, MQTT::Exception, attempts: 3, wait: 5.seconds
 
   def self.current_utc_offset_hours
     Time.now.getlocal.utc_offset / 3600
@@ -23,7 +28,7 @@ class PublishNodeConfigJob < ApplicationJob
     )
 
     MqttClient.publish_node_config(node_id: device_id, payload: payload)
-  rescue StandardError => e
+  rescue StandardError, MQTT::Exception => e
     error_node_ids = siblings.present? ? siblings.map(&:id) : Array(node&.id)
     Node.where(id: error_node_ids).update_all(
       config_status: "error",

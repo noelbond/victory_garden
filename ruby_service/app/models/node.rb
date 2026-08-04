@@ -104,6 +104,10 @@ class Node < ApplicationRecord
     zone&.expected_publish_interval_seconds || [Zone::DEFAULT_PUBLISH_INTERVAL_MS / 1000.0, 1.0].max
   end
 
+  def offline?
+    Zone.freshness_for(last_seen_at, expected_publish_interval_seconds) == "offline"
+  end
+
   def latest_sensor_reading
     SensorReading.where(node_id: node_id).order(recorded_at: :desc).first
   end

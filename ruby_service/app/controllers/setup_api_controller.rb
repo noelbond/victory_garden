@@ -121,20 +121,13 @@ class SetupApiController < ApplicationController
       return
     end
 
-    requested_at = Time.current.utc
-    command_id = "#{node.node_id}-#{requested_at.strftime('%Y%m%dT%H%M%SZ')}-request-reading"
+    result = queue_reading_request(node)
 
-    RequestReadingJob.perform_later(
-      zone_id: node.zone.zone_id,
-      command_id: command_id,
-      node_id: node.node_id
-    )
-
-    next_wake_at = node.next_expected_wake_at(reference_time: requested_at)
+    next_wake_at = node.next_expected_wake_at(reference_time: Time.current.utc)
     render json: {
       queued: true,
-      command_id: command_id,
-      requested_at: requested_at.iso8601,
+      command_id: result[:command_id],
+      requested_at: result[:requested_at],
       next_expected_wake_at: next_wake_at&.utc&.iso8601,
       message: reading_request_notice_for(node),
       node: node_payload(node)

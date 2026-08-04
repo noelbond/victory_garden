@@ -1,0 +1,53 @@
+require "test_helper"
+
+class NodeCommandTimeoutJobTest < ActiveSupport::TestCase
+  test "marks a non-terminal command as timeout and records a fault" do
+    zone = create(:zone)
+    command = NodeCommand.create!(
+      zone: zone,
+      node_id: "combined-zone1-ch0",
+      command: "reboot",
+      command_id: "combined-zone1-ch0-timeout-001",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+
+    assert_difference -> { Fault.count }, 1 do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "timeout", command.reload.status
+
+    fault = Fault.order(:id).last
+    assert_equal zone, fault.zone
+    assert_equal "combined-zone1-ch0", fault.node_id
+    assert_equal "NODE_COMMAND_TIMEOUT", fault.fault_code
+    assert_includes fault.detail, "30s"
+    assert_includes fault.detail, command.command_id
+  end
+
+  test "does nothing for an already acknowledged command" do
+    zone = create(:zone)
+    command = NodeCommand.create!(
+      zone: zone,
+      node_id: "combined-zone1-ch0",
+      command: "reboot",
+      command_id: "combined-zone1-ch0-timeout-002",
+      status: "acknowledged",
+      issued_at: Time.current,
+      acknowledged_at: Time.current
+    )
+
+    assert_no_difference -> { Fault.count } do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "acknowledged", command.reload.status
+  end
+
+  test "does nothing when the command cannot be found" do
+    assert_no_difference -> { Fault.count } do
+      NodeCommandTimeoutJob.perform_now(command_id: "missing-command", timeout_seconds: 30)
+    end
+  end
+end

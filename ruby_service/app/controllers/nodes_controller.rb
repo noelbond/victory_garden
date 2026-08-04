@@ -51,7 +51,7 @@ class NodesController < ApplicationController
   ].freeze
   DEFAULT_COLUMNS = TABLE_COLUMNS.map(&:first).freeze
 
-  before_action :set_node, only: %i[show readings assign unassign publish_config request_reading reboot crop_profile update_calibration]
+  before_action :set_node, only: %i[show readings assign unassign publish_config request_reading manually_water reboot crop_profile update_calibration]
   before_action :load_show_dependencies, only: %i[show update_calibration]
 
   def index
@@ -125,21 +125,56 @@ class NodesController < ApplicationController
 
   def request_reading
     return unless require_assigned_zone_for_command("Assign the node before requesting a reading.")
+    return unless require_online_for_command("#{@node.display_name} hasn't reported in a while and appears offline; a reading request would likely just time out.")
 
-    RequestReadingJob.perform_later(
-      zone_id: @node.zone.zone_id,
-      command_id: "#{@node.node_id}-#{Time.current.utc.strftime('%Y%m%dT%H%M%SZ')}-request-reading",
-      node_id: @node.node_id
-    )
+    queue_reading_request(@node)
     redirect_to resolved_return_path, notice: reading_request_notice_for(@node)
+  end
+
+  def manually_water
+    return unless require_assigned_zone_for_command("Assign the node before watering it.")
+    return unless require_online_for_command("#{@node.display_name} hasn't reported in a while and appears offline; watering would likely just time out.")
+
+    unless @node.watering_configured?
+      redirect_to resolved_return_path, alert: "Assign a crop profile and pump output before watering #{@node.display_name}."
+      return
+    end
+
+    if @node.zone.watering_events.blocking_start_commands.where(node_id: @node.node_id).exists?
+      redirect_to resolved_return_path, alert: "Watering is already active for #{@node.display_name}."
+      return
+    end
+
+    WateringCommand.start_node(@node)
+    redirect_to resolved_return_path, notice: "Watering command queued for #{@node.display_name}."
   end
 
   def reboot
     return unless require_assigned_zone_for_command("Assign the node before sending a reboot command.")
 
+    issued_at = Time.current
+    command_id = "#{@node.node_id}-#{issued_at.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}-reboot"
+
+    NodeCommand.create!(
+      zone: @node.zone,
+      node_id: @node.node_id,
+      command: "reboot",
+      command_id: command_id,
+      status: "queued",
+      issued_at: issued_at
+    )
+
+    # Scheduled independently of RebootNodeJob's own success so a publish
+    # failure (even after that job's own retries are exhausted) still
+    # surfaces as a visible NODE_COMMAND_TIMEOUT fault instead of leaving
+    # this command stuck "queued" forever.
+    NodeCommandTimeoutJob
+      .set(wait: RebootNodeJob::TIMEOUT_SECONDS.seconds)
+      .perform_later(command_id: command_id, timeout_seconds: RebootNodeJob::TIMEOUT_SECONDS)
+
     RebootNodeJob.perform_later(
       zone_id: @node.zone.zone_id,
-      command_id: "#{@node.node_id}-#{Time.current.utc.strftime('%Y%m%dT%H%M%SZ')}-reboot",
+      command_id: command_id,
       node_id: @node.node_id
     )
     redirect_to resolved_return_path, notice: "Node reboot queued."
@@ -169,6 +204,15 @@ class NodesController < ApplicationController
 
   def require_assigned_zone_for_command(message)
     if @node.zone.blank?
+      redirect_to resolved_return_path, alert: message
+      return false
+    end
+
+    true
+  end
+
+  def require_online_for_command(message)
+    if @node.offline?
       redirect_to resolved_return_path, alert: message
       return false
     end

@@ -89,6 +89,73 @@ class ApplicationController < ActionController::Base
     "Reading request queued. The sleeping Pico will receive it on its next scheduled wake. Restart the Pico if you need a reading immediately."
   end
 
+  READING_REQUEST_DEBOUNCE_SECONDS = 30
+
+  # request_reading has no way to tell "the Pi is slow to respond" apart
+  # from "the request failed" — callers (the desktop installer in
+  # particular) retry on any slow/lost HTTP response, and the retained MQTT
+  # command itself gets redelivered to a node on every reconnect. Without
+  # this guard, a single slow network blip fans out into several real
+  # commands sent to the physical hardware. Debouncing per node_id for a
+  # short window makes a retried/duplicate call return the same in-flight
+  # command instead of queuing a new one.
+  def queue_reading_request(node)
+    cache_key = "reading_request_debounce:#{node.node_id}"
+    if (cached = Rails.cache.read(cache_key))
+      return cached.merge(deduped: true)
+    end
+
+    # Beyond the short-window debounce above (retries/redelivery of the SAME
+    # attempt), also fold in behind a still-unresolved earlier request rather
+    # than queuing a new one -- avoids piling up commands against a node
+    # that's slow to respond or offline; the existing one will either land
+    # or time out into a visible fault on its own.
+    pending = NodeCommand.where(
+      node_id: node.node_id,
+      command: "request_reading",
+      status: NodeCommand::STATUSES - NodeCommand::TERMINAL_STATUSES
+    ).order(issued_at: :desc).first
+
+    if pending
+      result = { command_id: pending.command_id, requested_at: pending.issued_at.utc.iso8601 }
+      Rails.cache.write(cache_key, result, expires_in: READING_REQUEST_DEBOUNCE_SECONDS)
+      return result.merge(deduped: true)
+    end
+
+    requested_at = Time.current.utc
+    command_id = "#{node.node_id}-#{requested_at.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}-request-reading"
+
+    NodeCommand.create!(
+      zone: node.zone,
+      node_id: node.node_id,
+      command: "request_reading",
+      command_id: command_id,
+      status: "queued",
+      issued_at: requested_at
+    )
+
+    result = { command_id: command_id, requested_at: requested_at.iso8601 }
+    Rails.cache.write(cache_key, result, expires_in: READING_REQUEST_DEBOUNCE_SECONDS)
+
+    # Scheduled independently of RequestReadingJob's own success so a
+    # publish failure (even after that job's own retries are exhausted)
+    # still surfaces as a visible NODE_COMMAND_TIMEOUT fault and clears the
+    # pending-command check above, instead of leaving this command stuck
+    # "queued" forever and silently blocking every future request for this
+    # node.
+    NodeCommandTimeoutJob
+      .set(wait: RequestReadingJob::TIMEOUT_SECONDS.seconds)
+      .perform_later(command_id: command_id, timeout_seconds: RequestReadingJob::TIMEOUT_SECONDS)
+
+    RequestReadingJob.perform_later(
+      zone_id: node.zone.zone_id,
+      command_id: command_id,
+      node_id: node.node_id
+    )
+
+    result.merge(deduped: false)
+  end
+
   def connection_settings_complete?(setting)
     return false unless setting.present? && setting.mqtt_host.present? && setting.mqtt_port.present?
 
@@ -100,7 +167,7 @@ class ApplicationController < ActionController::Base
   end
 
   def onboarding_zone_complete?
-    Node.assigned.where.not(irrigation_line: nil).exists? || Zone.where.not(irrigation_line: nil).exists?
+    Zone.exists?
   end
 
   def onboarding_reading_complete?

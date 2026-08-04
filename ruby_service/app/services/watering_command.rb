@@ -53,7 +53,23 @@ class WateringCommand
       status: "queued"
     )
 
+    # Scheduled independently of CommandPublishJob's own success (even after
+    # that job's own retries are exhausted) so a publish failure still
+    # surfaces as a visible ACTUATOR_TIMEOUT fault instead of leaving this
+    # event stuck "queued" forever.
+    ActuatorCommandTimeoutJob
+      .set(wait: timeout_window.seconds)
+      .perform_later(idempotency_key: payload[:idempotency_key], timeout_seconds: timeout_window)
+
     CommandPublishJob.perform_later(payload)
     Result.new(event: event, payload: payload)
+  end
+
+  private
+
+  def timeout_window
+    return 30 unless @runtime_seconds.to_i.positive?
+
+    [@runtime_seconds.to_i + 30, 60].max
   end
 end

@@ -278,4 +278,25 @@ class NodeTest < ActiveSupport::TestCase
       node.destroy!
     end
   end
+
+  test "offline? is false when last seen within the expected interval" do
+    zone = create(:zone, publish_interval_ms: 3_600_000)
+    node = Node.create!(valid_attrs.merge(zone: zone, last_seen_at: 10.minutes.ago))
+
+    assert_not node.offline?
+  end
+
+  test "offline? is false when stale but within twice the expected interval" do
+    zone = create(:zone, publish_interval_ms: 3_600_000)
+    node = Node.create!(valid_attrs.merge(zone: zone, last_seen_at: 90.minutes.ago))
+
+    assert_not node.offline?
+  end
+
+  test "offline? is true when last seen beyond twice the expected interval" do
+    zone = create(:zone, publish_interval_ms: 3_600_000)
+    node = Node.create!(valid_attrs.merge(zone: zone, last_seen_at: 3.hours.ago))
+
+    assert node.offline?
+  end
 end
