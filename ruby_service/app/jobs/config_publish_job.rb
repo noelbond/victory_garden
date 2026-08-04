@@ -1,6 +1,24 @@
 class ConfigPublishJob < ApplicationJob
   queue_as :default
 
+  # This is a fleet-wide broadcast (every node's zone/crop/watering config),
+  # not scoped to one zone -- a failure here silently leaves every node
+  # running stale config with no visible signal otherwise. The block form of
+  # retry_on runs once retries are truly exhausted (not on every individual
+  # attempt), so this creates one fault per genuine outage, not one per retry.
+  # MQTT::Exception is caught explicitly alongside StandardError because the
+  # mqtt gem's exceptions (ProtocolException, NotConnectedException, etc.)
+  # inherit from Ruby's root Exception, not StandardError -- retry_on alone
+  # would silently never catch a genuine MQTT protocol/connection failure.
+  retry_on StandardError, MQTT::Exception, attempts: 3, wait: 5.seconds do |_job, error|
+    Fault.create!(
+      zone: nil,
+      fault_code: "CONFIG_PUBLISH_FAILED",
+      detail: "System-wide config publish failed after 3 attempts: #{error.class}: #{error.message}",
+      recorded_at: Time.current
+    )
+  end
+
   def perform
     zones = Zone.where(active: true).includes(:crop_profile, :nodes).order(:zone_id)
     control_nodes = Node.assigned.includes(:crop_profile, zone: :crop_profile).where.not(irrigation_line: nil).order(:irrigation_line, :node_id)

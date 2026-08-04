@@ -65,6 +65,26 @@ module ApplicationHelper
     "STALE_SENSOR" => {
       description: "A sensor reading was considered too old to use safely for automatic decisions.",
       fix: "Bring the sensor node back online and confirm a fresh reading is ingested before trusting automation."
+    },
+    "NODE_COMMAND_TIMEOUT" => {
+      description: "The system sent a command (such as reboot) to a node but never received an acknowledgement. The command may have been dropped in transit and never reached the device.",
+      fix: "Confirm the node is online and connected to MQTT, then retry the command from the node's page."
+    },
+    "CONFIG_PUBLISH_FAILED" => {
+      description: "The system-wide zone/crop/watering config broadcast failed after 3 attempts, most likely because the MQTT broker was unreachable. Every node may be running stale config until the next successful publish.",
+      fix: "Confirm the MQTT broker is reachable, then trigger a config publish again by editing any zone, crop profile, or node assignment."
+    },
+    "SENSOR_INGEST_FAILED" => {
+      description: "An incoming sensor reading could not be saved, most likely because the payload was malformed or referenced an unknown node or zone.",
+      fix: "Check the node's firmware version and provisioning (node_id/zone_id), and check the Rails log for the specific payload that failed."
+    },
+    "ACTUATOR_STATUS_INGEST_FAILED" => {
+      description: "An incoming actuator status update could not be saved, most likely because the payload was malformed or referenced an unknown node or zone.",
+      fix: "Check the node's firmware version and provisioning (node_id/zone_id), and check the Rails log for the specific payload that failed."
+    },
+    "CONTROLLER_EVENT_INGEST_FAILED" => {
+      description: "An incoming controller event could not be saved, most likely because the payload was malformed or referenced an unknown zone.",
+      fix: "Check the greenhouse controller's logs for the event that failed, and check the Rails log for the specific payload."
     }
   }.freeze
 
@@ -189,5 +209,20 @@ module ApplicationHelper
     else
       state.to_s.humanize
     end
+  end
+
+  def node_seen_freshness_state(node)
+    return "offline" if node.last_seen_at.blank?
+
+    Zone.freshness_for(node.last_seen_at, node.expected_publish_interval_seconds)
+  end
+
+  def reading_freshness_state_for(zone, latest_readings_by_node_id)
+    return "offline" if zone.blank?
+
+    reading = zone.nodes.filter_map { |node| latest_readings_by_node_id[node.node_id] }.max_by(&:recorded_at)
+    return "offline" if reading.blank? || reading.recorded_at.blank?
+
+    zone.reading_freshness(reading.recorded_at)
   end
 end

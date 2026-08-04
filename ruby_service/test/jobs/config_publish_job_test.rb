@@ -22,6 +22,38 @@ class ConfigPublishJobTest < ActiveSupport::TestCase
     stub_singleton_method(MqttClient, :publish_actuator_config, callable, &block)
   end
 
+  def simulate_exhausted_retries(job)
+    job.exception_executions = { [StandardError, MQTT::Exception].to_s => 2 }
+  end
+
+  test "creates a zoneless fault after exhausting retries on a publish failure" do
+    job = ConfigPublishJob.new
+    simulate_exhausted_retries(job)
+
+    assert_difference -> { Fault.count }, 1 do
+      with_publish_config_stub(->(_payload) { raise MQTT::NotConnectedException }) do
+        assert_nothing_raised { job.perform_now }
+      end
+    end
+
+    fault = Fault.order(:id).last
+    assert_nil fault.zone
+    assert_equal "CONFIG_PUBLISH_FAILED", fault.fault_code
+    assert_includes fault.detail, "3 attempts"
+  end
+
+  test "retries instead of raising or creating a fault before attempts are exhausted" do
+    job = ConfigPublishJob.new
+
+    assert_no_difference -> { Fault.count } do
+      with_publish_config_stub(->(_payload) { raise MQTT::NotConnectedException }) do
+        assert_enqueued_with(job: ConfigPublishJob) do
+          assert_nothing_raised { job.perform_now }
+        end
+      end
+    end
+  end
+
   test "publishes crops referenced by active zones even when the crop is inactive" do
     crop = create(:crop_profile, crop_id: "tomato", active: false)
     zone = create(:zone, zone_id: "zone1", crop_profile: crop, active: true, irrigation_line: 1)
