@@ -38,6 +38,8 @@ venv/
 node_modules/
 desktop_installer/dist/
 desktop_installer/src-tauri/target/
+desktop_installer_combined/dist/
+desktop_installer_combined/src-tauri/target/
 
 # Ruby / Rails
 *.gem

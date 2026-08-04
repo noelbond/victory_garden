@@ -266,6 +266,11 @@ export const retryAsyncOperation = async ({
   throw lastError
 }
 
+// The combined board reports sensor channels the same way the split sensor
+// board does, so it needs the same publish-interval field the sensor kind
+// gets.
+const KINDS_WITH_PUBLISH_INTERVAL = new Set(["sensor", "combined"])
+
 // The firmware's day/night active-window check (VG_DAY_START_HOUR..VG_DAY_END_HOUR)
 // runs against local time computed as epoch + utc_offset_hours*3600, but this
 // field was never included in the provisioning payload — every node defaulted
@@ -316,18 +321,17 @@ export const buildPicoProvisioningPayload = ({ bootstrap, piVerifiedUrl, form, k
     mqttPassword: provisioningMqttPassword,
     nodeId: `${kind}-${zone.zone_id}`,
     zoneId: zone.zone_id,
-    publishIntervalMs: kind === "sensor" ? zone.publish_interval_ms : null,
+    publishIntervalMs: KINDS_WITH_PUBLISH_INTERVAL.has(kind) ? zone.publish_interval_ms : null,
     utcOffsetHours: localUtcOffsetHours(),
   }
 }
 
 export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {} }) => {
   const status = bootstrap?.status || {}
-  const readingDone = Boolean(completed.reading)
+  const readingDone = Boolean(completed.reading) || Boolean(completed.readingSkipped)
   const calibrationDone = Boolean(status.calibration_ready || bootstrap?.assigned_node?.calibration_configured) || Boolean(completed.calibration)
-  const wateringDone = Boolean(status.watering_ready) || Boolean(completed.watering)
-  const sensorDone = Boolean(status.assigned_node_ready) || Boolean(completed.sensor)
-  const actuatorDone = Boolean(completed.actuator)
+  const wateringDone = Boolean(status.watering_ready) || Boolean(completed.watering) || Boolean(completed.wateringSkipped)
+  const combinedDone = Boolean(status.assigned_node_ready) || Boolean(completed.combined)
 
   if (!piVerifiedUrl) {
     return { id: "step-pi", label: "Step 1: Find The Pi" }
@@ -341,20 +345,17 @@ export const nextInstallerStep = ({ piVerifiedUrl, bootstrap, completed = {} }) 
   if (!status.zone_ready) {
     return { id: "step-zone", label: "Step 4: Create The First Bed" }
   }
-  if (!sensorDone) {
-    return { id: "step-sensor", label: "Step 5: Flash The Sensor Pico" }
-  }
-  if (!actuatorDone) {
-    return { id: "step-actuator", label: "Step 6: Flash The Actuator Pico" }
+  if (!combinedDone) {
+    return { id: "step-combined", label: "Step 5: Flash The Combined Pico" }
   }
   if (!calibrationDone) {
-    return { id: "step-calibration", label: "Step 7: Confirm And Calibrate The Sensors" }
+    return { id: "step-calibration", label: "Step 6: Confirm And Calibrate The Sensors" }
   }
   if (!readingDone) {
-    return { id: "step-reading", label: "Step 8: Confirm The Calibrated Reading" }
+    return { id: "step-reading", label: "Step 7: Confirm The Calibrated Reading" }
   }
   if (!wateringDone) {
-    return { id: "step-watering", label: "Step 9: Confirm The First Watering" }
+    return { id: "step-watering", label: "Step 8: Confirm The First Watering" }
   }
   return { id: "step-finish", label: "Finish: Open The Dashboard" }
 }

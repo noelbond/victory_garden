@@ -314,7 +314,11 @@ struct SaveZoneInput {
     base_url: String,
     name: String,
     publish_interval_hours: u16,
-    irrigation_line: u16,
+    // Legacy zone-level pump assignment, superseded by the per-channel
+    // irrigation_line assignment done later (UpdateSetupNodeInput). The
+    // installer no longer collects this in its UI; Zone#irrigation_line is
+    // nullable server-side, so omit it rather than fabricate a value.
+    irrigation_line: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -427,7 +431,7 @@ struct ProvisionOkPayload {
 }
 
 fn provisioned_channel_ids(kind: &str, payload: &ProvisionOkPayload) -> Result<Vec<String>, String> {
-    if kind != "sensor" {
+    if kind != "sensor" && kind != "combined" {
         return Ok(Vec::new());
     }
 
@@ -440,7 +444,7 @@ fn provisioned_channel_ids(kind: &str, payload: &ProvisionOkPayload) -> Result<V
     let unique: std::collections::HashSet<&String> = channels.iter().collect();
     if channels.len() != EXPECTED_SENSOR_CHANNEL_COUNT || unique.len() != EXPECTED_SENSOR_CHANNEL_COUNT {
         return Err(format!(
-            "sensor provisioning acknowledgement must contain {} unique channel ids, got {}",
+            "{kind} provisioning acknowledgement must contain {} unique channel ids, got {}",
             EXPECTED_SENSOR_CHANNEL_COUNT,
             channels.len()
         ));
@@ -471,6 +475,8 @@ fn firmware_filename(kind: &str, board: &str) -> Result<&'static str, String> {
         ("sensor", "pico2_w") => Ok("pico2_w_sensor_node.uf2"),
         ("actuator", "pico_w") => Ok("pico_w_actuator_node.uf2"),
         ("actuator", "pico2_w") => Ok("pico2_w_actuator_node.uf2"),
+        ("combined", "pico_w") => Ok("pico_w_combined_node.uf2"),
+        ("combined", "pico2_w") => Ok("pico2_w_combined_node.uf2"),
         _ => Err(format!(
             "unsupported firmware kind/board combination: {kind}/{board}"
         )),
@@ -893,12 +899,12 @@ fn runtime_diagnostics_from_lines(kind: &str, port_name: &str, lines: Vec<String
         };
     }
 
-    if contains("[wifi] connected") && kind == "sensor" {
+    if contains("[wifi] connected") && (kind == "sensor" || kind == "combined") {
         return PicoRuntimeDiagnostics {
             serial_port: Some(port_name.to_string()),
             category: "sensor_waiting_for_hardware".to_string(),
-            summary: "The sensor Pico joined Wi‑Fi, but it still has not reported usable sensor data.".to_string(),
-            detail: "Make sure the flashed sensor Pico is connected to the real probe hardware before waiting for it to appear in Victory Garden.".to_string(),
+            summary: "The Pico joined Wi‑Fi, but it still has not reported usable sensor data.".to_string(),
+            detail: "Make sure the flashed Pico is connected to the real probe hardware before waiting for it to appear in Victory Garden.".to_string(),
             recent_lines,
         };
     }

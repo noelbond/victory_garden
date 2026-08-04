@@ -48,9 +48,9 @@ test("nextInstallerStep walks the unified installer flow in order", () => {
         status: { connection_ready: true, zone_ready: true, assigned_node_ready: true },
         crop_profiles: [{ id: 1 }],
       },
-      completed: { actuator: true, calibration: true },
+      completed: { calibration: true },
     }),
-    { id: "step-reading", label: "Step 8: Confirm The Calibrated Reading" },
+    { id: "step-reading", label: "Step 7: Confirm The Calibrated Reading" },
   )
 
   assert.deepEqual(
@@ -60,7 +60,21 @@ test("nextInstallerStep walks the unified installer flow in order", () => {
         status: { connection_ready: true, zone_ready: true, assigned_node_ready: true },
         crop_profiles: [{ id: 1 }],
       },
-      completed: { actuator: true, reading: true, calibration: true, watering: true },
+      completed: { reading: true, calibration: true, watering: true },
+    }),
+    { id: "step-finish", label: "Finish: Open The Dashboard" },
+  )
+})
+
+test("nextInstallerStep treats skipped reading/watering the same as done", () => {
+  assert.deepEqual(
+    nextInstallerStep({
+      piVerifiedUrl: "http://victory-garden.local:3000/",
+      bootstrap: {
+        status: { connection_ready: true, zone_ready: true, assigned_node_ready: true },
+        crop_profiles: [{ id: 1 }],
+      },
+      completed: { calibration: true, readingSkipped: true, wateringSkipped: true },
     }),
     { id: "step-finish", label: "Finish: Open The Dashboard" },
   )
@@ -110,6 +124,31 @@ test("localUtcOffsetHours converts getTimezoneOffset minutes to whole hours, cla
   assert.equal(localUtcOffsetHours(() => ({ getTimezoneOffset: () => 0 })), 0) // UTC
   assert.equal(localUtcOffsetHours(() => ({ getTimezoneOffset: () => -900 })), 14) // clamped at firmware max
   assert.equal(localUtcOffsetHours(() => ({ getTimezoneOffset: () => 900 })), -12) // clamped at firmware min
+})
+
+test("buildPicoProvisioningPayload gives the combined kind a publish interval, like sensor", () => {
+  const payload = buildPicoProvisioningPayload({
+    bootstrap: {
+      first_zone: {
+        zone_id: "zone1",
+        publish_interval_ms: 3600000,
+      },
+      connection_setting: {
+        provisioning_mqtt_username: "installer-user",
+        provisioning_mqtt_password: "secret",
+      },
+    },
+    piVerifiedUrl: "http://192.168.4.33:3000/",
+    form: {
+      wifiSsid: "GardenNet",
+      wifiPassword: "wifi-secret",
+      mqttPort: "1883",
+    },
+    kind: "combined",
+  })
+
+  assert.equal(payload.nodeId, "combined-zone1")
+  assert.equal(payload.publishIntervalMs, 3600000)
 })
 
 test("classifyPiDiscoveryError distinguishes service startup failures", () => {
