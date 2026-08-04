@@ -1,5 +1,5 @@
 class HealthController < ApplicationController
-  helper_method :node_seen_freshness_state, :reading_freshness_state_for
+  include ApplicationHelper
 
   def show
     @mqtt_consumer_status = load_mqtt_consumer_status
@@ -23,7 +23,7 @@ class HealthController < ApplicationController
       assigned_nodes: @nodes.count(&:assigned?),
       assigned_zones: assigned_zones.count,
       stale_nodes: @nodes.count { |node| node_seen_freshness_state(node) != "ok" },
-      fresh_zone_readings: assigned_zones.count { |zone| reading_freshness_state_for(zone) == "ok" },
+      fresh_zone_readings: assigned_zones.count { |zone| reading_freshness_state_for(zone, @latest_readings) == "ok" },
       config_errors: @nodes.count { |node| node.config_status == "error" },
       config_pending: @nodes.count { |node| node.config_status == "pending" },
       open_faults: Fault.where(resolved_at: nil).count,
@@ -176,20 +176,5 @@ class HealthController < ApplicationController
     JSON.parse(File.read(path))
   rescue JSON::ParserError
     {}
-  end
-
-  def node_seen_freshness_state(node)
-    return "offline" if node.last_seen_at.blank?
-
-    Zone.freshness_for(node.last_seen_at, node.expected_publish_interval_seconds)
-  end
-
-  def reading_freshness_state_for(zone)
-    return "offline" if zone.blank?
-
-    reading = @latest_readings[zone.id]
-    return "offline" if reading.blank? || reading.recorded_at.blank?
-
-    zone.reading_freshness(reading.recorded_at)
   end
 end

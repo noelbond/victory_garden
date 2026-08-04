@@ -4,7 +4,6 @@
     <div class="muted"><%= @zone.zone_id %></div>
   </div>
   <div class="dashboard-actions">
-    <%= button_to "Water Now", water_now_zone_path(@zone), method: :post, class: "btn" %>
     <%= button_to "Stop", stop_watering_zone_path(@zone), method: :post, class: "btn secondary" %>
     <%= button_to(@zone.active ? "Disable" : "Enable", toggle_active_zone_path(@zone), method: :post, class: "btn light") %>
   </div>

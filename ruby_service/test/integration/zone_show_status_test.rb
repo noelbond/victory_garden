@@ -183,6 +183,8 @@ class ZoneShowStatusTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "zone-node-a"
     assert_includes response.body, "zone-node-b"
     assert_includes response.body, "52.0%"
+    assert_includes response.body, "Manually Water"
+    assert_includes response.body, "Request Reading"
     assert_not_includes response.body, "other-zone-node"
   end
 end

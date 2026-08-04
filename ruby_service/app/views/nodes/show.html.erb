@@ -76,6 +76,7 @@
       <% if @node.assigned? %>
         <%= button_to "Unassign", unassign_node_path(@node), method: :patch, class: "btn light" %>
         <%= button_to "Request Reading", request_reading_node_path(@node), method: :post, class: "btn light" %>
+        <%= button_to "Manually Water", manually_water_node_path(@node), method: :post, class: "btn light" %>
         <%= button_to "Reboot Node", reboot_node_path(@node), method: :post, class: "btn light" %>
       <% end %>
       <%= button_to "Republish Config", publish_config_node_path(@node), method: :post, class: "btn light" %>

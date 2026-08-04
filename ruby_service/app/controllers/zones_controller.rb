@@ -14,7 +14,7 @@ class ZonesController < ApplicationController
     [ "Every 24 hours", 86_400_000 ]
   ].freeze
 
-  before_action :set_zone, only: %i[show nodes edit update destroy water_now stop_watering toggle_active]
+  before_action :set_zone, only: %i[show nodes edit update destroy stop_watering toggle_active]
   helper_method :reading_freshness
 
   def index
@@ -70,6 +70,7 @@ class ZonesController < ApplicationController
   def nodes
     @assigned_nodes = @zone.nodes.order(:node_id)
     @latest_readings_by_node_id = latest_node_readings_for_zone(@zone)
+    @latest_actuator_statuses_by_node_id = latest_actuator_statuses_for_zone(@zone)
   end
 
   def new
@@ -105,16 +106,6 @@ class ZonesController < ApplicationController
   def destroy
     @zone.destroy
     redirect_to zones_path, notice: "Zone removed."
-  end
-
-  def water_now
-    if @zone.watering_events.blocking_start_commands.exists?
-      redirect_to @zone, alert: "Watering already active for this zone."
-      return
-    end
-
-    WateringCommand.start(@zone)
-    redirect_to @zone, notice: "Watering command queued."
   end
 
   def stop_watering
@@ -263,6 +254,16 @@ class ZonesController < ApplicationController
     rows = SensorReading
       .select("DISTINCT ON (node_id) *")
       .where(zone_id: zone.id, node_id: zone.nodes.select(:node_id))
+      .order("node_id, recorded_at DESC")
+
+    rows.index_by(&:node_id)
+  end
+
+  def latest_actuator_statuses_for_zone(zone)
+    rows = ActuatorStatus
+      .where.not(node_id: nil)
+      .where(zone_id: zone.id, node_id: zone.nodes.select(:node_id))
+      .select("DISTINCT ON (node_id) actuator_statuses.*")
       .order("node_id, recorded_at DESC")
 
     rows.index_by(&:node_id)
