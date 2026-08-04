@@ -362,6 +362,25 @@ static uint8_t line_gpio_for_index(const mqtt_node_t *node, size_t line_index) {
     return g_default_line_relay_gpios[line_index];
 }
 
+void actuator_relays_init_safe(const node_config_t *config) {
+    // gpio_init() leaves the pin as an input with its output latch at 0.
+    // Preload the latch with the correct OFF level *before* switching to
+    // output — otherwise, on an active-low relay board, the pin would
+    // briefly drive LOW (relay ON) the instant gpio_set_dir(GPIO_OUT) takes
+    // effect. This runs before Wi-Fi/MQTT so a relay is never left
+    // undriven while the board reconnects, including after a watchdog reset.
+    bool off_level = !config->actuator_relay_active_high;
+    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
+        uint8_t gpio = (i == 0) ? config->actuator_relay_gpio : g_default_line_relay_gpios[i];
+        gpio_init(gpio);
+        gpio_put(gpio, off_level ? 1u : 0u);
+        gpio_set_dir(gpio, GPIO_OUT);
+    }
+    printf("[actuator] relays forced to safe OFF level pre-network active_high=%d\n",
+           (int)config->actuator_relay_active_high);
+    stdio_flush();
+}
+
 static actuator_zone_assignment_t *assignment_for_zone(mqtt_node_t *node, const char *zone_id) {
     for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
         if (node->assignments[i].assigned &&
@@ -443,6 +462,21 @@ static void actuator_set_line_output(mqtt_node_t *node, uint8_t irrigation_line,
            (unsigned)gpio,
            (int)enabled,
            (int)level);
+}
+
+// Runs from an alarm IRQ, independent of the main loop. Must stay minimal —
+// no MQTT/lwIP calls, no touching node/g_runtime, nothing that can block or
+// isn't IRQ-safe. gpio/off_level were snapshotted at schedule time
+// specifically so this callback never needs to dereference node->config.
+// The main loop's own hard_deadline check (mqtt_node_poll) still runs the
+// normal stop/publish/cleanup once it next gets a chance to run — this is
+// only the safety-critical "physically turn it off now" backstop.
+static int64_t actuator_hw_cutoff_callback(alarm_id_t id, void *user_data) {
+    (void)id;
+    actuator_line_run_t *run = (actuator_line_run_t *)user_data;
+    gpio_put(run->cutoff_gpio, run->cutoff_off_level ? 1u : 0u);
+    run->hardware_cutoff_fired = true;
+    return 0;
 }
 
 static uint32_t actuator_elapsed_seconds(const actuator_line_run_t *run) {
@@ -529,13 +563,25 @@ static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone
 static void actuator_stop_with_status(mqtt_node_t *node, actuator_line_run_t *run, uint8_t irrigation_line,
                                       actuator_status_t status,
                                       const char *fault_code, const char *fault_detail) {
-    printf("[actuator] stop zone=%s line=%u status=%s fault=%s\n",
+    printf("[actuator] stop zone=%s line=%u status=%s fault=%s hw_cutoff_fired=%d\n",
            run ? run->zone_id : "unknown",
            (unsigned)irrigation_line,
            actuator_status_name(status),
-           fault_code ? fault_code : "none");
+           fault_code ? fault_code : "none",
+           run ? (int)run->hardware_cutoff_fired : 0);
     actuator_set_line_output(node, irrigation_line, false);
     if (run) {
+        // Every path that ends a run — manual stop, the software deadline
+        // check below, or this being called after the hardware alarm
+        // already fired — comes through here, so this is the one place
+        // that must cancel any outstanding alarm before the slot is
+        // cleared for reuse. Otherwise a stale alarm from THIS run could
+        // fire later and cut off a completely different run started on the
+        // same line afterward. Harmless no-op if it already fired or was
+        // never scheduled.
+        if (run->cutoff_alarm_id > 0) {
+            cancel_alarm(run->cutoff_alarm_id);
+        }
         mqtt_publish_actuator_status_now(node, run->zone_id, run->node_id, run->idempotency_key, run, status, fault_code, fault_detail);
         memset(run, 0, sizeof(*run));
     }
@@ -596,14 +642,36 @@ static void mqtt_request_cb(void *arg, err_t err) {
     }
 }
 
+static bool zone_id_already_seen(const char (*seen)[VG_MAX_ZONE_ID_LEN], size_t seen_count, const char *zone_id) {
+    for (size_t i = 0; i < seen_count; ++i) {
+        if (strcmp(seen[i], zone_id) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void subscribe_assigned_zone_topics(mqtt_node_t *node) {
     if (!g_runtime.client || !g_runtime.connected || !mqtt_client_is_connected(g_runtime.client)) {
         return;
     }
 
+    // Multiple irrigation lines are commonly assigned to the same zone, so
+    // subscribe once per unique zone_id rather than once per line -- each
+    // subscribe consumes one of MQTT_REQ_MAX_IN_FLIGHT request slots until
+    // the broker's SUBACK arrives, and re-subscribing to the same topic
+    // repeatedly back-to-back (up to VG_MAX_IRRIGATION_LINES=12 times) was
+    // exhausting that pool.
+    char seen_zone_ids[VG_MAX_IRRIGATION_LINES][VG_MAX_ZONE_ID_LEN];
+    size_t seen_count = 0;
+
     for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
         const actuator_zone_assignment_t *assignment = &node->assignments[i];
         if (!assignment->assigned || assignment->zone_id[0] == '\0') {
+            continue;
+        }
+
+        if (zone_id_already_seen(seen_zone_ids, seen_count, assignment->zone_id)) {
             continue;
         }
 
@@ -614,6 +682,9 @@ static void subscribe_assigned_zone_topics(mqtt_node_t *node) {
         if (err != ERR_OK) {
             set_error(node, "zone command subscribe failed");
         }
+
+        snprintf(seen_zone_ids[seen_count], VG_MAX_ZONE_ID_LEN, "%s", assignment->zone_id);
+        seen_count++;
     }
 }
 
@@ -848,6 +919,21 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
     run->started_at_ms = to_ms_since_boot(get_absolute_time());
     run->runtime_seconds = (uint32_t)runtime_seconds;
     run->hard_deadline = make_timeout_time_ms((uint32_t)runtime_seconds * 1000u);
+
+    // Independent hardware backstop for hard_deadline — see
+    // actuator_hw_cutoff_callback. Snapshot the GPIO/level now so the ISR
+    // never has to touch node->config.
+    run->cutoff_gpio = line_gpio_for_index(node, (size_t)(assignment->irrigation_line - 1u));
+    run->cutoff_off_level = !node->config->actuator_relay_active_high;
+    run->hardware_cutoff_fired = false;
+    run->cutoff_alarm_id = add_alarm_in_ms(
+        (uint32_t)runtime_seconds * 1000u, actuator_hw_cutoff_callback, run, true);
+    if (run->cutoff_alarm_id < 0) {
+        printf("[actuator] WARNING: hardware cutoff alarm scheduling failed line=%u — software deadline check is the only cutoff for this run\n",
+               (unsigned)assignment->irrigation_line);
+        stdio_flush();
+    }
+
     mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL);
     actuator_set_line_output(node, assignment->irrigation_line, true);
     mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_RUNNING, NULL, NULL);

@@ -100,6 +100,24 @@ module PayloadContracts
       assert_raises(ArgumentError) { NodeState.normalize!(payload) }
     end
 
+    test "falls back to server time for the firmware's unsynced-clock sentinel timestamp" do
+      payload = load_fixture("node-state-v1.json").merge("timestamp" => "1970-01-01T00:05:32Z")
+
+      freeze_time do
+        normalized = NodeState.normalize!(payload)
+
+        assert_equal Time.current.utc, normalized["recorded_at"]
+      end
+    end
+
+    test "trusts a genuine device timestamp even if it happens to be an old date" do
+      payload = load_fixture("node-state-v1.json").merge("timestamp" => "2024-01-01T00:00:00Z")
+
+      normalized = NodeState.normalize!(payload)
+
+      assert_equal Time.iso8601("2024-01-01T00:00:00Z").utc, normalized["recorded_at"]
+    end
+
     test "rejects out-of-range moisture_percent" do
       payload = load_fixture("node-state-v1.json").merge("moisture_percent" => 101.0)
 

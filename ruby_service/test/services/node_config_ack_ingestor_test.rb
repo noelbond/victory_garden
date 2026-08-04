@@ -61,4 +61,48 @@ class NodeConfigAckIngestorTest < ActiveSupport::TestCase
     assert_equal "pending", node.config_status
     assert node.config_acknowledged_at.present?
   end
+
+  test "ack keyed by shared device id fans out to every channel node" do
+    channel0 = Node.create!(
+      node_id: "combined-zone1-ch0",
+      device_id: "combined-zone1",
+      zone: @zone,
+      last_seen_at: Time.current,
+      desired_config: { "assigned" => true, "zone_id" => "zone1" },
+      config_status: "pending"
+    )
+    channel1 = Node.create!(
+      node_id: "combined-zone1-ch1",
+      device_id: "combined-zone1",
+      zone: @zone,
+      last_seen_at: Time.current,
+      desired_config: { "assigned" => true, "zone_id" => "zone1" },
+      config_status: "pending"
+    )
+
+    payload = {
+      "node_id" => "combined-zone1",
+      "status" => "applied",
+      "timestamp" => "2026-04-06T20:00:00Z",
+      "config_version" => "2026-04-06T19:59:00Z",
+      "zone_id" => "zone1"
+    }
+
+    NodeConfigAckIngestor.new(payload).call
+
+    [channel0, channel1].each do |node|
+      node.reload
+      assert_equal "applied", node.config_status
+      assert_equal node.desired_config, node.applied_config
+      assert_equal "2026-04-06T19:59:00Z", node.config_version
+    end
+  end
+
+  test "ack with no matching node or device raises" do
+    payload = { "node_id" => "unknown-device", "status" => "applied" }
+
+    assert_raises(ActiveRecord::RecordNotFound) do
+      NodeConfigAckIngestor.new(payload).call
+    end
+  end
 end

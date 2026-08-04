@@ -43,7 +43,17 @@
 #define ETHARP_SUPPORT_STATIC_ENTRIES   1
 #define LWIP_CHKSUM_ALGORITHM           3
 #define LWIP_TIMEVAL_PRIVATE            0
-#define MQTT_OUTPUT_RINGBUF_SIZE        1024
+// Diagnosed live on the combined node (identical 4-channel back-to-back
+// publish pattern as this board): mqtt_publish()/mqtt_subscribe() grab a
+// slot from client->req_list[MQTT_REQ_MAX_IN_FLIGHT] *before* touching the
+// output ring buffer, and fail immediately with ERR_MEM if none is free --
+// the ring buffer's byte capacity was never actually the constraint.
+// MQTT_REQ_MAX_IN_FLIGHT is the real fix; MQTT_OUTPUT_RINGBUF_SIZE bumped
+// too for margin (harmless, cheap one-time heap cost) but isn't what fixed
+// it. See pico_w_combined_node/src/lwipopts.h and mqtt_node.c's
+// subscribe_assigned_zone_topics for the full writeup.
+#define MQTT_OUTPUT_RINGBUF_SIZE        4096
+#define MQTT_REQ_MAX_IN_FLIGHT          8
 #define MQTT_VAR_HEADER_BUFFER_LEN      1024
 #define SNTP_SERVER_DNS                 1
 #define SNTP_MAX_SERVERS                1

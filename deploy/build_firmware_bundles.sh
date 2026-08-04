@@ -92,5 +92,7 @@ build_bundle "firmware/pico_w_sensor_node" "pico_w_sensor_node" "pico_w" "pico_w
 build_bundle "firmware/pico_w_sensor_node" "pico_w_sensor_node" "pico2_w" "pico2_w_sensor_node.uf2"
 build_bundle "firmware/pico_w_actuator_node" "pico_w_actuator_node" "pico_w" "pico_w_actuator_node.uf2"
 build_bundle "firmware/pico_w_actuator_node" "pico_w_actuator_node" "pico2_w" "pico2_w_actuator_node.uf2"
+build_bundle "firmware/pico_w_combined_node" "pico_w_combined_node" "pico_w" "pico_w_combined_node.uf2"
+build_bundle "firmware/pico_w_combined_node" "pico_w_combined_node" "pico2_w" "pico2_w_combined_node.uf2"
 
 echo "Built firmware bundles in $OUTPUT_DIR"

@@ -101,6 +101,18 @@ class MqttConsumerTest < ActiveSupport::TestCase
     assert_equal "pico-w-zone1", enqueued.first["node_id"]
   end
 
+  test "command ack topic is routed to node command ack ingest job" do
+    consumer = MqttConsumer.new(status_path: @status_path)
+    payload = { node_id: "combined-zone1", command: "reboot", command_id: "combined-zone1-ch0-abc-reboot", status: "acknowledged" }.to_json
+    enqueued = []
+    stub_singleton_method(NodeCommandAckIngestJob, :perform_later, ->(data) { enqueued << data }) do
+      consumer.send(:handle_message, "greenhouse/zones/zone1/command_ack", payload)
+    end
+
+    assert_equal 1, enqueued.length
+    assert_equal "combined-zone1-ch0-abc-reboot", enqueued.first["command_id"]
+  end
+
   test "controller events are deduped by payload within the dedupe window" do
     now = 100.0
     consumer = MqttConsumer.new(dedupe_window_seconds: 60, monotonic_clock: -> { now }, status_path: @status_path)

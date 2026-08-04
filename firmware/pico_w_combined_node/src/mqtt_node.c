@@ -1,10 +1,11 @@
 #include "mqtt_node.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
 
+#include "hardware/gpio.h"
 #include "lwip/ip.h"
 #include "lwip/apps/mqtt.h"
 #include "lwip/ip4_addr.h"
@@ -42,7 +43,7 @@ typedef struct {
     char incoming_topic[MQTT_RX_TOPIC_MAX];
     char incoming_payload[MQTT_RX_PAYLOAD_MAX];
     char discovered_mqtt_host[VG_MAX_HOST_LEN];
-    char client_id[VG_MAX_NODE_ID_LEN + 8];
+    char client_id[VG_MAX_NODE_ID_LEN + 10];
     char pending_command[32];
     char pending_command_id[64];
     char pending_command_status[16];
@@ -69,6 +70,7 @@ typedef struct {
 } mqtt_runtime_t;
 
 static mqtt_runtime_t g_runtime;
+static const uint8_t g_default_line_relay_gpios[VG_MAX_IRRIGATION_LINES] = VG_DEFAULT_IRRIGATION_LINE_RELAY_GPIOS;
 
 static const struct mqtt_connect_client_info_t g_client_info_template = {
     .client_id = NULL,
@@ -138,7 +140,6 @@ static err_t mqtt_client_connect_locked(mqtt_client_t *client, const ip_addr_t *
     cyw43_arch_lwip_end();
     return err;
 }
-
 
 static void mqtt_close_broker_discovery(void) {
     if (!g_runtime.discovery_pcb) {
@@ -393,6 +394,104 @@ static bool node_id_matches_config(const node_config_t *config, const char *node
     return false;
 }
 
+static bool actuator_command_topic_match(const char *topic, char *zone_id, size_t zone_id_size) {
+    const char *prefix = "greenhouse/zones/";
+    const char *suffix = "/actuator/command";
+    size_t prefix_len = strlen(prefix);
+    size_t suffix_len = strlen(suffix);
+    size_t topic_len = strlen(topic);
+
+    if (topic_len <= prefix_len + suffix_len ||
+        strncmp(topic, prefix, prefix_len) != 0 ||
+        strcmp(topic + topic_len - suffix_len, suffix) != 0) {
+        return false;
+    }
+
+    size_t zone_len = topic_len - prefix_len - suffix_len;
+    if (zone_len == 0 || zone_len >= zone_id_size) {
+        return false;
+    }
+
+    memcpy(zone_id, topic + prefix_len, zone_len);
+    zone_id[zone_len] = '\0';
+    return true;
+}
+
+static uint8_t line_gpio_for_index(const mqtt_node_t *node, size_t line_index) {
+    if (line_index == 0) {
+        return node->config->actuator_relay_gpio;
+    }
+    return g_default_line_relay_gpios[line_index];
+}
+
+void actuator_relays_init_safe(const node_config_t *config) {
+    // gpio_init() leaves the pin as an input with its output latch at 0.
+    // Preload the latch with the correct OFF level *before* switching to
+    // output — otherwise, on an active-low relay board, the pin would
+    // briefly drive LOW (relay ON) the instant gpio_set_dir(GPIO_OUT) takes
+    // effect. This runs before Wi-Fi/MQTT so a relay is never left
+    // undriven while the board reconnects, including after a watchdog reset.
+    bool off_level = !config->actuator_relay_active_high;
+    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
+        uint8_t gpio = (i == 0) ? config->actuator_relay_gpio : g_default_line_relay_gpios[i];
+        gpio_init(gpio);
+        gpio_put(gpio, off_level ? 1u : 0u);
+        gpio_set_dir(gpio, GPIO_OUT);
+    }
+    printf("[actuator] relays forced to safe OFF level pre-network active_high=%d\n",
+           (int)config->actuator_relay_active_high);
+    stdio_flush();
+}
+
+static actuator_zone_assignment_t *assignment_for_zone(mqtt_node_t *node, const char *zone_id) {
+    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
+        if (node->assignments[i].assigned &&
+            node->assignments[i].node_id[0] == '\0' &&
+            strcmp(node->assignments[i].zone_id, zone_id) == 0) {
+            return &node->assignments[i];
+        }
+    }
+    return NULL;
+}
+
+static actuator_zone_assignment_t *assignment_for_node(mqtt_node_t *node, const char *node_id) {
+    if (!node_id || node_id[0] == '\0') {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
+        if (node->assignments[i].assigned && strcmp(node->assignments[i].node_id, node_id) == 0) {
+            return &node->assignments[i];
+        }
+    }
+    return NULL;
+}
+
+static actuator_line_run_t *run_for_line(mqtt_node_t *node, uint8_t irrigation_line) {
+    if (irrigation_line == 0 || irrigation_line > VG_MAX_IRRIGATION_LINES) {
+        return NULL;
+    }
+    return &node->runs[irrigation_line - 1u];
+}
+
+static const char *actuator_status_name(actuator_status_t status) {
+    switch (status) {
+        case ACTUATOR_STATUS_ACKNOWLEDGED:
+            return "ACKNOWLEDGED";
+        case ACTUATOR_STATUS_RUNNING:
+            return "RUNNING";
+        case ACTUATOR_STATUS_COMPLETED:
+            return "COMPLETED";
+        case ACTUATOR_STATUS_STOPPED:
+            return "STOPPED";
+        case ACTUATOR_STATUS_FAULT:
+            return "FAULT";
+        case ACTUATOR_STATUS_NONE:
+        default:
+            return "UNKNOWN";
+    }
+}
+
 static void config_ack_timestamp(const mqtt_node_t *node, char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return;
@@ -409,6 +508,155 @@ static void config_ack_timestamp(const mqtt_node_t *node, char *out, size_t out_
     }
 
     time_sync_format_iso8601(out, out_size);
+}
+
+static void actuator_set_line_output(mqtt_node_t *node, uint8_t irrigation_line, bool enabled) {
+    if (irrigation_line == 0 || irrigation_line > VG_MAX_IRRIGATION_LINES) {
+        return;
+    }
+
+    size_t line_index = irrigation_line - 1u;
+    uint8_t gpio = line_gpio_for_index(node, line_index);
+    bool level = enabled ? node->config->actuator_relay_active_high : !node->config->actuator_relay_active_high;
+    gpio_put(gpio, level ? 1u : 0u);
+    printf("[actuator] line=%u relay_gp=%u enabled=%d level=%d\n",
+           (unsigned)irrigation_line,
+           (unsigned)gpio,
+           (int)enabled,
+           (int)level);
+}
+
+// Runs from an alarm IRQ, independent of the main loop. Must stay minimal —
+// no MQTT/lwIP calls, no touching node/g_runtime, nothing that can block or
+// isn't IRQ-safe. gpio/off_level were snapshotted at schedule time
+// specifically so this callback never needs to dereference node->config.
+// The main loop's own hard_deadline check (mqtt_node_poll) still runs the
+// normal stop/publish/cleanup once it next gets a chance to run — this is
+// only the safety-critical "physically turn it off now" backstop.
+static int64_t actuator_hw_cutoff_callback(alarm_id_t id, void *user_data) {
+    (void)id;
+    actuator_line_run_t *run = (actuator_line_run_t *)user_data;
+    gpio_put(run->cutoff_gpio, run->cutoff_off_level ? 1u : 0u);
+    run->hardware_cutoff_fired = true;
+    return 0;
+}
+
+static uint32_t actuator_elapsed_seconds(const actuator_line_run_t *run) {
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    if (now_ms <= run->started_at_ms) {
+        return 0u;
+    }
+    return (now_ms - run->started_at_ms) / 1000u;
+}
+
+static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone_id, const char *node_id, const char *idempotency_key,
+                                             const actuator_line_run_t *run, actuator_status_t status,
+                                             const char *fault_code, const char *fault_detail) {
+    if (!g_runtime.connected || !g_runtime.client || !mqtt_client_is_connected(g_runtime.client)) {
+        return false;
+    }
+
+    char topic[MQTT_RX_TOPIC_MAX];
+    char timestamp[32];
+    char payload[MQTT_TX_PAYLOAD_MAX];
+    char actual_runtime_json[24];
+    char node_id_json[VG_MAX_NODE_ID_LEN + 4];
+    char fault_code_json[64];
+    char fault_detail_json[160];
+    topic_actuator_status_for_zone(zone_id, topic, sizeof(topic));
+    time_sync_format_iso8601(timestamp, sizeof(timestamp));
+
+    if (status == ACTUATOR_STATUS_ACKNOWLEDGED) {
+        snprintf(actual_runtime_json, sizeof(actual_runtime_json), "null");
+    } else {
+        snprintf(actual_runtime_json, sizeof(actual_runtime_json), "%lu",
+                 (unsigned long)(run ? actuator_elapsed_seconds(run) : 0u));
+    }
+
+    if (node_id && node_id[0] != '\0') {
+        snprintf(node_id_json, sizeof(node_id_json), "\"%s\"", node_id);
+    } else if (run && run->node_id[0] != '\0') {
+        snprintf(node_id_json, sizeof(node_id_json), "\"%s\"", run->node_id);
+    } else {
+        snprintf(node_id_json, sizeof(node_id_json), "null");
+    }
+
+    if (fault_code && fault_code[0] != '\0') {
+        snprintf(fault_code_json, sizeof(fault_code_json), "\"%s\"", fault_code);
+    } else {
+        snprintf(fault_code_json, sizeof(fault_code_json), "null");
+    }
+
+    if (fault_detail && fault_detail[0] != '\0') {
+        snprintf(fault_detail_json, sizeof(fault_detail_json), "\"%s\"", fault_detail);
+    } else {
+        snprintf(fault_detail_json, sizeof(fault_detail_json), "null");
+    }
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"zone_id\":\"%s\",\"node_id\":%s,\"state\":\"%s\",\"timestamp\":\"%s\",\"idempotency_key\":\"%s\",\"actual_runtime_seconds\":%s,\"flow_ml\":null,\"fault_code\":%s,\"fault_detail\":%s}",
+        zone_id,
+        node_id_json,
+        actuator_status_name(status),
+        timestamp,
+        idempotency_key,
+        actual_runtime_json,
+        fault_code_json,
+        fault_detail_json
+    );
+
+    u8_t qos = (status == ACTUATOR_STATUS_COMPLETED || status == ACTUATOR_STATUS_FAULT) ? 1 : 0;
+    err_t err = mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), qos, 1, mqtt_request_cb, node);
+    if (err == ERR_OK) {
+        set_error(node, "none");
+        return true;
+    }
+
+    if (err == ERR_MEM) {
+        set_error(node, "mqtt actuator status buffer full");
+    } else {
+        set_errorf(node, "mqtt actuator status failed", err);
+    }
+    return false;
+}
+
+static void actuator_stop_with_status(mqtt_node_t *node, actuator_line_run_t *run, uint8_t irrigation_line,
+                                      actuator_status_t status,
+                                      const char *fault_code, const char *fault_detail) {
+    printf("[actuator] stop zone=%s line=%u status=%s fault=%s hw_cutoff_fired=%d\n",
+           run ? run->zone_id : "unknown",
+           (unsigned)irrigation_line,
+           actuator_status_name(status),
+           fault_code ? fault_code : "none",
+           run ? (int)run->hardware_cutoff_fired : 0);
+    actuator_set_line_output(node, irrigation_line, false);
+    if (run) {
+        // Every path that ends a run — manual stop, the software deadline
+        // check below, or this being called after the hardware alarm
+        // already fired — comes through here, so this is the one place
+        // that must cancel any outstanding alarm before the slot is
+        // cleared for reuse. Otherwise a stale alarm from THIS run could
+        // fire later and cut off a completely different run started on the
+        // same line afterward. Harmless no-op if it already fired or was
+        // never scheduled.
+        if (run->cutoff_alarm_id > 0) {
+            cancel_alarm(run->cutoff_alarm_id);
+        }
+        mqtt_publish_actuator_status_now(node, run->zone_id, run->node_id, run->idempotency_key, run, status, fault_code, fault_detail);
+        memset(run, 0, sizeof(*run));
+    }
+}
+
+static void clear_retained_topic_now(const char *topic) {
+    mqtt_publish_locked(g_runtime.client, topic, "", 0, 0, 1, NULL, NULL);
+}
+
+static void clear_retained_actuator_command(const char *zone_id) {
+    char topic[MQTT_RX_TOPIC_MAX];
+    topic_actuator_command_for_zone(zone_id, topic, sizeof(topic));
+    clear_retained_topic_now(topic);
 }
 
 static bool clear_retained_topic(mqtt_node_t *node, const char *topic) {
@@ -524,6 +772,307 @@ static void mqtt_state_publish_cb(void *arg, err_t err) {
     }
 }
 
+static bool zone_id_already_seen(const char (*seen)[VG_MAX_ZONE_ID_LEN], size_t seen_count, const char *zone_id) {
+    for (size_t i = 0; i < seen_count; ++i) {
+        if (strcmp(seen[i], zone_id) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void subscribe_assigned_zone_topics(mqtt_node_t *node) {
+    if (!g_runtime.client || !g_runtime.connected || !mqtt_client_is_connected(g_runtime.client)) {
+        return;
+    }
+
+    // All of this device's channels are commonly assigned to the same zone,
+    // so subscribe once per unique zone_id rather than once per assignment --
+    // each subscribe consumes one of MQTT_REQ_MAX_IN_FLIGHT request slots
+    // until the broker's SUBACK arrives, and re-subscribing to the same
+    // topic repeatedly back-to-back was exhausting that pool.
+    char seen_zone_ids[VG_MAX_IRRIGATION_LINES][VG_MAX_ZONE_ID_LEN];
+    size_t seen_count = 0;
+
+    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
+        const actuator_zone_assignment_t *assignment = &node->assignments[i];
+        if (!assignment->assigned || assignment->zone_id[0] == '\0') {
+            continue;
+        }
+
+        if (zone_id_already_seen(seen_zone_ids, seen_count, assignment->zone_id)) {
+            continue;
+        }
+
+        char topic[MQTT_RX_TOPIC_MAX];
+        topic_actuator_command_for_zone(assignment->zone_id, topic, sizeof(topic));
+        err_t err = mqtt_subscribe_locked(g_runtime.client, topic, 0, mqtt_request_cb, node);
+        printf("[mqtt] subscribe zone command topic=%s err=%d\n", topic, (int)err);
+        if (err != ERR_OK) {
+            set_error(node, "zone command subscribe failed");
+        }
+
+        snprintf(seen_zone_ids[seen_count], VG_MAX_ZONE_ID_LEN, "%s", assignment->zone_id);
+        seen_count++;
+    }
+}
+
+static void handle_actuator_config_message(mqtt_node_t *node, const char *payload) {
+    char schema[32] = {0};
+    int irrigation_line_count = 0;
+
+    if (!extract_json_string(payload, "schema_version", schema, sizeof(schema)) ||
+        strcmp(schema, "actuator-config/v1") != 0 ||
+        !extract_json_int(payload, "irrigation_line_count", &irrigation_line_count) ||
+        irrigation_line_count < 0) {
+        set_error(node, "invalid actuator config");
+        return;
+    }
+
+    if (irrigation_line_count > (int)VG_MAX_IRRIGATION_LINES) {
+        irrigation_line_count = (int)VG_MAX_IRRIGATION_LINES;
+    }
+
+    memset(node->assignments, 0, sizeof(node->assignments));
+    node->irrigation_line_count = (uint8_t)irrigation_line_count;
+
+    const char *zones_array = strstr(payload, "\"zones\":[");
+    if (zones_array) {
+        const char *cursor = strchr(zones_array, '[');
+        if (cursor) {
+            ++cursor;
+            const char *array_end = strchr(cursor, ']');
+            while (array_end && (cursor = strstr(cursor, "{\"zone_id\":\"")) != NULL && cursor < array_end) {
+                actuator_zone_assignment_t assignment = {0};
+                const char *zone_start = cursor + strlen("{\"zone_id\":\"");
+                const char *after_zone = NULL;
+                int line_number = 0;
+                bool active = false;
+
+                if (!decode_json_string(zone_start, assignment.zone_id, sizeof(assignment.zone_id), &after_zone)) {
+                    break;
+                }
+
+                const char *object_end = strchr(after_zone, '}');
+                if (!object_end) {
+                    break;
+                }
+
+                const char *line_field = strstr(after_zone, "\"irrigation_line\":");
+                const char *active_field = strstr(after_zone, "\"active\":");
+                if (!line_field || line_field > object_end || !extract_json_int(line_field, "irrigation_line", &line_number)) {
+                    cursor = object_end + 1;
+                    continue;
+                }
+
+                if (active_field && active_field < object_end) {
+                    if (strncmp(active_field + strlen("\"active\":"), "true", 4) == 0) {
+                        active = true;
+                    }
+                }
+
+                if (line_number <= 0 || line_number > irrigation_line_count) {
+                    cursor = object_end + 1;
+                    continue;
+                }
+
+                assignment.assigned = true;
+                assignment.active = active;
+                assignment.irrigation_line = (uint8_t)line_number;
+                node->assignments[line_number - 1] = assignment;
+                printf("[actuator] config zone=%s line=%d active=%d\n",
+                       assignment.zone_id,
+                       line_number,
+                       (int)active);
+                cursor = object_end + 1;
+            }
+        }
+    }
+
+    const char *nodes_array = strstr(payload, "\"nodes\":[");
+    if (nodes_array) {
+        const char *cursor = strchr(nodes_array, '[');
+        if (cursor) {
+            ++cursor;
+            const char *array_end = strchr(cursor, ']');
+            while (array_end && (cursor = strstr(cursor, "{\"node_id\":\"")) != NULL && cursor < array_end) {
+                actuator_zone_assignment_t assignment = {0};
+                const char *node_start = cursor + strlen("{\"node_id\":\"");
+                const char *after_node = NULL;
+                int line_number = 0;
+                bool active = false;
+
+                if (!decode_json_string(node_start, assignment.node_id, sizeof(assignment.node_id), &after_node)) {
+                    break;
+                }
+
+                const char *object_end = strchr(after_node, '}');
+                if (!object_end || object_end > array_end) {
+                    break;
+                }
+
+                const char *line_field = strstr(after_node, "\"irrigation_line\":");
+                const char *active_field = strstr(after_node, "\"active\":");
+                if (!line_field || line_field > object_end || !extract_json_int(line_field, "irrigation_line", &line_number)) {
+                    cursor = object_end + 1;
+                    continue;
+                }
+
+                if (!extract_json_string(after_node, "zone_id", assignment.zone_id, sizeof(assignment.zone_id))) {
+                    cursor = object_end + 1;
+                    continue;
+                }
+
+                if (active_field && active_field < object_end) {
+                    if (strncmp(active_field + strlen("\"active\":"), "true", 4) == 0) {
+                        active = true;
+                    }
+                }
+
+                if (line_number <= 0 || line_number > irrigation_line_count) {
+                    cursor = object_end + 1;
+                    continue;
+                }
+
+                assignment.assigned = true;
+                assignment.active = active;
+                assignment.irrigation_line = (uint8_t)line_number;
+                node->assignments[line_number - 1] = assignment;
+                printf("[actuator] config node=%s zone=%s line=%d active=%d\n",
+                       assignment.node_id,
+                       assignment.zone_id,
+                       line_number,
+                       (int)active);
+                cursor = object_end + 1;
+            }
+        }
+    }
+
+    printf("[actuator] config applied line_count=%u\n", (unsigned)node->irrigation_line_count);
+    subscribe_assigned_zone_topics(node);
+    set_error(node, "none");
+}
+
+static void handle_actuator_command_message(mqtt_node_t *node, const char *topic_zone_id, const char *payload) {
+    char command[32] = {0};
+    char idempotency_key[96] = {0};
+    char payload_zone_id[VG_MAX_ZONE_ID_LEN] = {0};
+    char payload_node_id[VG_MAX_NODE_ID_LEN] = {0};
+    int runtime_seconds = 0;
+
+    if (!payload || payload[0] == '\0') {
+        set_error(node, "none");
+        return;
+    }
+
+    if (!extract_json_string(payload, "command", command, sizeof(command)) ||
+        !extract_json_string(payload, "idempotency_key", idempotency_key, sizeof(idempotency_key))) {
+        set_error(node, "invalid actuator payload");
+        return;
+    }
+
+    if (extract_json_string(payload, "zone_id", payload_zone_id, sizeof(payload_zone_id)) &&
+        strcmp(payload_zone_id, topic_zone_id) != 0) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, NULL, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "ZONE_MISMATCH", "topic zone_id does not match payload");
+        set_error(node, "actuator zone mismatch");
+        return;
+    }
+    extract_json_string(payload, "node_id", payload_node_id, sizeof(payload_node_id));
+
+    clear_retained_actuator_command(topic_zone_id);
+
+    // Commands are targeted by node_id where possible so that only the
+    // sensor channel a pump is assigned to can trigger that specific relay
+    // line (see the "nodes" assignment array in actuator-config/v1).
+    actuator_zone_assignment_t *assignment = payload_node_id[0] != '\0'
+        ? assignment_for_node(node, payload_node_id)
+        : assignment_for_zone(node, topic_zone_id);
+    if (assignment && strcmp(assignment->zone_id, topic_zone_id) != 0) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "ZONE_MISMATCH", "node assignment zone_id does not match command topic");
+        set_error(node, "actuator node zone mismatch");
+        return;
+    }
+    if (!assignment || assignment->irrigation_line == 0 || assignment->irrigation_line > node->irrigation_line_count) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "UNASSIGNED_LINE", "target has no irrigation line mapping");
+        set_error(node, "target missing irrigation line");
+        return;
+    }
+
+    actuator_line_run_t *run = run_for_line(node, assignment->irrigation_line);
+    if (!run) {
+        set_error(node, "invalid irrigation line");
+        return;
+    }
+
+    if (strcmp(command, "stop_watering") == 0) {
+        printf("[actuator] command=stop zone=%s node=%s id=%s\n", topic_zone_id, assignment->node_id, idempotency_key);
+        if (run->running) {
+            actuator_stop_with_status(node, run, assignment->irrigation_line, ACTUATOR_STATUS_STOPPED, NULL, NULL);
+        } else {
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key, NULL, ACTUATOR_STATUS_STOPPED, NULL, NULL);
+        }
+        set_error(node, "none");
+        return;
+    }
+
+    if (strcmp(command, "start_watering") != 0) {
+        set_error(node, "unsupported actuator command");
+        return;
+    }
+
+    if (!extract_json_int(payload, "runtime_seconds", &runtime_seconds) || runtime_seconds <= 0) {
+        set_error(node, "invalid actuator runtime");
+        return;
+    }
+
+    printf("[actuator] command=%s zone=%s node=%s id=%s runtime=%d running=%d\n",
+           command,
+           topic_zone_id,
+           assignment->node_id,
+           idempotency_key,
+           runtime_seconds,
+           (int)run->running);
+
+    if ((uint16_t)runtime_seconds > node->config->max_pulse_runtime_sec && node->config->max_pulse_runtime_sec > 0) {
+        runtime_seconds = (int)node->config->max_pulse_runtime_sec;
+    }
+
+    if (run->running) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key, run, ACTUATOR_STATUS_FAULT, "ALREADY_RUNNING", "relay line is already watering");
+        set_error(node, "relay line already running");
+        return;
+    }
+
+    memset(run, 0, sizeof(*run));
+    run->running = true;
+    snprintf(run->zone_id, sizeof(run->zone_id), "%s", topic_zone_id);
+    snprintf(run->node_id, sizeof(run->node_id), "%s", assignment->node_id);
+    snprintf(run->idempotency_key, sizeof(run->idempotency_key), "%s", idempotency_key);
+    run->started_at_ms = to_ms_since_boot(get_absolute_time());
+    run->runtime_seconds = (uint32_t)runtime_seconds;
+    run->hard_deadline = make_timeout_time_ms((uint32_t)runtime_seconds * 1000u);
+
+    // Independent hardware backstop for hard_deadline — see
+    // actuator_hw_cutoff_callback. Snapshot the GPIO/level now so the ISR
+    // never has to touch node->config.
+    run->cutoff_gpio = line_gpio_for_index(node, (size_t)(assignment->irrigation_line - 1u));
+    run->cutoff_off_level = !node->config->actuator_relay_active_high;
+    run->hardware_cutoff_fired = false;
+    run->cutoff_alarm_id = add_alarm_in_ms(
+        (uint32_t)runtime_seconds * 1000u, actuator_hw_cutoff_callback, run, true);
+    if (run->cutoff_alarm_id < 0) {
+        printf("[actuator] WARNING: hardware cutoff alarm scheduling failed line=%u — software deadline check is the only cutoff for this run\n",
+               (unsigned)assignment->irrigation_line);
+        stdio_flush();
+    }
+
+    mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL);
+    actuator_set_line_output(node, assignment->irrigation_line, true);
+    mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_RUNNING, NULL, NULL);
+
+    set_error(node, "none");
+}
+
 static void handle_command_message(mqtt_node_t *node, const char *payload) {
     char command[32] = {0};
     char command_id[64] = {0};
@@ -604,10 +1153,17 @@ static void handle_config_message(mqtt_node_t *node, const char *payload) {
 static void handle_incoming_message(mqtt_node_t *node) {
     char command_topic[MQTT_RX_TOPIC_MAX];
     char config_topic[MQTT_RX_TOPIC_MAX];
+    char actuator_config_topic[MQTT_RX_TOPIC_MAX];
+    char topic_zone_id[VG_MAX_ZONE_ID_LEN] = {0};
     topic_command(node->config, command_topic, sizeof(command_topic));
     topic_node_config(node->config, config_topic, sizeof(config_topic));
+    topic_actuator_system_config(actuator_config_topic, sizeof(actuator_config_topic));
 
-    if (topic_equals(g_runtime.incoming_topic, command_topic)) {
+    if (actuator_command_topic_match(g_runtime.incoming_topic, topic_zone_id, sizeof(topic_zone_id))) {
+        handle_actuator_command_message(node, topic_zone_id, g_runtime.incoming_payload);
+    } else if (topic_equals(g_runtime.incoming_topic, actuator_config_topic)) {
+        handle_actuator_config_message(node, g_runtime.incoming_payload);
+    } else if (topic_equals(g_runtime.incoming_topic, command_topic)) {
         handle_command_message(node, g_runtime.incoming_payload);
     } else if (topic_equals(g_runtime.incoming_topic, config_topic)) {
         snprintf(g_runtime.pending_config_payload,
@@ -655,10 +1211,15 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
 static void subscribe_topics(mqtt_node_t *node) {
     char command_topic[MQTT_RX_TOPIC_MAX];
     char config_topic[MQTT_RX_TOPIC_MAX];
+    char actuator_config_topic[MQTT_RX_TOPIC_MAX];
     topic_command(node->config, command_topic, sizeof(command_topic));
     topic_node_config(node->config, config_topic, sizeof(config_topic));
+    topic_actuator_system_config(actuator_config_topic, sizeof(actuator_config_topic));
     mqtt_subscribe_locked(g_runtime.client, command_topic, 0, mqtt_request_cb, node);
     mqtt_subscribe_locked(g_runtime.client, config_topic, 0, mqtt_request_cb, node);
+    err_t actuator_config_err = mqtt_subscribe_locked(g_runtime.client, actuator_config_topic, 0, mqtt_request_cb, node);
+    printf("[mqtt] subscribe config topic=%s err=%d\n", actuator_config_topic, (int)actuator_config_err);
+    subscribe_assigned_zone_topics(node);
 }
 
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status) {
@@ -686,11 +1247,30 @@ static bool parse_broker_ip(const node_config_t *config, ip_addr_t *addr) {
 void mqtt_node_init(mqtt_node_t *node, node_config_t *config) {
     memset(node, 0, sizeof(*node));
     node->config = config;
+    node->irrigation_line_count = 1u;
     snprintf(node->last_error, sizeof(node->last_error), "none");
     memset(&g_runtime, 0, sizeof(g_runtime));
     g_runtime.node = node;
     g_runtime.next_reconnect_at = get_absolute_time();
     g_runtime.discovery_next_attempt_at = get_absolute_time();
+
+    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
+        uint8_t gpio = line_gpio_for_index(node, i);
+        // gpio_init() leaves the pin as an input with its output latch at 0.
+        // Preload the latch with the correct OFF level *before* switching to
+        // output — otherwise, on an active-low relay board, the pin would
+        // briefly drive LOW (relay ON) the instant gpio_set_dir(GPIO_OUT)
+        // takes effect, until actuator_set_line_output() corrects it.
+        gpio_init(gpio);
+        bool off_level = !config->actuator_relay_active_high;
+        gpio_put(gpio, off_level ? 1u : 0u);
+        gpio_set_dir(gpio, GPIO_OUT);
+        actuator_set_line_output(node, (uint8_t)(i + 1u), false);
+    }
+    printf("[actuator] initialized first_line_gp=%u active_high=%d max_lines=%u\n",
+           (unsigned)line_gpio_for_index(node, 0),
+           (int)config->actuator_relay_active_high,
+           (unsigned)VG_MAX_IRRIGATION_LINES);
 }
 
 static void mqtt_ensure_connected(mqtt_node_t *node) {
@@ -725,7 +1305,7 @@ static void mqtt_ensure_connected(mqtt_node_t *node) {
     }
 
     struct mqtt_connect_client_info_t info = g_client_info_template;
-    snprintf(g_runtime.client_id, sizeof(g_runtime.client_id), "sensor-%s", node->config->node_id);
+    snprintf(g_runtime.client_id, sizeof(g_runtime.client_id), "combined-%s", node->config->node_id);
     info.client_id = g_runtime.client_id;
     info.client_user = node->config->mqtt_username[0] != '\0' ? node->config->mqtt_username : NULL;
     info.client_pass = node->config->mqtt_password[0] != '\0' ? node->config->mqtt_password : NULL;
@@ -746,6 +1326,7 @@ static void mqtt_ensure_connected(mqtt_node_t *node) {
         g_runtime.discovery_next_attempt_at = get_absolute_time();
         g_runtime.next_reconnect_at = make_timeout_time_ms(5000);
     } else {
+        printf("[mqtt] connect initiated - waiting for callback\n");
         g_runtime.next_reconnect_at = make_timeout_time_ms(15000);
     }
 }
@@ -777,8 +1358,11 @@ static void mqtt_flush_deferred_actions(mqtt_node_t *node) {
     }
 
     if (g_runtime.reboot_armed) {
+        // Deliberately not cleared here: it stays latched (permanently
+        // blocking handle_command_message from accepting anything else)
+        // until the actual hardware reset wipes it, in case main.c's halt
+        // loop after mqtt_node_take_reboot_request() is ever bypassed.
         node->reboot_requested = true;
-        g_runtime.reboot_armed = false;
         return;
     }
 
@@ -813,55 +1397,16 @@ void mqtt_node_poll(mqtt_node_t *node) {
     mqtt_ensure_connected(g_runtime.node);
     mqtt_finish_connect(g_runtime.node);
     mqtt_flush_deferred_actions(g_runtime.node);
-}
 
-void mqtt_node_disconnect(mqtt_node_t *node) {
-    if (g_runtime.discovery_in_progress || g_runtime.discovery_pcb) {
-        mqtt_close_broker_discovery();
-    }
-
-    if (g_runtime.client) {
-        if (mqtt_client_is_connected(g_runtime.client)) {
-            cyw43_arch_lwip_begin();
-            mqtt_disconnect(g_runtime.client);
-            cyw43_arch_lwip_end();
+    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
+        actuator_line_run_t *run = &node->runs[i];
+        if (!run->running) {
+            continue;
         }
 
-        cyw43_arch_lwip_begin();
-        mqtt_client_free(g_runtime.client);
-        cyw43_arch_lwip_end();
-    }
-
-    g_runtime.client = NULL;
-    g_runtime.connected = false;
-    g_runtime.subscriptions_pending = false;
-    g_runtime.discovery_in_progress = false;
-    g_runtime.discovery_resolved = false;
-    g_runtime.discovery_pcb = NULL;
-    g_runtime.discovered_mqtt_host[0] = '\0';
-    g_runtime.discovered_mqtt_port = 0;
-    g_runtime.pending_command_ack = false;
-    g_runtime.pending_clear_retained_command = false;
-    g_runtime.pending_publish_request = false;
-    g_runtime.publish_request_needs_command_clear = false;
-    g_runtime.pending_config_apply = false;
-    g_runtime.incoming_payload_len = 0;
-    g_runtime.incoming_topic[0] = '\0';
-    g_runtime.incoming_payload[0] = '\0';
-    g_runtime.pending_config_payload[0] = '\0';
-    g_runtime.pending_command[0] = '\0';
-    g_runtime.pending_command_id[0] = '\0';
-    g_runtime.pending_command_status[0] = '\0';
-    g_runtime.next_reconnect_at = get_absolute_time();
-    g_runtime.discovery_next_attempt_at = get_absolute_time();
-    g_runtime.discovery_deadline = get_absolute_time();
-
-    // reboot_ack_pending/reboot_armed are deliberately NOT reset here: once a
-    // reboot has been accepted it must survive any reconnect that races it,
-    // rather than being silently dropped by this reset.
-
-    if (node) {
-        set_error(node, "none");
+        if (absolute_time_diff_us(get_absolute_time(), run->hard_deadline) <= 0) {
+            actuator_stop_with_status(node, run, (uint8_t)(i + 1u), ACTUATOR_STATUS_COMPLETED, NULL, NULL);
+        }
     }
 }
 
@@ -1001,6 +1546,59 @@ bool mqtt_node_take_reconnect_request(mqtt_node_t *node) {
     bool requested = node->config_changed_requires_reconnect;
     node->config_changed_requires_reconnect = false;
     return requested;
+}
+
+void mqtt_node_disconnect(mqtt_node_t *node) {
+    if (g_runtime.discovery_in_progress || g_runtime.discovery_pcb) {
+        mqtt_close_broker_discovery();
+    }
+
+    if (g_runtime.client) {
+        if (mqtt_client_is_connected(g_runtime.client)) {
+            cyw43_arch_lwip_begin();
+            mqtt_disconnect(g_runtime.client);
+            cyw43_arch_lwip_end();
+        }
+
+        cyw43_arch_lwip_begin();
+        mqtt_client_free(g_runtime.client);
+        cyw43_arch_lwip_end();
+    }
+
+    g_runtime.client = NULL;
+    g_runtime.connected = false;
+    g_runtime.subscriptions_pending = false;
+    g_runtime.discovery_in_progress = false;
+    g_runtime.discovery_resolved = false;
+    g_runtime.discovery_pcb = NULL;
+    g_runtime.discovered_mqtt_host[0] = '\0';
+    g_runtime.discovered_mqtt_port = 0;
+    g_runtime.pending_command_ack = false;
+    g_runtime.pending_clear_retained_command = false;
+    g_runtime.pending_publish_request = false;
+    g_runtime.publish_request_needs_command_clear = false;
+    g_runtime.pending_config_apply = false;
+    g_runtime.incoming_payload_len = 0;
+    g_runtime.incoming_topic[0] = '\0';
+    g_runtime.incoming_payload[0] = '\0';
+    g_runtime.pending_config_payload[0] = '\0';
+    g_runtime.pending_command[0] = '\0';
+    g_runtime.pending_command_id[0] = '\0';
+    g_runtime.pending_command_status[0] = '\0';
+    g_runtime.next_reconnect_at = get_absolute_time();
+    g_runtime.discovery_next_attempt_at = get_absolute_time();
+    g_runtime.discovery_deadline = get_absolute_time();
+
+    // reboot_ack_pending/reboot_armed are deliberately NOT reset here: once a
+    // reboot has been accepted it must survive any reconnect that races it,
+    // rather than being silently dropped by this reset.
+
+    // Relay assignments/runs live on node, not g_runtime, so an in-progress
+    // watering run and its hard_deadline cutoff (enforced every
+    // mqtt_node_poll regardless of connection state) are unaffected by this.
+    if (node) {
+        set_error(node, "none");
+    }
 }
 
 bool mqtt_node_take_reboot_request(mqtt_node_t *node) {

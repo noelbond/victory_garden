@@ -57,7 +57,15 @@ module PayloadContracts
         raise ArgumentError, "unsupported schema_version: #{normalized['schema_version']}"
       end
 
-      normalized["recorded_at"] = Time.iso8601(normalized.fetch("timestamp")).utc
+      device_timestamp = Time.iso8601(normalized.fetch("timestamp")).utc
+      # The firmware publishes a "1970-01-01T00:MM:SSZ" sentinel (minutes/
+      # seconds derived from device uptime, not wall-clock) when it hasn't
+      # completed NTP sync yet -- readings taken while a boot-forced or
+      # manually-requested read is honored before time sync finishes. A
+      # literal 1970 recorded_at would sit as a decades-old outlier in
+      # reading history, so fall back to server time (the Pi's own clock is
+      # reliably synced) instead of trusting an unsynced device timestamp.
+      normalized["recorded_at"] = device_timestamp.year <= 1971 ? Time.current.utc : device_timestamp
       validate_integer!(normalized, "moisture_raw", min: 0, max: 65_535)
       validate_float!(normalized, "moisture_percent", min: 0.0, max: 100.0)
       validate_float!(normalized, "air_temperature_c", min: -40.0, max: 125.0)

@@ -37,11 +37,14 @@ bool wifi_init_and_connect(const node_config_t *config, char *error, size_t erro
     }
 
     cyw43_arch_enable_sta_mode();
+    // Capped below the RP2040 watchdog's ~8.3s hardware max (see main.c's
+    // VG_WATCHDOG_TIMEOUT_MS) so a wedged cyw43 driver call still gets
+    // caught by the watchdog instead of blocking past its deadline unseen.
     int rc = cyw43_arch_wifi_connect_timeout_ms(
         config->wifi_ssid,
         config->wifi_password,
         CYW43_AUTH_WPA2_MIXED_PSK,
-        30000
+        7000
     );
     if (rc != 0) {
         char message[64];

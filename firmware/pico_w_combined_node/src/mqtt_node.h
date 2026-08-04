@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "pico/stdlib.h"
+#include "sensors.h"
 
 typedef enum {
     ACTUATOR_STATUS_NONE = 0,
@@ -45,6 +46,8 @@ typedef struct {
 
 typedef struct {
     node_config_t *config;
+    bool publish_requested;
+    bool reboot_requested;
     bool config_changed_requires_reconnect;
     uint8_t irrigation_line_count;
     actuator_zone_assignment_t assignments[VG_MAX_IRRIGATION_LINES];
@@ -59,6 +62,12 @@ typedef struct {
 void actuator_relays_init_safe(const node_config_t *config);
 void mqtt_node_init(mqtt_node_t *node, node_config_t *config);
 void mqtt_node_poll(mqtt_node_t *node);
+void mqtt_node_disconnect(mqtt_node_t *node);
 bool mqtt_node_is_connected(const mqtt_node_t *node);
 bool mqtt_node_publish_canary(mqtt_node_t *node);
+bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapshot, const char *reason, uint32_t wake_count, const char *node_id);
+bool mqtt_node_has_publish_request(const mqtt_node_t *node);
+bool mqtt_node_take_publish_request(mqtt_node_t *node);
 bool mqtt_node_take_reconnect_request(mqtt_node_t *node);
+bool mqtt_node_take_reboot_request(mqtt_node_t *node);
+void mqtt_node_mark_publish_request_handled(mqtt_node_t *node);

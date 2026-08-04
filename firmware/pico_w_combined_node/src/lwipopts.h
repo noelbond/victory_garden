@@ -43,17 +43,23 @@
 #define ETHARP_SUPPORT_STATIC_ENTRIES   1
 #define LWIP_CHKSUM_ALGORITHM           3
 #define LWIP_TIMEVAL_PRIVATE            0
-// Diagnosed live on the combined node (also applies here: this board's own
-// subscribe_assigned_zone_topics had the identical redundant-resubscribe
-// bug, up to VG_MAX_IRRIGATION_LINES=12 times, fixed separately in
-// mqtt_node.c): mqtt_publish()/mqtt_subscribe() grab a slot from
-// client->req_list[MQTT_REQ_MAX_IN_FLIGHT] *before* touching the output
-// ring buffer, and fail immediately with ERR_MEM if none is free -- the
-// ring buffer's byte capacity was never actually the constraint.
-// MQTT_REQ_MAX_IN_FLIGHT is the real fix; MQTT_OUTPUT_RINGBUF_SIZE bumped
-// too for margin (harmless, cheap one-time heap cost) but isn't what fixed
-// it. See pico_w_combined_node/src/lwipopts.h for the full writeup.
+// Diagnosed live (serial console + a temporary lwip_stats/ringbuf probe)
+// after intermittent "mqtt publish buffer full" errors on the combined
+// node: mqtt_publish()/mqtt_subscribe() both grab a slot from
+// client->req_list[MQTT_REQ_MAX_IN_FLIGHT] *before* ever touching the
+// output ring buffer, and fail immediately with ERR_MEM if no slot is
+// free -- the ring buffer's byte capacity was never actually the
+// constraint (confirmed: a probe inside mqtt_output_check_space() never
+// fired on a failing publish). 4 channel publishes plus the app's own
+// redundant per-line zone-command subscribes (fixed separately, see
+// subscribe_assigned_zone_topics in mqtt_node.c) could pile up more than
+// MQTT_REQ_MAX_IN_FLIGHT's default of 4 outstanding requests before any
+// were ACKed. Bumped for headroom now that the redundant-subscribe bug is
+// fixed. MQTT_OUTPUT_RINGBUF_SIZE was also bumped during this
+// investigation -- harmless (cheap, one-time ~3KB heap cost) but not the
+// actual fix, kept at the larger size for margin regardless.
 #define MQTT_OUTPUT_RINGBUF_SIZE        4096
+#define MQTT_VAR_HEADER_BUFFER_LEN      1024
 #define MQTT_REQ_MAX_IN_FLIGHT          8
 #define SNTP_SERVER_DNS                 1
 #define SNTP_MAX_SERVERS                1

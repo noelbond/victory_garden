@@ -4,8 +4,27 @@ class NodeConfigAckIngestor
   end
 
   def call
-    node = Node.find_by!(node_id: @payload.fetch("node_id"))
+    nodes = matching_nodes
+    raise ActiveRecord::RecordNotFound, "Couldn't find Node or device with node_id=#{@payload["node_id"]}" if nodes.empty?
 
+    nodes.each { |node| apply_ack(node) }
+    nodes.first
+  end
+
+  private
+
+  # A combined multi-channel device acks using its shared device identity, which
+  # has no Node record of its own -- it only matches the device_id on each of its
+  # per-channel Node records. Fan the update out to all of them in that case.
+  def matching_nodes
+    id = @payload.fetch("node_id")
+    direct_matches = Node.where(node_id: id).to_a
+    return direct_matches if direct_matches.any?
+
+    Node.where(device_id: id).to_a
+  end
+
+  def apply_ack(node)
     updates = {
       config_acknowledged_at: ack_time,
       config_status: status_value,
@@ -27,10 +46,7 @@ class NodeConfigAckIngestor
     end
 
     node.update!(updates)
-    node
   end
-
-  private
 
   def ack_time
     @payload["timestamp"].presence || Time.current

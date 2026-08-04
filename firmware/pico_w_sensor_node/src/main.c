@@ -31,6 +31,8 @@ static const uint32_t VG_CANARY_LOG_INTERVAL_MS = 2000u;
 static const uint32_t VG_RETAINED_LOG_INTERVAL_MS = 2000u;
 static const uint32_t VG_DRAIN_LOG_INTERVAL_MS = 2000u;
 static const size_t VG_PROVISION_LINE_MAX = 2048u;
+// RP2040 hardware watchdog max is ~8388ms (RP2040-E1); stay comfortably under it.
+static const uint32_t VG_WATCHDOG_TIMEOUT_MS = 8000u;
 
 #define VG_WAKE_COUNT_MAGIC 0x56474301u
 
@@ -151,7 +153,9 @@ static bool wifi_connect_with_timeout(const node_config_t *config, char *error, 
     stdio_flush();
 
     while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
-        if (wifi_init_and_connect(config, error, error_size)) {
+        bool connected = wifi_init_and_connect(config, error, error_size);
+        watchdog_update();
+        if (connected) {
             printf("[wifi] connected\n");
             stdio_flush();
             return true;
@@ -165,6 +169,7 @@ static bool wifi_connect_with_timeout(const node_config_t *config, char *error, 
         }
 
         sleep_ms(VG_WIFI_RETRY_DELAY_MS);
+        watchdog_update();
     }
 
     return false;
@@ -190,6 +195,7 @@ static bool wait_for_time_sync(uint32_t timeout_ms) {
             next_log_at = make_timeout_time_ms(VG_TIME_SYNC_LOG_INTERVAL_MS);
         }
 
+        watchdog_update();
         sleep_ms(VG_IDLE_POLL_MS);
     }
 
@@ -221,6 +227,7 @@ static bool wait_for_mqtt_connection(mqtt_node_t *node, uint32_t timeout_ms) {
             next_log_at = make_timeout_time_ms(VG_MQTT_LOG_INTERVAL_MS);
         }
 
+        watchdog_update();
         sleep_ms(VG_IDLE_POLL_MS);
     }
 
@@ -249,6 +256,7 @@ static bool wait_for_canary_publish(mqtt_node_t *node, uint32_t timeout_ms) {
             next_log_at = make_timeout_time_ms(VG_CANARY_LOG_INTERVAL_MS);
         }
 
+        watchdog_update();
         sleep_ms(VG_IDLE_POLL_MS);
     }
 
@@ -288,6 +296,7 @@ static void poll_retained_window(mqtt_node_t *node, uint32_t timeout_ms,
             next_log_at = make_timeout_time_ms(VG_RETAINED_LOG_INTERVAL_MS);
         }
 
+        watchdog_update();
         sleep_ms(VG_IDLE_POLL_MS);
     }
 
@@ -311,6 +320,7 @@ static void drain_mqtt_window(mqtt_node_t *node, uint32_t timeout_ms) {
             next_log_at = make_timeout_time_ms(VG_DRAIN_LOG_INTERVAL_MS);
         }
 
+        watchdog_update();
         sleep_ms(VG_IDLE_POLL_MS);
     }
 
@@ -322,6 +332,7 @@ static void service_mqtt_window(mqtt_node_t *node, uint32_t timeout_ms) {
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
     while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
         mqtt_node_poll(node);
+        watchdog_update();
         sleep_ms(10);
     }
 }
@@ -384,10 +395,18 @@ static bool aon_timer_sync_from_epoch(uint32_t epoch_sec) {
 static void sleep_until_next_cycle(uint32_t sleep_sec) {
     sleep_sec = normalize_sleep_sec(sleep_sec);
 
+    // The watchdog's hardware max (~8.3s) is far shorter than a wake
+    // interval, and there's no way to feed it during either sleep_ms() or
+    // xosc_dormant(). Disable it for the sleep and re-arm on the way out —
+    // nothing can hang while the CPU itself is asleep, so this doesn't give
+    // up any real protection, and every exit path below re-enables it.
+    watchdog_disable();
+
     if (!VG_ENABLE_AON_DORMANT_SLEEP || !g_aon_timer_seeded) {
         printf("[cycle] sleeping with delay=%lus mode=sleep_ms\n", (unsigned long)sleep_sec);
         stdio_flush();
         sleep_ms(sleep_sec * 1000u);
+        watchdog_enable(VG_WATCHDOG_TIMEOUT_MS, true);
         return;
     }
 
@@ -397,6 +416,7 @@ static void sleep_until_next_cycle(uint32_t sleep_sec) {
             (unsigned long)sleep_sec);
         stdio_flush();
         sleep_ms(sleep_sec * 1000u);
+        watchdog_enable(VG_WATCHDOG_TIMEOUT_MS, true);
         return;
     }
 
@@ -411,6 +431,7 @@ static void sleep_until_next_cycle(uint32_t sleep_sec) {
             (unsigned long)sleep_sec);
         stdio_flush();
         sleep_ms(sleep_sec * 1000u);
+        watchdog_enable(VG_WATCHDOG_TIMEOUT_MS, true);
         return;
     }
 
@@ -418,6 +439,7 @@ static void sleep_until_next_cycle(uint32_t sleep_sec) {
     stdio_flush();
     xosc_dormant();
     aon_timer_disable_alarm();
+    watchdog_enable(VG_WATCHDOG_TIMEOUT_MS, true);
 
     if (!g_sleep_alarm_fired) {
         printf("[cycle] woke before rtc alarm fired\n");
@@ -439,6 +461,12 @@ int main(void) {
 
     node_config_load(&config);
     wait_for_usb_provisioning(&config);
+
+    // Arm the watchdog now that the interactive USB provisioning wait is
+    // behind us. From here on, a hang anywhere in the operational loop
+    // forces a reboot instead of silently idling until the battery dies.
+    watchdog_enable(VG_WATCHDOG_TIMEOUT_MS, true);
+
     printf("[main] config: node=%s zone=%s broker=%s:%d utc_offset_hours=%d\n",
         config.node_id, config.zone_id, config.mqtt_host, config.mqtt_port, (int)config.utc_offset_hours);
     printf("[main] ads1115: sda=GP%u scl=GP%u addr=0x%02X channels=%u\n",
@@ -454,6 +482,14 @@ int main(void) {
             (unsigned)config.channel_moisture_raw_wet[ch]);
     }
     stdio_flush();
+
+    // Forces exactly one reading on the first wake after a boot, regardless
+    // of the active window, so a reboot (deliberate or watchdog-forced)
+    // visibly confirms the board came back healthy and backfills whatever
+    // reading interval was missed during the outage. Stays true across a
+    // wifi/mqtt-timeout retry (via `continue`) since no reading has actually
+    // happened yet in either case.
+    bool is_first_wake = true;
 
     while (true) {
         const uint32_t wake_count = init_wake_count();
@@ -514,8 +550,14 @@ int main(void) {
             printf("[main] reboot requested\n");
             stdio_flush();
             cleanup_cycle(&node);
-            sleep_ms(100);
+            // watchdog_reboot() schedules a hardware reset delay_ms in the
+            // future -- it does NOT halt execution. Halt explicitly instead
+            // of falling through to the rest of the loop, so nothing else
+            // can run (and no other command can be accepted) in that gap.
             watchdog_reboot(0, 0, 100);
+            while (true) {
+                tight_loop_contents();
+            }
         }
 
         if (reconnect_requested) {
@@ -527,7 +569,10 @@ int main(void) {
 
         if (time_synced) {
             sleep_sec = seconds_until_next_wake(epoch_sec, config.utc_offset_hours);
-            if (!is_active_window(epoch_sec, config.utc_offset_hours)) {
+            if (is_first_wake) {
+                printf("[cycle] first wake after boot, forcing a reading regardless of active window\n");
+                stdio_flush();
+            } else if (!is_active_window(epoch_sec, config.utc_offset_hours)) {
                 const uint32_t local_sec = local_seconds_today(epoch_sec, config.utc_offset_hours);
                 printf("[cycle] inactive local=%02lu:%02lu utc_offset_hours=%d no sensor reads next_wake=%lus\n",
                     (unsigned long)(local_sec / 3600u),
@@ -570,7 +615,7 @@ int main(void) {
             stdio_flush();
         }
 
-        const bool read_soil = publish_requested ||
+        const bool read_soil = is_first_wake || publish_requested ||
             (time_synced ? should_read_soil_moisture(epoch_sec, config.utc_offset_hours)
                          : (wake_count % (VG_SOIL_INTERVAL_MINUTES / VG_TEMP_INTERVAL_MINUTES)) == 0u);
         if (read_soil) {
@@ -583,7 +628,8 @@ int main(void) {
             publish_requested ? "true" : "false");
         stdio_flush();
 
-        const char *reason = publish_requested ? "request_reading" : "interval";
+        const char *reason = is_first_wake ? "boot" : (publish_requested ? "request_reading" : "interval");
+        is_first_wake = false;
         uint8_t successful_soil_reads = 0;
         bool all_mqtt_published = true;
         for (uint8_t ch = 0; ch < VG_ADS1115_CHANNEL_COUNT; ++ch) {

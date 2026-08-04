@@ -12,6 +12,8 @@ static const uint32_t VG_WIFI_STABILIZE_MS = 5000u;
 static const uint32_t VG_WIFI_IP_WAIT_MS = 30000u;
 static const uint32_t VG_PROVISIONING_ANNOUNCE_MS = 2000u;
 static const uint32_t VG_REPROVISION_WINDOW_MS = 8000u;
+// RP2040 hardware watchdog max is ~8388ms (RP2040-E1); stay comfortably under it.
+static const uint32_t VG_WATCHDOG_TIMEOUT_MS = 8000u;
 
 static void provisioning_announce(const node_config_t *config, bool requires_provisioning) {
     printf("VG_READY {\"role\":\"actuator\",\"node_id\":\"%s\",\"zone_id\":\"%s\",\"requires_provisioning\":%s}\n",
@@ -114,10 +116,13 @@ static bool wifi_connect_with_retry(const node_config_t *config, char *error, si
     while (!wifi_init_and_connect(config, error, error_size)) {
         printf("[wifi] failed: %s - retry in 5s\n", error);
         stdio_flush();
+        watchdog_update();
         sleep_ms(5000);
+        watchdog_update();
     }
     printf("[wifi] connected\n");
     stdio_flush();
+    watchdog_update();
     return true;
 }
 
@@ -133,6 +138,17 @@ int main(void) {
 
     node_config_load(&config);
     wait_for_usb_provisioning(&config);
+
+    // Arm the watchdog now that the interactive USB provisioning wait is
+    // behind us. From here on, a hang anywhere in the operational loop
+    // forces a reboot instead of leaving the relay/network stack wedged.
+    watchdog_enable(VG_WATCHDOG_TIMEOUT_MS, true);
+
+    // Force every relay to its safe OFF level before touching Wi-Fi/MQTT,
+    // so a relay is never left floating while the board is offline —
+    // including the time it takes to reconnect after any reboot.
+    actuator_relays_init_safe(&config);
+
     printf("[main] config: node=%s zone=%s broker=%s:%d\n",
         config.node_id, config.zone_id, config.mqtt_host, config.mqtt_port);
     printf("[main] actuator: relay=GP%u active_high=%d max_runtime=%us\n",
@@ -194,6 +210,7 @@ int main(void) {
             }
         }
 
+        watchdog_update();
         cyw43_arch_wait_for_work_until(make_timeout_time_ms(100));
     }
 }
