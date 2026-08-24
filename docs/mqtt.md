@@ -90,6 +90,68 @@ Compatibility note:
 - canonical publishers should emit `wifi_rssi`
 - multi-sensor zones should publish only to the per-node retained topic so each sensor's latest reading survives broker and controller restarts
 
+### LoRa Gateway Bridge
+
+The current LoRa path carries the same canonical `node-state/v1` payload shown above. LoRa is a transport boundary, not a separate application-level schema.
+
+For the full LoRa protocol, including outbound command and planned acknowledgement frames, see:
+
+- [`lora.md`](lora.md)
+
+Inbound physical flow:
+
+1. the Pico sends one UTF-8 JSON object followed by `\n` over UART to its DX-LR22 radio
+2. the Pi-connected DX-LR22 receives the bytes through its USB serial adapter
+3. `victory-garden-lora-receiver.service` reassembles newline-delimited frames
+4. the receiver validates the JSON through the shared `SensorReading` model
+5. the receiver publishes the exact validated frame to MQTT
+
+Receiver rules:
+
+- frame delimiter: newline, `\n`
+- CRLF input is accepted; trailing `\r` is stripped before JSON parsing
+- maximum frame size: `1024` bytes by default
+- malformed JSON, invalid UTF-8, oversized frames, and schema-invalid payloads are dropped and logged
+- `schema_version` must be exactly `node-state/v1`
+- `zone_id` and `node_id` must be MQTT-safe: letters, numbers, `.`, `_`, and `-`
+- the MQTT topic is derived from the validated payload:
+
+```text
+greenhouse/zones/{zone_id}/nodes/{node_id}/state
+```
+
+Publish behavior:
+
+- QoS: `1`
+- retained: yes
+- duplicate suppression: exact repeated frames are suppressed within the receiver's recent-frame window
+
+Example LoRa serial frame:
+
+```json
+{"schema_version":"node-state/v1","timestamp":"2026-08-21T15:20:00Z","zone_id":"zone1","node_id":"lora-bridge-test","moisture_raw":2345,"moisture_percent":55,"health":"ok","last_error":"none","publish_reason":"lora_bridge_ingest_test"}
+```
+
+The line above is transmitted with a trailing newline over LoRa. The receiver publishes it to:
+
+```text
+greenhouse/zones/zone1/nodes/lora-bridge-test/state
+```
+
+Outbound command bridge:
+
+- `victory-garden-lora-receiver.service` subscribes to `greenhouse/nodes/+/lora/command`
+- command payloads must validate as `lora-command/v1`
+- the `{node_id}` topic segment must match `target_node_id`
+- accepted commands are serialized as compact JSON plus trailing newline and written to the Pi-connected LR22 serial stream
+- if the LR22 serial connection is down, commands are dropped and logged with reason `serial_disconnected`
+
+Current scope:
+
+- inbound Pico-to-Pi sensor state is implemented and bench-validated
+- outbound Pi-to-Pico `request_reading` command routing is implemented and Pi-service validated
+- command acknowledgements and retry/timeout handling are documented protocol work but are not implemented yet
+
 ### Node Command
 
 Topic:

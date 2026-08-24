@@ -102,6 +102,84 @@ Current hardware assumption:
 
 This keeps the outdoor relay and pump wiring local to the actuator Pico and avoids routing live relay control through the Pi.
 
+## LoRa Inbound Gateway Wiring
+
+The current LoRa path is an inbound sensor-data bridge:
+
+1. a Pico/Pico W speaks UART to a DX-LR22 radio
+2. the matching DX-LR22 radio is connected to the Pi through a USB serial adapter
+3. the Pi receiver service reads newline-delimited `node-state/v1` JSON frames
+4. the receiver publishes the validated payload to the canonical MQTT node-state topic
+
+### Pico to DX-LR22 wiring
+
+The bench-verified Pico wiring is:
+
+| Pico | Physical pin | Direction | DX-LR22 |
+| --- | ---: | --- | --- |
+| GP8 / UART1 TX | 11 | Pico to radio | RXD |
+| GP9 / UART1 RX | 12 | Radio to Pico | TXD |
+| GND | 38 | Ground | GND |
+| VBUS / 5 V | 40 | Power | VCC |
+
+Optional mode/status wiring used by the current LoRa test firmware:
+
+| Pico | Physical pin | Direction | DX-LR22 |
+| --- | ---: | --- | --- |
+| GP10 | 14 | Radio to Pico | AUX |
+| GP4 | 6 | Pico to radio | M0 |
+| GP3 | 5 | Pico to radio | M1 |
+
+Notes:
+
+- `GP8` is GPIO 8 / physical pin 11. It connects to the LR22 `RXD` pin because the Pico's transmit line feeds the radio's receive line.
+- `GP9` is GPIO 9 / physical pin 12. It connects to the LR22 `TXD` pin because the radio's transmit line feeds the Pico's receive line.
+- The LR22 power input supports 3.3-5.5 V; the verified bench setup uses Pico `VBUS` while the Pico is USB-powered.
+- The LR22 UART logic is compatible with the Pico's 3.3 V GPIO. Do not drive Pico GPIO with a separate 5 V UART signal.
+- Keep all grounds common.
+
+### Pi to DX-LR22 USB adapter
+
+The Pi-connected radio uses the DX-LR22 USB serial adapter. The adapter maps the radio pins directly:
+
+| DX-LR22 | USB adapter |
+| --- | --- |
+| VCC | VCC |
+| GND | GND |
+| RXD | TXD |
+| TXD | RXD |
+| AUX | AUX, if present |
+| M0 | M0, if present |
+| M1 | M1, if present |
+
+Use a stable Linux device path from `/dev/serial/by-id/` for the receiver service. Do not use `/dev/ttyUSB0` as the saved service configuration because it can change across reboots or USB reconnects.
+
+### Verified LR22 radio settings
+
+Both DX-LR22-900T22D modules were verified with this shared profile:
+
+| Setting | Value |
+| --- | --- |
+| UART | 9600 baud, 8-N-1 |
+| Transfer mode | 0 / transparent |
+| Air-rate preset | Level 2 / 2149 bps |
+| Frequency/channel | 915.15 MHz / 41 |
+| Address | `ff,ff` |
+| Bandwidth | 6 |
+| Spreading factor | 11 |
+| Coding rate | 1 |
+| CRC | enabled |
+| IQ inversion | enabled |
+| Transmit power | 22 dBm |
+
+For the temporary USB-to-LoRa bridge firmware, build and test notes live in:
+
+- [`../firmware/lora_test/README.md`](../firmware/lora_test/README.md)
+
+For the LoRa application protocol, see:
+
+- [`lora.md`](../docs/lora.md)
+
 ## Recommended Safe Bring-Up Order
 
 For network and hardware stability:

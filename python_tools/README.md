@@ -17,6 +17,7 @@ The controller runtime is intentionally split into four files:
 - Track per-zone daily runtime state
 - Evaluate automatic watering decisions
 - Publish actuator commands and controller telemetry
+- Receive validated inbound LoRa node-state frames and republish them to MQTT
 - Provide a simulation tool for the MQTT contract
 
 ## Shared Contract Fixtures
@@ -38,13 +39,34 @@ From `python_tools/`:
   - `.venv/bin/python -m tools.simulate_run`
 - Run the live controller loop:
   - `.venv/bin/python -m main`
+- Run the LoRa receiver manually:
+  - `.venv/bin/python -m tools.lora_receiver --serial-port /dev/serial/by-id/<your-lora-usb-adapter>`
 - Run the local Pico flasher helper:
   - `.venv/bin/python -m tools.pico_flasher_helper`
+- Inspect retained Pico provisioning over USB:
+  - `vg pico inspect`
+- Check against expected values:
+  - `vg pico check --expect-wifi-ssid mywifi --expect-mqtt-host pipi.local`
+- Explicitly keep the reported provisioning:
+  - `vg pico preserve`
+- Replace stale provisioning (passwords are prompted and are never printed):
+  - `vg pico update`
+
+The Pico configuration CLI requires exactly one USB-connected Pico and `picotool`
+in `PATH`. It reboots the board into its five-minute configuration review window.
+`inspect` reports only non-secret values and leaves the Pico in that bounded
+window for a follow-up `update` or `preserve`. It exits with status `3` and prints `STALE` when
+the saved SSID or broker differs from supplied expectations. `update` asks for
+confirmation before writing.
+For automation, passwords may be supplied through `VG_WIFI_PASSWORD` and
+`VG_MQTT_PASSWORD`; command-line password flags are intentionally unsupported so
+secrets do not enter shell history or process listings.
 
 `tools.run_loop` remains as a compatibility wrapper, but `main` is the primary production entrypoint.
 
 Both tools expect a running MQTT broker. Override the broker with `--mqtt-host` and `--mqtt-port` if needed.
 Both also accept `--mqtt-username` and `--mqtt-password`, and default those from `MQTT_USERNAME` / `MQTT_PASSWORD` when present.
+The LoRa receiver uses the same MQTT options, publishes newline-delimited `node-state/v1` frames to the canonical retained node-state topic, and routes valid `greenhouse/nodes/+/lora/command` messages to newline-delimited LoRa command frames while serial is connected.
 When available, the controller prefers retained `greenhouse/system/config/current` from Rails over local YAML so `allowed_hours`, active zones, and crop thresholds stay consistent with the UI.
 The controller also refuses to act on stale retained readings older than `--max-reading-age-seconds` (default: 900) so an old dry payload cannot trigger watering after a long outage or restart.
 For multi-sensor zones, it averages fresh readings from the zone's configured `node_ids` and can require a quorum with `--min-zone-sensor-readings` before watering.

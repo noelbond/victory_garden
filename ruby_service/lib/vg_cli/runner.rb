@@ -7,6 +7,7 @@ module VgCli
       "controller" => "greenhouse.service",
       "mqtt" => "victory-garden-mqtt-consumer.service",
       "discovery" => "victory-garden-mqtt-discovery.service",
+      "lora" => "victory-garden-lora-receiver.service",
       "broker" => "mosquitto.service"
     }.freeze
 

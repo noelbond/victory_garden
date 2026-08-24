@@ -34,6 +34,13 @@ Current keys:
 - `MQTT_DISCOVERY_PORT`
 - `MQTT_USERNAME`
 - `MQTT_PASSWORD`
+- `LORA_SERIAL_PORT`
+- `LORA_BAUDRATE`
+- `LORA_SERIAL_TIMEOUT_SECONDS`
+- `LORA_READ_SIZE`
+- `LORA_RECONNECT_DELAY_SECONDS`
+- `LORA_MAX_FRAME_SIZE`
+- `LORA_DEDUP_RECENT_FRAMES`
 - `SOLID_QUEUE_IN_PUMA`
 - `SECRET_KEY_BASE`
 - `RUBY_SERVICE_DATABASE_PASSWORD`
@@ -44,7 +51,41 @@ Use this file for:
 - Rails web runtime
 - Rails MQTT consumer runtime
 - Python controller runtime
+- LoRa receiver runtime
 - local broker address, port, and credentials
+
+### LoRa receiver environment
+
+The LoRa receiver service is:
+
+- `victory-garden-lora-receiver.service`
+
+It reads:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `LORA_SERIAL_PORT` | `/dev/serial/by-id/REPLACE_WITH_LORA_ADAPTER` | Stable USB serial path for the Pi-connected LR22 adapter |
+| `LORA_BAUDRATE` | `9600` | LR22 UART baud rate |
+| `LORA_SERIAL_TIMEOUT_SECONDS` | `1.0` | Serial read timeout used by the receiver loop |
+| `LORA_READ_SIZE` | `256` | Maximum bytes read from serial per read call |
+| `LORA_RECONNECT_DELAY_SECONDS` | `2.0` | Delay before retrying after USB serial disconnect/error |
+| `LORA_MAX_FRAME_SIZE` | `1024` | Maximum accepted newline-delimited frame size |
+| `LORA_DEDUP_RECENT_FRAMES` | `32` | Recent exact frames remembered for duplicate suppression |
+
+`LORA_SERIAL_PORT` should be a `/dev/serial/by-id/...` path. Do not save `/dev/ttyUSB0` or `/dev/ttyACM0` in production config because those names can change after reboot or reconnect.
+
+The receiver also uses the shared MQTT keys:
+
+- `MQTT_HOST`
+- `MQTT_PORT`
+- `MQTT_USERNAME`
+- `MQTT_PASSWORD`
+
+It publishes validated inbound LoRa `node-state/v1` frames to MQTT with QoS 1 and retained delivery. It also subscribes to `greenhouse/nodes/+/lora/command` and routes valid `lora-command/v1` command frames to the Pi-connected LR22 serial stream while the serial connection is live.
+
+For the LoRa application protocol, see:
+
+- [`lora.md`](../docs/lora.md)
 
 ## Local Rails Development
 
