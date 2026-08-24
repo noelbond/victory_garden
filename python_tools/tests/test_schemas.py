@@ -40,6 +40,19 @@ class TestSensorReading:
         assert reading.battery_voltage is None
         assert reading.wifi_rssi is None
 
+    def test_sensor_reading_accepts_null_moisture_when_soil_was_not_read(self):
+        reading = SensorReading(
+            node_id="sensor-1",
+            zone_id="z1",
+            moisture_raw=None,
+            moisture_percent=None,
+            soil_moisture_read=False,
+        )
+
+        assert reading.moisture_raw is None
+        assert reading.moisture_percent is None
+        assert reading.soil_moisture_read is False
+
     def test_sensor_reading_accepts_schema_version(self):
         reading = SensorReading(
             schema_version="node-state/v1",

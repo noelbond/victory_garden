@@ -625,6 +625,53 @@ def test_zone_moisture_snapshot_averages_fresh_configured_sensors():
     assert snapshot.valid_node_ids == ["sensor-a", "sensor-b", "sensor-c"]
 
 
+def test_zone_moisture_snapshot_handles_status_only_reading_without_soil_measurement():
+    on_message(
+        None,
+        None,
+        SimpleNamespace(
+            topic=SYSTEM_CONFIG_TOPIC,
+            payload=json.dumps(
+                {
+                    "crops": sample_system_config()["crops"],
+                    "zones": [
+                        {
+                            "zone_id": "zone1",
+                            "crop_id": "tomato",
+                            "node_ids": ["sensor-a"],
+                            "active": True,
+                            "allowed_hours": {"start_hour": 6, "end_hour": 20},
+                            "irrigation_line": 1,
+                        }
+                    ],
+                }
+            ).encode("utf-8"),
+        ),
+    )
+    store_latest_reading(
+        SensorReading(
+            node_id="sensor-a",
+            zone_id="zone1",
+            moisture_raw=None,
+            moisture_percent=None,
+            soil_moisture_read=False,
+            timestamp=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    snapshot = zone_moisture_snapshot(
+        LIVE_ZONES["zone1"],
+        now=datetime(2026, 3, 31, 10, 1, tzinfo=timezone.utc),
+        max_age_seconds=900,
+    )
+
+    assert snapshot is not None
+    assert snapshot.reading.moisture_raw is None
+    assert snapshot.reading.moisture_percent is None
+    assert snapshot.valid_sensor_count == 0
+    assert snapshot.null_moisture_node_ids == ["sensor-a"]
+
+
 def test_process_zone_tick_skips_when_valid_sensor_count_below_quorum():
     on_message(
         None,

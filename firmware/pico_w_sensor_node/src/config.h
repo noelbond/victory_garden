@@ -88,7 +88,14 @@
 #endif
 
 #ifndef VG_ENABLE_AON_DORMANT_SLEEP
-#define VG_ENABLE_AON_DORMANT_SLEEP true
+// Dormant wake is not reliable on the supported sensor boards yet. Keep it
+// opt-in until the wake clock and alarm path have hardware validation across
+// both Pico W targets; bundled builds intentionally ignore config_local.h.
+#define VG_ENABLE_AON_DORMANT_SLEEP false
+#endif
+
+#if VG_ENABLE_AON_DORMANT_SLEEP
+#error "Dormant sensor sleep is disabled pending validated wake-clock support"
 #endif
 
 #ifndef VG_ENABLE_I2C_DIAGNOSTIC_SCAN

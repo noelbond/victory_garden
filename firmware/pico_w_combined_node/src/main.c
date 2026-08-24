@@ -16,36 +16,72 @@
 static const uint32_t VG_WIFI_STABILIZE_MS = 5000u;
 static const uint32_t VG_WIFI_IP_WAIT_MS = 30000u;
 static const uint32_t VG_PROVISIONING_ANNOUNCE_MS = 2000u;
-static const uint32_t VG_REPROVISION_WINDOW_MS = 8000u;
+static const uint32_t VG_CONFIG_REVIEW_TIMEOUT_MS = 5u * 60u * 1000u;
+static const uint32_t VG_USB_ENUMERATION_GRACE_MS = 3000u;
 static const size_t VG_PROVISION_LINE_MAX = 2048u;
 // RP2040 hardware watchdog max is ~8388ms (RP2040-E1); stay comfortably under it.
 static const uint32_t VG_WATCHDOG_TIMEOUT_MS = 8000u;
+// wifi_connect_with_retry() pets the watchdog through every retry, so a Wi-Fi
+// outage this long can't be caught by the watchdog on its own — it'll retry
+// forever without ever forcing a clean reinit of a possibly-wedged cyw43
+// radio. Bound it: after this long of unbroken failure, force a reboot.
+static const uint32_t VG_WIFI_RETRY_REBOOT_MS = 5u * 60u * 1000u;
+#define VG_SKIP_REVIEW_ONCE_MAGIC 0x56475201u
+
+static void print_json_string(const char *value) {
+    putchar('"');
+    for (const unsigned char *cursor = (const unsigned char *)(value ? value : ""); *cursor; ++cursor) {
+        if (*cursor == '"' || *cursor == '\\') {
+            putchar('\\');
+            putchar((int)*cursor);
+        } else {
+            putchar(*cursor < 0x20 ? '_' : (int)*cursor);
+        }
+    }
+    putchar('"');
+}
 
 static void provisioning_announce(const node_config_t *config, bool requires_provisioning) {
-    printf("VG_READY {\"role\":\"combined\",\"node_id\":\"%s\",\"zone_id\":\"%s\",\"requires_provisioning\":%s}\n",
-        config->node_id,
-        config->zone_id,
-        requires_provisioning ? "true" : "false");
+    printf("VG_READY {\"role\":\"combined\",\"node_id\":");
+    print_json_string(config->node_id);
+    printf(",\"zone_id\":");
+    print_json_string(config->zone_id);
+    printf(",\"requires_provisioning\":%s,\"wifi_ssid\":", requires_provisioning ? "true" : "false");
+    print_json_string(config->wifi_ssid);
+    printf(",\"mqtt_host\":");
+    print_json_string(config->mqtt_host);
+    printf(",\"mqtt_port\":%u}\n", (unsigned)config->mqtt_port);
     stdio_flush();
 }
 
 static void wait_for_usb_provisioning(node_config_t *config) {
-    bool requires_provisioning = node_config_requires_provisioning(config);
-    if (!requires_provisioning && !stdio_usb_connected()) {
+    if (watchdog_hw->scratch[2] == VG_SKIP_REVIEW_ONCE_MAGIC) {
+        watchdog_hw->scratch[2] = 0;
         return;
+    }
+    bool requires_provisioning = node_config_requires_provisioning(config);
+    if (!requires_provisioning) {
+        absolute_time_t usb_deadline = make_timeout_time_ms(VG_USB_ENUMERATION_GRACE_MS);
+        while (!stdio_usb_connected() && absolute_time_diff_us(get_absolute_time(), usb_deadline) > 0) {
+            sleep_ms(25);
+        }
+        if (!stdio_usb_connected()) {
+            return;
+        }
     }
 
     char line[VG_PROVISION_LINE_MAX];
     size_t line_len = 0;
     absolute_time_t next_announce_at = get_absolute_time();
-    absolute_time_t reprovision_deadline = make_timeout_time_ms(VG_REPROVISION_WINDOW_MS);
+    absolute_time_t review_deadline = make_timeout_time_ms(VG_CONFIG_REVIEW_TIMEOUT_MS);
     char error[128] = {0};
 
     while (true) {
-        if (!requires_provisioning && absolute_time_diff_us(get_absolute_time(), reprovision_deadline) <= 0) {
+        if (!requires_provisioning && absolute_time_diff_us(get_absolute_time(), review_deadline) <= 0) {
+            printf("VG_PRESERVE_TIMEOUT {\"preserved\":true,\"reason\":\"no decision received\"}\n");
+            stdio_flush();
             return;
         }
-
         if (absolute_time_diff_us(get_absolute_time(), next_announce_at) <= 0) {
             provisioning_announce(config, requires_provisioning);
             next_announce_at = make_timeout_time_ms(VG_PROVISIONING_ANNOUNCE_MS);
@@ -68,6 +104,17 @@ static void wait_for_usb_provisioning(node_config_t *config) {
 
         line[line_len] = '\0';
         line_len = 0;
+
+        if (strcmp(line, "VG_PRESERVE") == 0) {
+            if (requires_provisioning) {
+                printf("VG_PROVISION_ERROR no valid configuration to preserve\n");
+                stdio_flush();
+                continue;
+            }
+            printf("VG_PRESERVE_OK {\"preserved\":true}\n");
+            stdio_flush();
+            return;
+        }
 
         if (strncmp(line, "VG_PROVISION ", 13) != 0) {
             if (strcmp(line, "VG_IDENTIFY") == 0) {
@@ -97,6 +144,7 @@ static void wait_for_usb_provisioning(node_config_t *config) {
             config->channel_node_id[3]);
         stdio_flush();
         sleep_ms(200);
+        watchdog_hw->scratch[2] = VG_SKIP_REVIEW_ONCE_MAGIC;
         watchdog_reboot(0, 0, 100);
     }
 }
@@ -123,9 +171,26 @@ static bool wifi_link_needs_reconnect(int link_status, absolute_time_t reconnect
 static bool wifi_connect_with_retry(const node_config_t *config, char *error, size_t error_size) {
     printf("[wifi] connecting ssid=%s\n", config->wifi_ssid);
     stdio_flush();
+    absolute_time_t retry_reboot_deadline = make_timeout_time_ms(VG_WIFI_RETRY_REBOOT_MS);
     while (!wifi_init_and_connect(config, error, error_size)) {
         printf("[wifi] failed: %s - retry in 5s\n", error);
         stdio_flush();
+        if (absolute_time_diff_us(get_absolute_time(), retry_reboot_deadline) <= 0) {
+            // Wi-Fi has been unreachable for VG_WIFI_RETRY_REBOOT_MS straight.
+            // Stop petting the watchdog and force a full reboot instead of
+            // retrying forever — a clean boot re-inits the cyw43 driver from
+            // scratch, which can recover a wedged radio that a plain retry
+            // can't, and it also produces the boot-forced sensor reading
+            // once reconnected so a long outage shows up in history instead
+            // of just silently persisting.
+            printf("[wifi] unreachable for %us straight, forcing reboot\n",
+                   (unsigned)(VG_WIFI_RETRY_REBOOT_MS / 1000u));
+            stdio_flush();
+            watchdog_reboot(0, 0, 100);
+            while (true) {
+                tight_loop_contents();
+            }
+        }
         watchdog_update();
         sleep_ms(5000);
         watchdog_update();
@@ -317,7 +382,11 @@ int main(void) {
             printf("[wifi] reconnecting link=%d\n", link_status);
             wifi_deinit();
             wifi_connect_with_retry(&config, wifi_error, sizeof(wifi_error));
-            mqtt_node_take_reconnect_request(&node);
+            // The old TCP session belongs to the lost Wi-Fi link. Do not
+            // rely on lwIP noticing that stale socket on its own after the
+            // station reconnects; rebuild MQTT and all subscriptions now.
+            (void)mqtt_node_take_reconnect_request(&node);
+            mqtt_node_disconnect(&node);
             wifi_reconnect_allowed_at = make_timeout_time_ms(VG_WIFI_STABILIZE_MS);
             wifi_ip_wait_started_at = get_absolute_time();
             canary_published = false;

@@ -59,6 +59,7 @@ typedef struct {
 void actuator_relays_init_safe(const node_config_t *config);
 void mqtt_node_init(mqtt_node_t *node, node_config_t *config);
 void mqtt_node_poll(mqtt_node_t *node);
+void mqtt_node_disconnect(mqtt_node_t *node);
 bool mqtt_node_is_connected(const mqtt_node_t *node);
 bool mqtt_node_publish_canary(mqtt_node_t *node);
 bool mqtt_node_take_reconnect_request(mqtt_node_t *node);

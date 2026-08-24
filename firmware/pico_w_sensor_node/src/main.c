@@ -24,7 +24,8 @@ static const uint32_t VG_MQTT_CANARY_TIMEOUT_MS = 5000u;
 static const uint32_t VG_MQTT_RETAINED_WINDOW_MS = 5000u;
 static const uint32_t VG_IDLE_POLL_MS = 100u;
 static const uint32_t VG_PROVISIONING_ANNOUNCE_MS = 2000u;
-static const uint32_t VG_REPROVISION_WINDOW_MS = 8000u;
+static const uint32_t VG_CONFIG_REVIEW_TIMEOUT_MS = 5u * 60u * 1000u;
+static const uint32_t VG_USB_ENUMERATION_GRACE_MS = 3000u;
 static const uint32_t VG_TIME_SYNC_LOG_INTERVAL_MS = 5000u;
 static const uint32_t VG_MQTT_LOG_INTERVAL_MS = 5000u;
 static const uint32_t VG_CANARY_LOG_INTERVAL_MS = 2000u;
@@ -35,6 +36,7 @@ static const size_t VG_PROVISION_LINE_MAX = 2048u;
 static const uint32_t VG_WATCHDOG_TIMEOUT_MS = 8000u;
 
 #define VG_WAKE_COUNT_MAGIC 0x56474301u
+#define VG_SKIP_REVIEW_ONCE_MAGIC 0x56475201u
 
 static volatile bool g_sleep_alarm_fired = false;
 static bool g_aon_timer_seeded = false;
@@ -43,31 +45,60 @@ static void sleep_alarm_handler(void) {
     g_sleep_alarm_fired = true;
 }
 
+static void print_json_string(const char *value) {
+    putchar('"');
+    for (const unsigned char *cursor = (const unsigned char *)(value ? value : ""); *cursor; ++cursor) {
+        if (*cursor == '"' || *cursor == '\\') {
+            putchar('\\');
+            putchar((int)*cursor);
+        } else {
+            putchar(*cursor < 0x20 ? '_' : (int)*cursor);
+        }
+    }
+    putchar('"');
+}
+
 static void provisioning_announce(const node_config_t *config, bool requires_provisioning) {
-    printf("VG_READY {\"role\":\"sensor\",\"node_id\":\"%s\",\"zone_id\":\"%s\",\"requires_provisioning\":%s}\n",
-        config->node_id,
-        config->zone_id,
-        requires_provisioning ? "true" : "false");
+    printf("VG_READY {\"role\":\"sensor\",\"node_id\":");
+    print_json_string(config->node_id);
+    printf(",\"zone_id\":");
+    print_json_string(config->zone_id);
+    printf(",\"requires_provisioning\":%s,\"wifi_ssid\":", requires_provisioning ? "true" : "false");
+    print_json_string(config->wifi_ssid);
+    printf(",\"mqtt_host\":");
+    print_json_string(config->mqtt_host);
+    printf(",\"mqtt_port\":%u}\n", (unsigned)config->mqtt_port);
     stdio_flush();
 }
 
 static void wait_for_usb_provisioning(node_config_t *config) {
-    bool requires_provisioning = node_config_requires_provisioning(config);
-    if (!requires_provisioning && !stdio_usb_connected()) {
+    if (watchdog_hw->scratch[2] == VG_SKIP_REVIEW_ONCE_MAGIC) {
+        watchdog_hw->scratch[2] = 0;
         return;
+    }
+    bool requires_provisioning = node_config_requires_provisioning(config);
+    if (!requires_provisioning) {
+        absolute_time_t usb_deadline = make_timeout_time_ms(VG_USB_ENUMERATION_GRACE_MS);
+        while (!stdio_usb_connected() && absolute_time_diff_us(get_absolute_time(), usb_deadline) > 0) {
+            sleep_ms(25);
+        }
+        if (!stdio_usb_connected()) {
+            return;
+        }
     }
 
     char line[VG_PROVISION_LINE_MAX];
     size_t line_len = 0;
     absolute_time_t next_announce_at = get_absolute_time();
-    absolute_time_t reprovision_deadline = make_timeout_time_ms(VG_REPROVISION_WINDOW_MS);
+    absolute_time_t review_deadline = make_timeout_time_ms(VG_CONFIG_REVIEW_TIMEOUT_MS);
     char error[128] = {0};
 
     while (true) {
-        if (!requires_provisioning && absolute_time_diff_us(get_absolute_time(), reprovision_deadline) <= 0) {
+        if (!requires_provisioning && absolute_time_diff_us(get_absolute_time(), review_deadline) <= 0) {
+            printf("VG_PRESERVE_TIMEOUT {\"preserved\":true,\"reason\":\"no decision received\"}\n");
+            stdio_flush();
             return;
         }
-
         if (absolute_time_diff_us(get_absolute_time(), next_announce_at) <= 0) {
             provisioning_announce(config, requires_provisioning);
             next_announce_at = make_timeout_time_ms(VG_PROVISIONING_ANNOUNCE_MS);
@@ -90,6 +121,17 @@ static void wait_for_usb_provisioning(node_config_t *config) {
 
         line[line_len] = '\0';
         line_len = 0;
+
+        if (strcmp(line, "VG_PRESERVE") == 0) {
+            if (requires_provisioning) {
+                printf("VG_PROVISION_ERROR no valid configuration to preserve\n");
+                stdio_flush();
+                continue;
+            }
+            printf("VG_PRESERVE_OK {\"preserved\":true}\n");
+            stdio_flush();
+            return;
+        }
 
         if (strncmp(line, "VG_PROVISION ", 13) != 0) {
             if (strcmp(line, "VG_IDENTIFY") == 0) {
@@ -119,6 +161,7 @@ static void wait_for_usb_provisioning(node_config_t *config) {
             config->channel_node_id[3]);
         stdio_flush();
         sleep_ms(200);
+        watchdog_hw->scratch[2] = VG_SKIP_REVIEW_ONCE_MAGIC;
         watchdog_reboot(0, 0, 100);
     }
 }

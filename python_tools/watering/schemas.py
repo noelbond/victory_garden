@@ -19,7 +19,7 @@ class SensorReading(BaseModel):
 
     timestamp: datetime = Field(default_factory=utcnow)
 
-    moisture_raw: int = Field(ge=0, le=65535, examples=[1820])
+    moisture_raw: Optional[int] = Field(default=None, ge=0, le=65535, examples=[1820])
     moisture_percent: Optional[float] = Field(default=None, ge=0, le=100, examples=[31.4])
     soil_moisture_read: Optional[bool] = Field(default=None)
 

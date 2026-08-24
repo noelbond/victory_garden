@@ -61,7 +61,10 @@ int wifi_link_status(void) {
     }
     int status = CYW43_LINK_DOWN;
     cyw43_arch_lwip_begin();
-    status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+    // Use the TCP/IP status rather than the radio-only status. The latter
+    // reports JOIN for an associated station and does not distinguish a
+    // usable address from a stale DHCP address retained by lwIP.
+    status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
     cyw43_arch_lwip_end();
     return status;
 }
@@ -73,8 +76,9 @@ bool wifi_is_connected(void) {
 
     bool connected = false;
     cyw43_arch_lwip_begin();
-    int status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
-    connected = (status == CYW43_LINK_UP) || wifi_has_ip_locked();
+    // This is the SDK's combined radio/link/IP state. It returns LINK_UP
+    // only when the netif is up, its link is up, and it has an address.
+    connected = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA) == CYW43_LINK_UP;
     cyw43_arch_lwip_end();
     return connected;
 }

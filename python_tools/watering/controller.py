@@ -30,26 +30,21 @@ from watering.controller_mqtt import (
     publish_skip,
     set_subscriber_context,
     sync_zone_state_subscriptions,
-    update_system_config,
 )
 from watering.controller_runtime import (
-    CANONICAL_NODE_STATE_TOPIC,
     CONTROLLER_HEALTH,
     CONTROLLER_RUNTIME,
     LIVE_CROPS,
     LIVE_ZONES,
     LATEST_STATE,
     LATEST_ZONE_READINGS,
-    SUBSCRIBED_STATE_TOPICS,
     ControllerRuntime,
     controller_health_snapshot,
     have_latest_state_for_any,
     iso_now,
-    latest_reading,
     latest_readings_for_zone,
     live_config_snapshot,
     load_controller_runtime,
-    new_controller_health,
     new_zone_runtime,
     save_controller_runtime,
     serialize_controller_health,
@@ -221,9 +216,17 @@ def zone_moisture_snapshot(
         if valid_readings
         else None
     )
-    moisture_raw_source = valid_readings or signature_readings
-    moisture_raw = round(sum(reading.moisture_raw for reading in moisture_raw_source) / len(moisture_raw_source))
-    timestamp = max((reading.timestamp for reading in moisture_raw_source), default=now)
+    moisture_raw_source = [
+        reading
+        for reading in (valid_readings or signature_readings)
+        if reading.moisture_raw is not None
+    ]
+    moisture_raw = (
+        round(sum(reading.moisture_raw for reading in moisture_raw_source) / len(moisture_raw_source))
+        if moisture_raw_source
+        else None
+    )
+    timestamp = max((reading.timestamp for reading in signature_readings), default=now)
     aggregate_reading = SensorReading(
         schema_version="zone-moisture-aggregate/v1",
         node_id="__zone_average__",

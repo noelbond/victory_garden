@@ -41,6 +41,26 @@ typedef struct {
     char incoming_topic[MQTT_RX_TOPIC_MAX];
     char incoming_payload[MQTT_RX_PAYLOAD_MAX];
     char discovered_mqtt_host[VG_MAX_HOST_LEN];
+    // Discovery replies are unauthenticated, so a changed host/port is held
+    // here as an unverified candidate (see mqtt_apply_discovered_broker())
+    // rather than trusted immediately -- fallback_host/port is what to
+    // revert to if the candidate never accepts our real MQTT credentials.
+    bool broker_candidate_pending;
+    char broker_fallback_host[VG_MAX_HOST_LEN];
+    uint16_t broker_fallback_port;
+    // Accumulated while unable to reach the configured broker, flushed as
+    // one summary diagnostic event once reconnected (same host recovering,
+    // or discovery finding it at a new one) instead of reporting every
+    // individual retry/timeout -- see queue_broker_outage_diagnostic_event().
+    bool broker_outage_active;
+    absolute_time_t broker_outage_started_at;
+    uint32_t broker_outage_no_response_count;
+    uint32_t broker_outage_rejected_count;
+    char broker_outage_last_rejected_host[VG_MAX_HOST_LEN];
+    uint16_t broker_outage_last_rejected_port;
+    bool pending_diagnostic_event;
+    char pending_diagnostic_event_code[32];
+    char pending_diagnostic_event_detail[192];
     char client_id[VG_MAX_NODE_ID_LEN + 10];
     size_t incoming_payload_len;
     uint16_t discovered_mqtt_port;
@@ -65,6 +85,23 @@ static void mqtt_request_cb(void *arg, err_t err);
 
 static void set_error(mqtt_node_t *node, const char *message) {
     snprintf(node->last_error, sizeof(node->last_error), "%s", message ? message : "none");
+}
+
+// Network-supplied strings (e.g. a discovery reply's claimed host) get
+// embedded into this file's hand-rolled JSON elsewhere, which is not
+// escaping-aware -- a malicious or malformed value containing a quote or
+// backslash could break the resulting payload's structure. Used wherever an
+// untrusted string needs to go into an outgoing JSON string field.
+static void sanitize_for_json_detail(const char *src, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    size_t len = 0;
+    for (; src && src[len] != '\0' && len + 1 < out_size; ++len) {
+        char ch = src[len];
+        out[len] = (ch == '"' || ch == '\\' || (unsigned char)ch < 0x20) ? '_' : ch;
+    }
+    out[len] = '\0';
 }
 
 static void set_errorf(mqtt_node_t *node, const char *prefix, err_t err) {
@@ -286,19 +323,25 @@ static void mqtt_apply_discovered_broker(mqtt_node_t *node) {
 
     const bool changed = strcmp(node->config->mqtt_host, g_runtime.discovered_mqtt_host) != 0 ||
                          node->config->mqtt_port != g_runtime.discovered_mqtt_port;
+
+    if (!changed) {
+        g_runtime.next_reconnect_at = get_absolute_time();
+        set_error(node, "none");
+        return;
+    }
+
+    // Discovery replies are unauthenticated -- anyone on the LAN broadcast
+    // domain can answer. Apply this as an unverified candidate and keep the
+    // current host/port to revert to; mqtt_connection_cb() only persists it
+    // once it's confirmed by actually accepting our real MQTT credentials.
+    snprintf(g_runtime.broker_fallback_host, sizeof(g_runtime.broker_fallback_host), "%s", node->config->mqtt_host);
+    g_runtime.broker_fallback_port = node->config->mqtt_port;
     snprintf(node->config->mqtt_host, sizeof(node->config->mqtt_host), "%s", g_runtime.discovered_mqtt_host);
     node->config->mqtt_port = g_runtime.discovered_mqtt_port;
-    printf("[mqtt] broker discovered host=%s port=%u changed=%d\n",
+    g_runtime.broker_candidate_pending = true;
+    printf("[mqtt] broker candidate host=%s port=%u (unverified, from discovery) -- will persist only if it accepts our credentials\n",
            node->config->mqtt_host,
-           (unsigned)node->config->mqtt_port,
-           (int)changed);
-
-    if (changed) {
-        char error[64];
-        if (!node_config_save(node->config, error, sizeof(error))) {
-            printf("[mqtt] broker save failed: %s\n", error);
-        }
-    }
+           (unsigned)node->config->mqtt_port);
 
     g_runtime.next_reconnect_at = get_absolute_time();
     set_error(node, "none");
@@ -321,6 +364,9 @@ static void mqtt_poll_broker_discovery(mqtt_node_t *node) {
         absolute_time_diff_us(get_absolute_time(), g_runtime.discovery_deadline) <= 0) {
         printf("[mqtt] broker discovery timed out\n");
         mqtt_close_broker_discovery();
+        if (g_runtime.broker_outage_active) {
+            g_runtime.broker_outage_no_response_count++;
+        }
     }
 
     if (!g_runtime.discovery_in_progress) {
@@ -635,6 +681,45 @@ static void publish_config_ack(mqtt_node_t *node, const char *status, const char
     mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), 0, 1, NULL, NULL);
 }
 
+// One-shot informational events (currently: broker-outage summaries) that
+// don't fit the routine actuator-status schema. Not retained -- a stale
+// diagnostic event replayed to a late subscriber would be actively
+// misleading, unlike current-state topics where retain is intentional.
+static bool publish_node_diagnostic_event(mqtt_node_t *node, const char *event_code, const char *detail) {
+    char topic[MQTT_RX_TOPIC_MAX];
+    char payload[MQTT_TX_PAYLOAD_MAX];
+    char timestamp[32];
+    topic_node_diagnostic_event(node->config, topic, sizeof(topic));
+    time_sync_format_iso8601(timestamp, sizeof(timestamp));
+
+    int written = snprintf(
+        payload,
+        sizeof(payload),
+        "{\"schema_version\":\"node-diagnostic-event/v1\",\"node_id\":\"%s\",\"zone_id\":\"%s\",\"event_code\":\"%s\",\"detail\":\"%s\",\"timestamp\":\"%s\"}",
+        node->config->node_id,
+        node->config->zone_id,
+        event_code,
+        detail,
+        timestamp
+    );
+    if (written < 0 || (size_t)written >= sizeof(payload)) {
+        set_error(node, "mqtt diagnostic event payload too large");
+        return false;
+    }
+
+    err_t err = mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), 1, 0, mqtt_request_cb, node);
+    if (err == ERR_OK) {
+        return true;
+    }
+
+    if (err == ERR_MEM) {
+        set_error(node, "mqtt diagnostic event buffer full");
+    } else {
+        set_errorf(node, "mqtt diagnostic event failed", err);
+    }
+    return false;
+}
+
 static void mqtt_request_cb(void *arg, err_t err) {
     mqtt_node_t *node = (mqtt_node_t *)arg;
     if (err != ERR_OK) {
@@ -901,7 +986,13 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
            runtime_seconds,
            (int)run->running);
 
-    if ((uint16_t)runtime_seconds > node->config->max_pulse_runtime_sec && node->config->max_pulse_runtime_sec > 0) {
+    // Compare the full int, not a uint16_t cast of it -- casting first would
+    // silently drop the high bits (e.g. runtime_seconds=65566 truncates to
+    // 30, which could compare as "under the cap" even though the real value
+    // is over 18 hours), letting a crafted or buggy runtime_seconds bypass
+    // this safety clamp entirely while still being stored and scheduled at
+    // its full, unclamped size below.
+    if (node->config->max_pulse_runtime_sec > 0 && runtime_seconds > (int)node->config->max_pulse_runtime_sec) {
         runtime_seconds = (int)node->config->max_pulse_runtime_sec;
     }
 
@@ -1021,12 +1112,100 @@ static void subscribe_topics(mqtt_node_t *node) {
     subscribe_assigned_zone_topics(node);
 }
 
+static void broker_outage_note_started(void) {
+    if (g_runtime.broker_outage_active) {
+        return;
+    }
+    g_runtime.broker_outage_active = true;
+    g_runtime.broker_outage_started_at = get_absolute_time();
+    g_runtime.broker_outage_no_response_count = 0;
+    g_runtime.broker_outage_rejected_count = 0;
+    g_runtime.broker_outage_last_rejected_host[0] = '\0';
+    g_runtime.broker_outage_last_rejected_port = 0;
+}
+
+// Reverts an unverified candidate to the last-known-good host, whether it
+// was rejected via a CONNACK failure or never even reached that point (e.g.
+// it wasn't a parseable IP). Callers are responsible for having already
+// called broker_outage_note_started() -- this only handles the revert and
+// the rejection-specific counters.
+static void mqtt_reject_broker_candidate(node_config_t *config) {
+    g_runtime.broker_outage_rejected_count++;
+    sanitize_for_json_detail(config->mqtt_host, g_runtime.broker_outage_last_rejected_host,
+                              sizeof(g_runtime.broker_outage_last_rejected_host));
+    g_runtime.broker_outage_last_rejected_port = config->mqtt_port;
+    printf("[mqtt] broker candidate host=%s port=%u rejected, reverting to host=%s port=%u\n",
+           config->mqtt_host, (unsigned)config->mqtt_port,
+           g_runtime.broker_fallback_host, (unsigned)g_runtime.broker_fallback_port);
+    snprintf(config->mqtt_host, sizeof(config->mqtt_host), "%s", g_runtime.broker_fallback_host);
+    config->mqtt_port = g_runtime.broker_fallback_port;
+    g_runtime.broker_candidate_pending = false;
+}
+
+// Called once a connection succeeds, if an outage was being tracked --
+// builds a single summary event covering however long it took and whatever
+// happened along the way, rather than reporting each retry/timeout
+// individually. event_code is chosen by priority (a rejected candidate is
+// the most notable fact if one occurred, since it may indicate spoofing;
+// otherwise whether discovery actually relocated the broker; otherwise
+// whether discovery ran at all) but the full stats always go in detail
+// regardless of which code wins, so nothing is lost either way.
+static void queue_broker_outage_diagnostic_event(bool discovery_applied) {
+    uint32_t duration_s = (uint32_t)(absolute_time_diff_us(g_runtime.broker_outage_started_at, get_absolute_time()) / 1000000);
+    const char *event_code;
+    if (g_runtime.broker_outage_rejected_count > 0) {
+        event_code = "BROKER_DISCOVERY_REJECTED";
+    } else if (discovery_applied) {
+        event_code = "BROKER_DISCOVERY_APPLIED";
+    } else if (g_runtime.broker_outage_no_response_count > 0) {
+        event_code = "BROKER_DISCOVERY_NO_RESPONSE";
+    } else {
+        event_code = "BROKER_UNREACHABLE";
+    }
+
+    snprintf(g_runtime.pending_diagnostic_event_code, sizeof(g_runtime.pending_diagnostic_event_code), "%s", event_code);
+    snprintf(
+        g_runtime.pending_diagnostic_event_detail,
+        sizeof(g_runtime.pending_diagnostic_event_detail),
+        "unreachable for %lus; discovery_no_response=%lu discovery_rejected=%lu last_rejected=%s:%u",
+        (unsigned long)duration_s,
+        (unsigned long)g_runtime.broker_outage_no_response_count,
+        (unsigned long)g_runtime.broker_outage_rejected_count,
+        g_runtime.broker_outage_rejected_count > 0 ? g_runtime.broker_outage_last_rejected_host : "none",
+        (unsigned)(g_runtime.broker_outage_rejected_count > 0 ? g_runtime.broker_outage_last_rejected_port : 0)
+    );
+    g_runtime.pending_diagnostic_event = true;
+
+    g_runtime.broker_outage_active = false;
+    g_runtime.broker_outage_no_response_count = 0;
+    g_runtime.broker_outage_rejected_count = 0;
+    g_runtime.broker_outage_last_rejected_host[0] = '\0';
+    g_runtime.broker_outage_last_rejected_port = 0;
+}
+
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status) {
     mqtt_node_t *node = (mqtt_node_t *)arg;
     (void)client;
     printf("[mqtt_cb] status=%d\n", (int)status);
     g_runtime.connected = (status == MQTT_CONNECT_ACCEPTED);
     if (g_runtime.connected) {
+        bool discovery_applied_this_connect = g_runtime.broker_candidate_pending;
+        if (g_runtime.broker_candidate_pending) {
+            // The candidate just accepted our real MQTT credentials -- that
+            // confirmation is what discovery alone can't provide. Safe to
+            // make it permanent now.
+            g_runtime.broker_candidate_pending = false;
+            char save_error[64];
+            if (!node_config_save(node->config, save_error, sizeof(save_error))) {
+                printf("[mqtt] broker candidate save failed: %s\n", save_error);
+            } else {
+                printf("[mqtt] broker candidate host=%s port=%u verified and saved\n",
+                       node->config->mqtt_host, (unsigned)node->config->mqtt_port);
+            }
+        }
+        if (g_runtime.broker_outage_active) {
+            queue_broker_outage_diagnostic_event(discovery_applied_this_connect);
+        }
         mqtt_close_broker_discovery();
         g_runtime.next_reconnect_at = get_absolute_time();
         mqtt_set_inpub_callback(g_runtime.client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb, node);
@@ -1036,7 +1215,17 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection
         printf("[mqtt_cb] not accepted - status=%d\n", (int)status);
         set_error(node, "mqtt disconnected");
         g_runtime.next_reconnect_at = make_timeout_time_ms(5000);
-        g_runtime.discovery_next_attempt_at = get_absolute_time();
+        broker_outage_note_started();
+        if (g_runtime.broker_candidate_pending) {
+            // Candidate was rejected (or unreachable) -- revert to the
+            // last-known-good host rather than getting stuck retrying a bad
+            // or spoofed one, and leave discovery_next_attempt_at alone so
+            // the restored fallback gets a real shot on the normal
+            // reconnect cadence before we rebroadcast again.
+            mqtt_reject_broker_candidate(node->config);
+        } else {
+            g_runtime.discovery_next_attempt_at = get_absolute_time();
+        }
     }
 }
 
@@ -1092,6 +1281,16 @@ static void mqtt_ensure_connected(mqtt_node_t *node) {
     ip_addr_t broker_addr;
     if (!parse_broker_ip(node->config, &broker_addr)) {
         set_error(node, "mqtt host must be an IP address");
+        // A discovery candidate that isn't even a parseable IP never reaches
+        // mqtt_client_connect_locked(), so mqtt_connection_cb() would never
+        // fire to revert it -- without this, a malformed candidate host
+        // would get stuck applied in RAM (never flash-saved, but never
+        // un-applied either) instead of being rejected like every other bad
+        // candidate.
+        broker_outage_note_started();
+        if (g_runtime.broker_candidate_pending) {
+            mqtt_reject_broker_candidate(node->config);
+        }
         g_runtime.discovery_next_attempt_at = get_absolute_time();
         g_runtime.next_reconnect_at = make_timeout_time_ms(10000);
         return;
@@ -1127,6 +1326,12 @@ static void mqtt_ensure_connected(mqtt_node_t *node) {
 void mqtt_node_poll(mqtt_node_t *node) {
     mqtt_ensure_connected(g_runtime.node);
 
+    if (g_runtime.pending_diagnostic_event && g_runtime.client && mqtt_client_is_connected(g_runtime.client)) {
+        if (publish_node_diagnostic_event(node, g_runtime.pending_diagnostic_event_code, g_runtime.pending_diagnostic_event_detail)) {
+            g_runtime.pending_diagnostic_event = false;
+        }
+    }
+
     for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
         actuator_line_run_t *run = &node->runs[i];
         if (!run->running) {
@@ -1136,6 +1341,53 @@ void mqtt_node_poll(mqtt_node_t *node) {
         if (absolute_time_diff_us(get_absolute_time(), run->hard_deadline) <= 0) {
             actuator_stop_with_status(node, run, (uint8_t)(i + 1u), ACTUATOR_STATUS_COMPLETED, NULL, NULL);
         }
+    }
+}
+
+void mqtt_node_disconnect(mqtt_node_t *node) {
+    if (g_runtime.discovery_in_progress || g_runtime.discovery_pcb) {
+        mqtt_close_broker_discovery();
+    }
+
+    if (g_runtime.client) {
+        if (mqtt_client_is_connected(g_runtime.client)) {
+            cyw43_arch_lwip_begin();
+            mqtt_disconnect(g_runtime.client);
+            cyw43_arch_lwip_end();
+        }
+
+        cyw43_arch_lwip_begin();
+        mqtt_client_free(g_runtime.client);
+        cyw43_arch_lwip_end();
+    }
+
+    if (g_runtime.broker_candidate_pending && node) {
+        // A discovery result is not trusted until MQTT authentication has
+        // succeeded. Revert an in-flight candidate before rebuilding the
+        // client so a Wi-Fi reconnect cannot accidentally make it sticky.
+        snprintf(node->config->mqtt_host, sizeof(node->config->mqtt_host), "%s", g_runtime.broker_fallback_host);
+        node->config->mqtt_port = g_runtime.broker_fallback_port;
+    }
+
+    g_runtime.client = NULL;
+    g_runtime.connected = false;
+    g_runtime.discovery_in_progress = false;
+    g_runtime.discovery_resolved = false;
+    g_runtime.discovery_pcb = NULL;
+    g_runtime.broker_candidate_pending = false;
+    g_runtime.discovered_mqtt_host[0] = '\0';
+    g_runtime.discovered_mqtt_port = 0;
+    g_runtime.incoming_payload_len = 0;
+    g_runtime.incoming_topic[0] = '\0';
+    g_runtime.incoming_payload[0] = '\0';
+    g_runtime.next_reconnect_at = get_absolute_time();
+    g_runtime.discovery_next_attempt_at = get_absolute_time();
+    g_runtime.discovery_deadline = get_absolute_time();
+
+    // Assignments, active runs, hardware cutoff alarms, and any queued
+    // outage diagnostic stay on their existing state and survive reconnect.
+    if (node) {
+        set_error(node, "none");
     }
 }
 

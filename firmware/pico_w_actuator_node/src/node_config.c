@@ -43,6 +43,14 @@ static bool string_is_placeholder(const char *value) {
     return value && strncmp(value, "CHANGE_ME_", 10) == 0;
 }
 
+static bool should_prefer_default_broker_bundle(const node_config_t *config) {
+    if (!config) {
+        return false;
+    }
+    return string_is_placeholder(config->mqtt_host) &&
+           !string_is_placeholder(VG_DEFAULT_MQTT_HOST);
+}
+
 void node_config_reset_defaults(node_config_t *config) {
     memset(config, 0, sizeof(*config));
     config->magic = VG_CONFIG_MAGIC;
@@ -84,6 +92,12 @@ void node_config_load(node_config_t *config) {
         flash_config->version == VG_CONFIG_VERSION &&
         flash_config->checksum == config_checksum(flash_config)) {
         memcpy(config, flash_config, sizeof(*config));
+        if (should_prefer_default_broker_bundle(config)) {
+            safe_copy(config->mqtt_host, sizeof(config->mqtt_host), VG_DEFAULT_MQTT_HOST);
+            config->mqtt_port = VG_DEFAULT_MQTT_PORT;
+            safe_copy(config->mqtt_username, sizeof(config->mqtt_username), VG_DEFAULT_MQTT_USERNAME);
+            safe_copy(config->mqtt_password, sizeof(config->mqtt_password), VG_DEFAULT_MQTT_PASSWORD);
+        }
         return;
     }
     node_config_reset_defaults(config);
@@ -245,7 +259,14 @@ bool node_config_apply_json(
             return false;
         }
 
-        if (dry_threshold <= 0.0f || max_pulse <= 0 || daily_max <= 0) {
+        // Upper-bound both before the uint16_t store below -- without this,
+        // an out-of-range value (e.g. a units mixup upstream sending
+        // milliseconds instead of seconds) silently wraps via truncation
+        // instead of being rejected, corrupting the on-device safety cap to
+        // an unrelated, unpredictable value with no error surfaced anywhere.
+        if (dry_threshold <= 0.0f ||
+            max_pulse <= 0 || max_pulse > UINT16_MAX ||
+            daily_max <= 0 || daily_max > UINT16_MAX) {
             set_error(error, error_size, "invalid numeric config values");
             return false;
         }

@@ -411,7 +411,14 @@ bool node_config_apply_json(
             return false;
         }
 
-        if (dry_threshold <= 0.0f || max_pulse <= 0 || daily_max <= 0) {
+        // Upper-bound both before the uint16_t store below -- without this,
+        // an out-of-range value (e.g. a units mixup upstream sending
+        // milliseconds instead of seconds) silently wraps via truncation
+        // instead of being rejected, corrupting the on-device safety cap to
+        // an unrelated, unpredictable value with no error surfaced anywhere.
+        if (dry_threshold <= 0.0f ||
+            max_pulse <= 0 || max_pulse > UINT16_MAX ||
+            daily_max <= 0 || daily_max > UINT16_MAX) {
             set_error(error, error_size, "invalid numeric config values");
             return false;
         }

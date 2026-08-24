@@ -10,8 +10,13 @@ class CropProfile < ApplicationRecord
   validates :crop_id, presence: true, uniqueness: true
   validates :crop_name, presence: true
   validates :dry_threshold, presence: true, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
-  validates :max_pulse_runtime_sec, presence: true, numericality: { greater_than_or_equal_to: 0 }
-  validates :daily_max_runtime_sec, presence: true, numericality: { greater_than_or_equal_to: 0 }
+  # Upper bound matches the firmware's uint16_t storage for these fields
+  # (config.h's max_pulse_runtime_sec/daily_max_runtime_sec) -- a value above
+  # 65535 gets silently truncated on-device instead of rejected, corrupting
+  # the safety cap to an unrelated, unpredictable value. Reject it here
+  # instead, where there's a form field to show the operator why.
+  validates :max_pulse_runtime_sec, presence: true, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 65_535 }
+  validates :daily_max_runtime_sec, presence: true, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 65_535 }
   validates :time_to_harvest_days, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true
   validate :daily_max_runtime_covers_pulse_runtime
 
