@@ -650,6 +650,37 @@ const picoProvisioningPayload = (kind) => {
   })
 }
 
+const provisionPicoWithConfigurationChoice = async (kind) => {
+  const input = {
+    ...picoProvisioningPayload(kind),
+    replaceExistingConfiguration: false,
+  }
+
+  try {
+    return await invoke("provision_pico", { input })
+  } catch (error) {
+    const message = asErrorMessage(error)
+    if (!message.includes("PICO_CONFIG_PRESENT")) {
+      throw error
+    }
+
+    const detail = message.replace(/^.*PICO_CONFIG_PRESENT\s*/, "")
+    const replace = window.confirm(
+      `${detail}\n\nSelect OK to replace the saved configuration with this installer's values. Select Cancel to preserve it and stop setup for this Pico.`,
+    )
+    if (!replace) {
+      await invoke("provision_pico", {
+        input: { ...input, preserveExistingConfiguration: true },
+      })
+      return null
+    }
+
+    return invoke("provision_pico", {
+      input: { ...input, replaceExistingConfiguration: true },
+    })
+  }
+}
+
 const currentDetectedDevice = () => {
   if (state.devices.length !== 1) {
     return null
@@ -2448,9 +2479,12 @@ const flashBoard = async (kind) => {
     void logInstallerInfo("hardware", "flash_complete", `${kind} Pico flash completed.`, result)
     state.messages[kind] = `Installed ${result.flashed_filename}. Waiting for the Pico USB serial port so the installer can provision it.`
     statusElement.textContent = state.messages[kind]
-    const provisioned = await invoke("provision_pico", {
-      input: picoProvisioningPayload(kind),
-    })
+    const provisioned = await provisionPicoWithConfigurationChoice(kind)
+    if (!provisioned) {
+      state.messages[kind] = "The existing Pico configuration was preserved. No provisioning values were changed."
+      statusElement.textContent = state.messages[kind]
+      return
+    }
     void logInstallerInfo("hardware", "provision_complete", `${kind} Pico provisioning completed.`, provisioned)
     state.provisioned[kind] = true
     if (kind === "sensor") {

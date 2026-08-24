@@ -391,6 +391,10 @@ struct SetupWateringStatusInput {
 #[serde(rename_all = "camelCase")]
 struct ProvisionPicoInput {
     kind: String,
+    #[serde(default)]
+    replace_existing_configuration: bool,
+    #[serde(default)]
+    preserve_existing_configuration: bool,
     wifi_ssid: String,
     wifi_password: String,
     mqtt_host: String,
@@ -419,6 +423,12 @@ struct ProvisionReadyPayload {
     node_id: String,
     zone_id: String,
     requires_provisioning: bool,
+    #[serde(default)]
+    wifi_ssid: String,
+    #[serde(default)]
+    mqtt_host: String,
+    #[serde(default)]
+    mqtt_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -1647,6 +1657,37 @@ fn provision_pico(app: AppHandle, input: ProvisionPicoInput) -> Result<Provision
                 format!("did not receive provisioning prompt from Pico on {serial_port_name}")
             })?;
 
+            if !ready_payload.requires_provisioning && !input.replace_existing_configuration {
+                if input.preserve_existing_configuration {
+                    port.write_all(b"VG_PRESERVE\n")
+                        .map_err(|error| format!("could not send preserve command to {serial_port_name}: {error}"))?;
+                    port.flush()
+                        .map_err(|error| format!("could not flush preserve command to {serial_port_name}: {error}"))?;
+                    let preserve_deadline = std::time::Instant::now() + ACK_WAIT_TIMEOUT;
+                    while std::time::Instant::now() < preserve_deadline {
+                        if let Some(line) = read_serial_line(port.as_mut(), Duration::from_millis(500))? {
+                            if line.starts_with("VG_PRESERVE_OK ") {
+                                return Ok(ProvisionPicoResult {
+                                    kind: input.kind.clone(),
+                                    operation_id: provisioning_operation_id.clone(),
+                                    serial_port: serial_port_name,
+                                    node_id: ready_payload.node_id,
+                                    zone_id: ready_payload.zone_id,
+                                    channels: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+                    return Err(format!("timed out waiting for preserve confirmation from {serial_port_name}"));
+                }
+                return Err(format!(
+                    "PICO_CONFIG_PRESENT Saved configuration: Wi-Fi '{}', broker '{}:{}'. Choose Replace to install the setup values, or Preserve to leave the Pico unchanged.",
+                    ready_payload.wifi_ssid,
+                    ready_payload.mqtt_host,
+                    ready_payload.mqtt_port
+                ));
+            }
+
             log_internal(
                 &app,
                 "info",
@@ -1661,6 +1702,10 @@ fn provision_pico(app: AppHandle, input: ProvisionPicoInput) -> Result<Provision
                     "reported_node_id": ready_payload.node_id,
                     "reported_zone_id": ready_payload.zone_id,
                     "requires_provisioning": ready_payload.requires_provisioning,
+                    "reported_wifi_ssid": ready_payload.wifi_ssid,
+                    "reported_mqtt_host": ready_payload.mqtt_host,
+                    "reported_mqtt_port": ready_payload.mqtt_port,
+                    "replace_existing_configuration": input.replace_existing_configuration,
                 })),
             );
 

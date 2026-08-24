@@ -5,6 +5,47 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 ENV_FILE="/etc/victory_garden.env"
 
+if [[ "${1:-}" == "pico" ]]; then
+  shift
+  PICO_COMMAND="${1:-help}"
+  [[ $# -eq 0 ]] || shift
+
+  case "$PICO_COMMAND" in
+    check) PICO_COMMAND="inspect" ;;
+    keep) PICO_COMMAND="preserve" ;;
+    set) PICO_COMMAND="update" ;;
+    help|-h|--help)
+      cat <<'EOF'
+Usage:
+  vg pico inspect [--expect-wifi-ssid NAME] [--expect-mqtt-host HOST]
+  vg pico preserve
+  vg pico update
+
+Short aliases: check=inspect, keep=preserve, set=update
+
+Connect exactly one Pico over USB. Update prompts for missing settings and all
+passwords; secrets are never accepted as command-line arguments.
+EOF
+      exit 0
+      ;;
+    inspect|preserve|update) ;;
+    *)
+      echo "Unknown Pico command: $PICO_COMMAND" >&2
+      echo "Run 'vg pico help' for usage." >&2
+      exit 2
+      ;;
+  esac
+
+  PICO_PYTHON="$REPO_ROOT/python_tools/.venv/bin/python"
+  if [[ ! -x "$PICO_PYTHON" ]]; then
+    echo "Victory Garden Python environment not found at $PICO_PYTHON" >&2
+    echo "Run 'cd $REPO_ROOT/python_tools && uv sync --group dev' first." >&2
+    exit 2
+  fi
+  cd "$REPO_ROOT/python_tools"
+  exec "$PICO_PYTHON" -m tools.pico_config "$PICO_COMMAND" "$@"
+fi
+
 if [[ -r "$ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
