@@ -4,6 +4,13 @@ set -euo pipefail
 APP_DB="ruby_service_production"
 export PAGER=cat
 
+if [[ -r /etc/victory_garden.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source /etc/victory_garden.env
+  set +a
+fi
+
 MQTT_ARGS=(-h 127.0.0.1)
 if [[ -n "${MQTT_USERNAME:-}" ]]; then
   MQTT_ARGS+=(-u "$MQTT_USERNAME")
@@ -12,7 +19,34 @@ if [[ -n "${MQTT_PASSWORD:-}" ]]; then
   MQTT_ARGS+=(-P "$MQTT_PASSWORD")
 fi
 
-systemctl is-active greenhouse.service victory-garden-mqtt-discovery.service victory-garden-web.service victory-garden-mqtt-consumer.service
+if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
+  systemctl is-active greenhouse.service victory-garden-mqtt-discovery.service victory-garden-web.service victory-garden-mqtt-consumer.service victory-garden-lora-receiver.service
+else
+  systemctl is-active greenhouse.service victory-garden-mqtt-discovery.service victory-garden-web.service victory-garden-mqtt-consumer.service
+fi
+
+printf 'LORA_ENABLED %s\n' "${LORA_ENABLED:-false}"
+if [[ "${LORA_ENABLED:-false}" != "true" ]]; then
+  printf 'LORA_SERIAL_PRESENT skipped (LORA_ENABLED is not true)\n'
+else
+  printf 'LORA_SERIAL_PORT %s\n' "${LORA_SERIAL_PORT:-unset}"
+  if [[ -z "${LORA_SERIAL_PORT:-}" || "$LORA_SERIAL_PORT" == "/dev/serial/by-id/REPLACE_WITH_LORA_ADAPTER" ]]; then
+    printf 'LORA_SERIAL_PRESENT no\n' >&2
+    printf 'ERROR missing stable LORA_SERIAL_PORT in /etc/victory_garden.env\n' >&2
+    find /dev/serial/by-id -maxdepth 1 -type l -print 2>/dev/null | sort || true
+    exit 1
+  fi
+
+  if [[ ! -e "$LORA_SERIAL_PORT" ]]; then
+    printf 'LORA_SERIAL_PRESENT no\n' >&2
+    printf 'ERROR LORA_SERIAL_PORT does not exist: %s\n' "$LORA_SERIAL_PORT" >&2
+    find /dev/serial/by-id -maxdepth 1 -type l -print 2>/dev/null | sort || true
+    exit 1
+  fi
+
+  printf 'LORA_SERIAL_PRESENT yes\n'
+  ls -l "$LORA_SERIAL_PORT"
+fi
 
 for _ in $(seq 1 15); do
   if curl -fsS http://127.0.0.1:3000/up >/tmp/vg_up.out 2>/dev/null; then
@@ -66,3 +100,6 @@ select 'node_registry=' || count(*) from nodes;
 journalctl -u greenhouse.service -n 10 --no-pager
 journalctl -u victory-garden-mqtt-discovery.service -n 10 --no-pager
 journalctl -u victory-garden-mqtt-consumer.service -n 10 --no-pager
+if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
+  journalctl -u victory-garden-lora-receiver.service -n 20 --no-pager
+fi

@@ -22,6 +22,8 @@ CONTROLLER_SERVICE="greenhouse.service"
 MQTT_DISCOVERY_SERVICE="victory-garden-mqtt-discovery.service"
 WEB_SERVICE="victory-garden-web.service"
 MQTT_CONSUMER_SERVICE="victory-garden-mqtt-consumer.service"
+LORA_RECEIVER_SERVICE="victory-garden-lora-receiver.service"
+DEFAULT_LORA_SERIAL_PORT="/dev/serial/by-id/REPLACE_WITH_LORA_ADAPTER"
 
 # Shared by every unit's [Service] block below.
 SYSTEMD_SERVICE_RESTART_POLICY=$'Restart=always\nRestartSec=5'
@@ -90,6 +92,21 @@ generated_mqtt_password() {
 import secrets
 print(secrets.token_hex(24))
 PY
+}
+
+detect_lora_serial_port_default() {
+  local -a candidates=()
+  if [[ -d /dev/serial/by-id ]]; then
+    while IFS= read -r -d '' candidate; do
+      candidates+=("$candidate")
+    done < <(find /dev/serial/by-id -maxdepth 1 -type l -print0 | sort -z)
+  fi
+
+  if [[ "${#candidates[@]}" -eq 1 ]]; then
+    echo "${candidates[0]}"
+  else
+    echo "$DEFAULT_LORA_SERIAL_PORT"
+  fi
 }
 
 manifest_value() {
@@ -166,17 +183,27 @@ validate_release_manifest() {
   [[ "$expected_python" == "$current_python" ]] || fail "Release wheelhouse targets Python $expected_python but this Pi has Python $current_python."
 
   firmware_status="$(manifest_value "firmware.status")"
-  [[ "$firmware_status" == "passed" ]] || fail "Release manifest does not show a successful firmware build verification step."
+  case "$firmware_status" in
+    passed|prebuilt-validated)
+      ;;
+    *)
+      fail "Release manifest does not show a successful firmware verification step."
+      ;;
+  esac
 }
 
 ensure_release_bundle_complete() {
   sudo -u "$RUN_USER" bash -lc "
     set -euo pipefail
     cd '$RUBY_SERVICE_DIR'
-    bundle config set path vendor/bundle
-    bundle config set without 'development test'
-    bundle config set cache_all true
-    bundle config set build.nokogiri '--use-system-libraries'
+    bundle config set path vendor/bundle --local
+    # Bundler prompts before replacing a local value. An unattended install
+    # has no terminal to answer that prompt, so remove it first and then set
+    # the canonical production groups deterministically.
+    bundle config unset without --local || true
+    bundle config set without 'development test' --local
+    bundle config set cache_all true --local
+    bundle config set build.nokogiri '--use-system-libraries' --local
     bundle check >/dev/null 2>&1
   " || fail "Packaged release is missing a complete prebuilt ruby_service/vendor/bundle for this target. Rebuild the release tarball instead of bundling on the Pi."
 }
@@ -226,22 +253,23 @@ ensure_python_controller_env() {
   sudo -u "$RUN_USER" python3 -m venv "$PYTHON_VENV_DIR"
   sudo -u "$RUN_USER" "$PYTHON_VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
   if compgen -G "$PYTHON_WHEELHOUSE_DIR/*.whl" >/dev/null; then
-    sudo -u "$RUN_USER" "$PYTHON_VENV_DIR/bin/pip" install \
+    sudo -u "$RUN_USER" "$PYTHON_VENV_DIR/bin/python" -m pip install \
       --no-index \
       --find-links "$PYTHON_WHEELHOUSE_DIR" \
       -r "$PYTHON_TOOLS_DIR/requirements-controller.txt"
   else
-    sudo -u "$RUN_USER" "$PYTHON_VENV_DIR/bin/pip" install -r "$PYTHON_TOOLS_DIR/requirements-controller.txt"
+    sudo -u "$RUN_USER" "$PYTHON_VENV_DIR/bin/python" -m pip install -r "$PYTHON_TOOLS_DIR/requirements-controller.txt"
   fi
 }
 
 ensure_env_file() {
-  local db_password secret_key_base admin_api_token master_key mqtt_password
+  local db_password secret_key_base admin_api_token master_key mqtt_password lora_serial_port
   db_password="$(generated_secret)"
   secret_key_base="$(generated_secret)"
   admin_api_token="$(generated_secret)"
   master_key="$(read_master_key)"
   mqtt_password="$(generated_mqtt_password)"
+  lora_serial_port="$(detect_lora_serial_port_default)"
 
   if [[ ! -f "$ENV_FILE" ]]; then
     cat > "$ENV_FILE" <<EOF
@@ -257,6 +285,14 @@ MQTT_PORT=1883
 MQTT_DISCOVERY_PORT=44737
 MQTT_USERNAME=victory_garden
 MQTT_PASSWORD=$mqtt_password
+LORA_ENABLED=false
+LORA_SERIAL_PORT=$lora_serial_port
+LORA_BAUDRATE=9600
+LORA_SERIAL_TIMEOUT_SECONDS=1.0
+LORA_READ_SIZE=256
+LORA_RECONNECT_DELAY_SECONDS=2.0
+LORA_MAX_FRAME_SIZE=1024
+LORA_DEDUP_RECENT_FRAMES=32
 SOLID_QUEUE_IN_PUMA=1
 SECRET_KEY_BASE=$secret_key_base
 RUBY_SERVICE_DATABASE_PASSWORD=$db_password
@@ -270,6 +306,14 @@ EOF
   grep -q '^MQTT_USERNAME=' "$ENV_FILE" || echo 'MQTT_USERNAME=victory_garden' >> "$ENV_FILE"
   grep -q '^MQTT_PASSWORD=' "$ENV_FILE" || echo "MQTT_PASSWORD=$mqtt_password" >> "$ENV_FILE"
   grep -q '^MQTT_DISCOVERY_PORT=' "$ENV_FILE" || echo 'MQTT_DISCOVERY_PORT=44737' >> "$ENV_FILE"
+  grep -q '^LORA_ENABLED=' "$ENV_FILE" || echo 'LORA_ENABLED=false' >> "$ENV_FILE"
+  grep -q '^LORA_SERIAL_PORT=' "$ENV_FILE" || echo "LORA_SERIAL_PORT=$lora_serial_port" >> "$ENV_FILE"
+  grep -q '^LORA_BAUDRATE=' "$ENV_FILE" || echo 'LORA_BAUDRATE=9600' >> "$ENV_FILE"
+  grep -q '^LORA_SERIAL_TIMEOUT_SECONDS=' "$ENV_FILE" || echo 'LORA_SERIAL_TIMEOUT_SECONDS=1.0' >> "$ENV_FILE"
+  grep -q '^LORA_READ_SIZE=' "$ENV_FILE" || echo 'LORA_READ_SIZE=256' >> "$ENV_FILE"
+  grep -q '^LORA_RECONNECT_DELAY_SECONDS=' "$ENV_FILE" || echo 'LORA_RECONNECT_DELAY_SECONDS=2.0' >> "$ENV_FILE"
+  grep -q '^LORA_MAX_FRAME_SIZE=' "$ENV_FILE" || echo 'LORA_MAX_FRAME_SIZE=1024' >> "$ENV_FILE"
+  grep -q '^LORA_DEDUP_RECENT_FRAMES=' "$ENV_FILE" || echo 'LORA_DEDUP_RECENT_FRAMES=32' >> "$ENV_FILE"
   if [[ -d "$FIRMWARE_BUNDLE_DIR" ]]; then
     grep -q '^VG_FIRMWARE_BUNDLE_ROOT=' "$ENV_FILE" || echo "VG_FIRMWARE_BUNDLE_ROOT=$FIRMWARE_BUNDLE_DIR" >> "$ENV_FILE"
   fi
@@ -279,6 +323,28 @@ EOF
   # e.g. for `vg` and manual `bin/rails console` use.
   chown "root:$RUN_USER" "$ENV_FILE"
   chmod 640 "$ENV_FILE"
+}
+
+ensure_lora_serial_access() {
+  getent group dialout >/dev/null || groupadd --system dialout
+  usermod -a -G dialout "$RUN_USER"
+}
+
+validate_lora_serial_config() {
+  load_env_file
+
+  if [[ "${LORA_ENABLED:-false}" != "true" ]]; then
+    echo "LORA_ENABLED is not true, skipping LoRa receiver setup."
+    return 0
+  fi
+
+  if [[ -z "${LORA_SERIAL_PORT:-}" || "$LORA_SERIAL_PORT" == "$DEFAULT_LORA_SERIAL_PORT" ]]; then
+    fail "LORA_SERIAL_PORT must be set to a stable /dev/serial/by-id/... path in $ENV_FILE."
+  fi
+
+  if [[ ! -e "$LORA_SERIAL_PORT" ]]; then
+    fail "LORA_SERIAL_PORT does not exist: $LORA_SERIAL_PORT. Check the LR22 USB adapter and /dev/serial/by-id/."
+  fi
 }
 
 load_env_file() {
@@ -336,8 +402,8 @@ ensure_rails_bundle() {
   sudo -u "$RUN_USER" bash -lc "
     set -euo pipefail
     cd '$RUBY_SERVICE_DIR'
+    export BUNDLE_WITHOUT='development:test'
     bundle config set path vendor/bundle
-    bundle config set without 'development test'
     bundle config set cache_all true
     bundle config set build.nokogiri '--use-system-libraries'
     if ! bundle check >/dev/null 2>&1; then
@@ -351,6 +417,28 @@ ensure_rails_bundle() {
         NOKOGIRI_USE_SYSTEM_LIBRARIES=1 bundle install
       fi
     fi
+
+    effective_without=\"\$(bundle config get without 2>/dev/null || true)\"
+    if [[ \"\$effective_without\" != *development* || \"\$effective_without\" != *test* ]]; then
+      echo 'Bundler production exclusion verification failed: development/test are not excluded.' >&2
+      bundle config list >&2
+      exit 1
+    fi
+
+    bundle check
+  "
+}
+
+verify_rails_production_boot() {
+  sudo -u "$RUN_USER" bash -lc "
+    set -euo pipefail
+    cd '$RUBY_SERVICE_DIR'
+    set -a
+    source '$ENV_FILE'
+    set +a
+    export RAILS_ENV=production
+    export BUNDLE_WITHOUT='development:test'
+    bundle exec bin/rails runner 'abort \"production Rails boot verification failed\" unless Rails.env.production?'
   "
 }
 
@@ -360,6 +448,7 @@ prepare_rails_db() {
     set -euo pipefail
     cd '$RUBY_SERVICE_DIR'
     export RAILS_ENV='${RAILS_ENV}'
+    export BUNDLE_WITHOUT='development:test'
     export RAILS_LOG_LEVEL='${RAILS_LOG_LEVEL}'
     export RAILS_SERVE_STATIC_FILES='${RAILS_SERVE_STATIC_FILES}'
     export RAILS_FORCE_SSL='${RAILS_FORCE_SSL}'
@@ -442,6 +531,7 @@ Type=simple
 User=$RUN_USER
 WorkingDirectory=$RUBY_SERVICE_DIR
 EnvironmentFile=$ENV_FILE
+Environment=BUNDLE_WITHOUT=development:test
 ExecStart=/usr/bin/env bash -lc 'bundle exec puma -C config/puma.rb'
 $SYSTEMD_SERVICE_RESTART_POLICY
 $SYSTEMD_SERVICE_LOGGING
@@ -465,10 +555,35 @@ Type=simple
 User=$RUN_USER
 WorkingDirectory=$RUBY_SERVICE_DIR
 EnvironmentFile=$ENV_FILE
+Environment=BUNDLE_WITHOUT=development:test
 ExecStart=/usr/bin/env bash -lc 'bundle exec ruby bin/mqtt_consumer'
 $SYSTEMD_SERVICE_RESTART_POLICY
 $SYSTEMD_SERVICE_LOGGING
 SyslogIdentifier=victory-garden-mqtt-consumer
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+install_lora_receiver_service() {
+  cat > "/etc/systemd/system/$LORA_RECEIVER_SERVICE" <<EOF
+[Unit]
+Description=Victory Garden LoRa Receiver
+After=network-online.target mosquitto.service
+Wants=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=$RUN_USER
+SupplementaryGroups=dialout
+WorkingDirectory=$PYTHON_TOOLS_DIR
+EnvironmentFile=$ENV_FILE
+ExecStart=/bin/sh -lc 'exec "\$0" -m tools.lora_receiver --serial-port "\${LORA_SERIAL_PORT:-$DEFAULT_LORA_SERIAL_PORT}" --baudrate "\${LORA_BAUDRATE:-9600}" --serial-timeout-seconds "\${LORA_SERIAL_TIMEOUT_SECONDS:-1.0}" --read-size "\${LORA_READ_SIZE:-256}" --reconnect-delay-seconds "\${LORA_RECONNECT_DELAY_SECONDS:-2.0}" --max-frame-size "\${LORA_MAX_FRAME_SIZE:-1024}" --dedup-recent-frames "\${LORA_DEDUP_RECENT_FRAMES:-32}"' "$PYTHON_VENV_DIR/bin/python"
+$SYSTEMD_SERVICE_RESTART_POLICY
+Environment=PYTHONUNBUFFERED=1
+$SYSTEMD_SERVICE_LOGGING
+SyslogIdentifier=victory-garden-lora-receiver
 
 [Install]
 WantedBy=multi-user.target
@@ -483,14 +598,66 @@ install_vg_cli() {
 restart_services() {
   systemctl disable --now victory-garden-actuator.service >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/victory-garden-actuator.service
-  systemctl enable mosquitto postgresql "$CONTROLLER_SERVICE" "$MQTT_DISCOVERY_SERVICE" "$WEB_SERVICE" "$MQTT_CONSUMER_SERVICE"
   systemctl daemon-reload
+  local -a enable_services=(mosquitto postgresql "$CONTROLLER_SERVICE" "$MQTT_DISCOVERY_SERVICE" "$WEB_SERVICE" "$MQTT_CONSUMER_SERVICE")
+  if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
+    enable_services+=("$LORA_RECEIVER_SERVICE")
+  fi
+  systemctl enable "${enable_services[@]}"
   systemctl restart mosquitto
   systemctl restart postgresql
   systemctl restart "$CONTROLLER_SERVICE"
   systemctl restart "$MQTT_DISCOVERY_SERVICE"
   systemctl restart "$WEB_SERVICE"
   systemctl restart "$MQTT_CONSUMER_SERVICE"
+  if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
+    systemctl restart "$LORA_RECEIVER_SERVICE"
+  fi
+}
+
+verify_services_healthy() {
+  local service attempt all_active
+  local -a services=(
+    mosquitto.service
+    postgresql.service
+    "$CONTROLLER_SERVICE"
+    "$MQTT_DISCOVERY_SERVICE"
+    "$WEB_SERVICE"
+    "$MQTT_CONSUMER_SERVICE"
+  )
+  if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
+    services+=("$LORA_RECEIVER_SERVICE")
+  fi
+
+  # A process can start and then fail a few seconds later. Require every
+  # dependency to remain active and Rails to answer its application health
+  # endpoint before reporting a successful installation.
+  for attempt in {1..30}; do
+    if curl --fail --silent --show-error --max-time 2 "http://127.0.0.1:${PORT}/up" >/dev/null 2>&1; then
+      sleep 2
+      all_active=1
+      for service in "${services[@]}"; do
+        if ! systemctl is-active --quiet "$service"; then
+          all_active=0
+          break
+        fi
+      done
+      if [[ "$all_active" -eq 1 ]] && curl --fail --silent --show-error --max-time 2 "http://127.0.0.1:${PORT}/up" >/dev/null; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+
+  echo "Victory Garden post-install health verification failed." >&2
+  for service in "${services[@]}"; do
+    systemctl --no-pager --full status "$service" >&2 || true
+  done
+  journalctl -u "$WEB_SERVICE" -u "$MQTT_CONSUMER_SERVICE" -n 80 --no-pager >&2 || true
+  if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
+    journalctl -u "$LORA_RECEIVER_SERVICE" -n 80 --no-pager >&2 || true
+  fi
+  return 1
 }
 
 print_status() {
@@ -498,6 +665,9 @@ print_status() {
   systemctl --no-pager --full status "$MQTT_DISCOVERY_SERVICE" || true
   systemctl --no-pager --full status "$WEB_SERVICE" || true
   systemctl --no-pager --full status "$MQTT_CONSUMER_SERVICE" || true
+  if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
+    systemctl --no-pager --full status "$LORA_RECEIVER_SERVICE" || true
+  fi
   echo
   echo "Victory Garden Pi install complete."
   echo "Web UI: http://$(hostname -I | awk '{print $1}'):3000"
@@ -517,14 +687,21 @@ if release_install; then
 fi
 ensure_python_controller_env
 ensure_env_file
+ensure_lora_serial_access
+validate_lora_serial_config
 ensure_mosquitto_auth
 ensure_postgres
 ensure_rails_bundle
 prepare_rails_db
+verify_rails_production_boot
 install_controller_service
 install_mqtt_discovery_service
 install_web_service
 install_mqtt_consumer_service
+if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
+  install_lora_receiver_service
+fi
 install_vg_cli
 restart_services
+verify_services_healthy
 print_status

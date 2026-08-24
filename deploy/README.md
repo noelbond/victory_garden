@@ -83,7 +83,7 @@ The script will:
 - fall back to local `vendor/cache` or internet installs when needed
 - create the production PostgreSQL role and databases
 - run `db:prepare` and `db:seed`
-- install or update systemd units for `greenhouse.service`, `victory-garden-mqtt-discovery.service`, `victory-garden-web.service`, and `victory-garden-mqtt-consumer.service`
+- install or update systemd units for `greenhouse.service`, `victory-garden-mqtt-discovery.service`, `victory-garden-web.service`, `victory-garden-mqtt-consumer.service`, and `victory-garden-lora-receiver.service`
 - restart the full stack
 
 Generated config:
@@ -106,10 +106,12 @@ sudo systemctl status greenhouse.service --no-pager
 sudo systemctl status victory-garden-mqtt-discovery.service --no-pager
 sudo systemctl status victory-garden-web.service --no-pager
 sudo systemctl status victory-garden-mqtt-consumer.service --no-pager
+sudo systemctl status victory-garden-lora-receiver.service --no-pager
 sudo journalctl -u greenhouse.service -n 50 --no-pager
 sudo journalctl -u victory-garden-mqtt-discovery.service -n 50 --no-pager
 sudo journalctl -u victory-garden-web.service -n 50 --no-pager
 sudo journalctl -u victory-garden-mqtt-consumer.service -n 50 --no-pager
+sudo journalctl -u victory-garden-lora-receiver.service -n 50 --no-pager
 set -a
 source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
 set +a
@@ -117,6 +119,111 @@ mosquitto_sub -h 127.0.0.1 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhous
 ```
 
 The Pi install also starts `victory-garden-mqtt-discovery.service`, a small UDP responder that returns the Pi's current broker IP and MQTT port so Pico nodes can recover automatically if the Pi's LAN IP changes.
+
+LoRa receiver serial path:
+
+- Use a stable USB path from `/dev/serial/by-id/`, not `/dev/ttyUSB0` or `/dev/ttyACM0`.
+- The installer writes `LORA_SERIAL_PORT` to `/etc/victory_garden.env`. If exactly one USB serial adapter is present during install, it uses that `/dev/serial/by-id/...` path automatically.
+- If the adapter was not present, or more than one USB serial adapter was present, set it manually:
+
+```bash
+ls -l /dev/serial/by-id/
+sudoedit /etc/victory_garden.env
+sudo systemctl restart victory-garden-lora-receiver.service
+```
+
+Set `LORA_SERIAL_PORT=/dev/serial/by-id/<your-lora-usb-adapter>` in the env file. The service runs with `dialout` access so the non-root app user can open the USB serial device.
+
+LoRa receiver runtime defaults:
+
+| Key | Default |
+| --- | --- |
+| `LORA_BAUDRATE` | `9600` |
+| `LORA_SERIAL_TIMEOUT_SECONDS` | `1.0` |
+| `LORA_READ_SIZE` | `256` |
+| `LORA_RECONNECT_DELAY_SECONDS` | `2.0` |
+| `LORA_MAX_FRAME_SIZE` | `1024` |
+| `LORA_DEDUP_RECENT_FRAMES` | `32` |
+
+## LoRa Inbound Manual Validation
+
+Use this after wiring a Pico/LR22 pair and installing the Pi receiver service.
+
+1. Confirm the Pi service is active:
+
+```bash
+sudo systemctl status victory-garden-lora-receiver.service --no-pager
+```
+
+2. Confirm the configured stable serial path exists:
+
+```bash
+set -a
+source <(sudo grep -E '^LORA_SERIAL_PORT=' /etc/victory_garden.env)
+set +a
+ls -l "$LORA_SERIAL_PORT"
+```
+
+3. Watch the expected MQTT topic from the Pi:
+
+```bash
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
+mosquitto_sub -R -h 127.0.0.1 -p 1883 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -t 'greenhouse/zones/+/nodes/+/state' -v
+```
+
+4. Send one newline-terminated `node-state/v1` JSON frame from the Pico side over LoRa:
+
+```json
+{"schema_version":"node-state/v1","timestamp":"2026-08-21T15:20:00Z","zone_id":"zone1","node_id":"lora-bridge-test","moisture_raw":2345,"moisture_percent":55,"health":"ok","last_error":"none","publish_reason":"lora_bridge_ingest_test"}
+```
+
+The frame must include a trailing newline when sent over serial.
+
+5. Check the receiver logs:
+
+```bash
+sudo journalctl -u victory-garden-lora-receiver.service -n 50 --no-pager
+```
+
+Expected events include:
+
+- `serial_connected`
+- `frame_received`
+- `frame_published`
+
+6. Confirm Rails ingestion after the node is assigned to a zone.
+
+Rails creates or updates the node from MQTT, but historical `sensor_readings` rows depend on the node being assigned/configured for the intended zone. If a valid MQTT payload appears but no reading is stored, check the node assignment before debugging LoRa.
+
+## LoRa Outbound Manual Validation
+
+Use this after the LoRa receiver service is active and the Pi-connected LR22 serial path exists.
+
+1. Publish one LoRa command request to the Pi broker:
+
+```bash
+set -a
+source <(sudo grep -E '^(MQTT_USERNAME|MQTT_PASSWORD)=' /etc/victory_garden.env)
+set +a
+mosquitto_pub -h 127.0.0.1 -p 1883 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -q 1 \
+  -t 'greenhouse/nodes/sensor-zone1-ch0/lora/command' \
+  -m '{"schema_version":"lora-command/v1","message_id":"pi-manual-test-001","timestamp":"2026-08-21T18:05:00Z","source":"pi-gateway","target_node_id":"sensor-zone1-ch0","command":"request_reading","args":{}}'
+```
+
+2. Check the receiver logs:
+
+```bash
+sudo journalctl -u victory-garden-lora-receiver.service -n 50 --no-pager
+```
+
+Expected events include:
+
+- `lora_command_received`
+- `lora_command_routed`
+
+If the serial adapter is disconnected, the command is dropped and logged with reason `serial_disconnected`.
 
 Notes:
 

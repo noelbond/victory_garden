@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./deploy/build_release.sh --target linux-armv7|linux-aarch64 [--output-dir PATH]
+Usage: ./deploy/build_release.sh --target linux-armv7|linux-aarch64 [--output-dir PATH] [--use-prebuilt-firmware]
 
 Builds a target-specific Victory Garden release tarball containing:
 - app source
@@ -13,8 +13,12 @@ Builds a target-specific Victory Garden release tarball containing:
 - Rails vendor/cache
 
 The release build also verifies and bundles UF2 firmware for:
-- Pico W sensor + actuator
-- Pico 2 W sensor + actuator
+- Pico W sensor + actuator + combined
+- Pico 2 W sensor + actuator + combined
+
+By default, firmware is rebuilt as part of verification. Use
+--use-prebuilt-firmware on a target-native packaging host without the Pico
+cross-compilation toolchain; all six staged UF2 files are still required.
 EOF
 }
 
@@ -29,6 +33,7 @@ require_cmd() {
 
 TARGET=""
 OUTPUT_DIR=""
+USE_PREBUILT_FIRMWARE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +44,10 @@ while [[ $# -gt 0 ]]; do
     --output-dir)
       OUTPUT_DIR="${2:-}"
       shift 2
+      ;;
+    --use-prebuilt-firmware)
+      USE_PREBUILT_FIRMWARE=true
+      shift
       ;;
     -h|--help)
       usage
@@ -84,6 +93,7 @@ SOURCE_PATHS=(
   "contracts"
   "deploy"
   "firmware"
+  "firmware-bundles"
   "greenhouse.service"
   "python_tools"
   "ruby_service"
@@ -164,6 +174,18 @@ copy_repo_source() {
     (
       cd "$REPO_ROOT"
       git ls-files --cached --others --exclude-standard -z | while IFS= read -r -d '' path; do
+        case "$path" in
+          .gitignore|README.md|greenhouse.service|contracts/*|deploy/*|firmware/*|firmware-bundles/*|python_tools/*|ruby_service/*)
+            ;;
+          *)
+            continue
+            ;;
+        esac
+
+        # Git submodule entries and other directory-only paths are supplied by
+        # the build host (for example PICO_SDK_PATH), not copied as release
+        # source files.
+        [[ -f "$path" || -L "$path" ]] || continue
         mkdir -p "$STAGE_DIR/$(dirname "$path")"
         cp -p "$path" "$STAGE_DIR/$path"
       done
@@ -185,20 +207,24 @@ copy_repo_source() {
 }
 
 verify_staged_firmware_builds() {
-  ensure_firmware_build_toolchain
+  if [[ "$USE_PREBUILT_FIRMWARE" == false ]]; then
+    ensure_firmware_build_toolchain
 
-  "$STAGE_DIR/deploy/build_firmware_bundles.sh" \
-    --repo-root "$STAGE_DIR" \
-    --output-dir "$STAGE_DIR/firmware-bundles" \
-    --build-root "$BUILD_ROOT/firmware-build-bundles"
+    "$STAGE_DIR/deploy/build_firmware_bundles.sh" \
+      --repo-root "$STAGE_DIR" \
+      --output-dir "$STAGE_DIR/firmware-bundles" \
+      --build-root "$BUILD_ROOT/firmware-build-bundles"
+  fi
 
   local expected_bundle
   for expected_bundle in \
     "pico_w_sensor_node.uf2" \
     "pico2_w_sensor_node.uf2" \
     "pico_w_actuator_node.uf2" \
-    "pico2_w_actuator_node.uf2"; do
-    [[ -f "$STAGE_DIR/firmware-bundles/$expected_bundle" ]] || fail "Firmware verification build did not produce $expected_bundle"
+    "pico2_w_actuator_node.uf2" \
+    "pico_w_combined_node.uf2" \
+    "pico2_w_combined_node.uf2"; do
+    [[ -s "$STAGE_DIR/firmware-bundles/$expected_bundle" ]] || fail "Firmware bundle is missing or empty: $expected_bundle"
   done
 }
 
@@ -231,7 +257,12 @@ build_ruby_bundle() {
 }
 
 write_manifest() {
-  python3 - "$MANIFEST_PATH" "$ARTIFACT_NAME" "$TARGET" <<'PY'
+  local firmware_status="passed"
+  if [[ "$USE_PREBUILT_FIRMWARE" == true ]]; then
+    firmware_status="prebuilt-validated"
+  fi
+
+  python3 - "$MANIFEST_PATH" "$ARTIFACT_NAME" "$TARGET" "$firmware_status" <<'PY'
 import datetime as dt
 import json
 import os
@@ -239,10 +270,10 @@ import platform
 import subprocess
 import sys
 
-manifest_path, artifact_name, target = sys.argv[1:4]
+manifest_path, artifact_name, target, firmware_status = sys.argv[1:5]
 
-def run(cmd):
-    return subprocess.check_output(cmd, text=True).strip()
+def run(cmd, cwd=None):
+    return subprocess.check_output(cmd, cwd=cwd, text=True).strip()
 
 def os_release():
     data = {}
@@ -257,7 +288,10 @@ def os_release():
     return data
 
 release = os_release()
-bundle_version = run(["bundle", "--version"]).split()[-1]
+stage_dir = os.path.dirname(os.path.dirname(manifest_path))
+bundle_version = run(
+    ["bundle", "--version"], cwd=os.path.join(stage_dir, "ruby_service")
+).split()[-1]
 ruby_version = run(["ruby", "-e", "print RUBY_VERSION"])
 python_version = ".".join(platform.python_version_tuple()[:2])
 
@@ -283,7 +317,7 @@ manifest = {
         "cache_path": "ruby_service/vendor/cache",
     },
     "firmware": {
-        "status": "passed",
+        "status": firmware_status,
         "build_system": "cmake+ninja",
         "bundle_dir": "firmware-bundles",
         "boards": [
@@ -293,12 +327,15 @@ manifest = {
         "targets": [
             "pico_w_sensor_node",
             "pico_w_actuator_node",
+            "pico_w_combined_node",
         ],
         "bundles": [
             "pico_w_sensor_node.uf2",
             "pico2_w_sensor_node.uf2",
             "pico_w_actuator_node.uf2",
             "pico2_w_actuator_node.uf2",
+            "pico_w_combined_node.uf2",
+            "pico2_w_combined_node.uf2",
         ],
     },
     "contents": [
