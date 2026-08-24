@@ -3,12 +3,17 @@
 Temporary Raspberry Pi Pico/Pico W firmware for testing a DX-LR22-compatible
 LoRa module over UART1. It bridges bytes in both directions between USB serial
 and the radio UART so a Mac can send payloads and query the radio with AT
-commands.
+commands. It also parses newline-delimited compact command frames received from
+the radio and replies to accepted `request_reading` commands with one compact
+synthetic state/result frame for gateway integration testing.
 
-At startup, the firmware probes all LR22-supported UART rates from 2400 through
-115200 using read-only `+++` and `AT` commands. It keeps the detected rate for
-the bridge, exits AT mode so the radio returns to transparent transmission, or
-falls back to 9600 if the radio does not respond.
+At startup, the firmware keeps the LR22 UART fixed at 9600 baud. The radios are
+already configured for transparent mode, so the runtime test firmware does not
+send automatic `+++` or `AT` probe commands during boot.
+
+The verified LR22 profile uses a low air-rate setting. The test firmware avoids
+the earlier ack-plus-state response pattern because back-to-back full JSON
+frames can overrun or corrupt the transparent radio path.
 
 ## Wiring
 
@@ -70,10 +75,10 @@ Expected startup output:
 LoRa test starting...
 UART1 initialized at 9600 baud
 AUX = 0 (0=idle, 1=radio active)
-Probing LR22 UART baud...
-Returning LR22 to transparent transmission...
-LR22 detected at 9600 baud
+LR22 UART fixed at 9600 baud; startup AT probe disabled
 USB <-> LoRa UART bridge ready
+LoRa command target node_id = sensor-zone1-ch0
+LoRa compact state zone_id = zone1
 ```
 
 For the DX-LR22, `AUX = 0` means the radio is idle and `AUX = 1` means the radio
@@ -118,6 +123,49 @@ PY
 
 The Pico USB terminal should display `HELLO FROM MAC`. Both radios must use the
 same air rate, channel, address/transmission mode, and UART baud rate.
+
+## Request reading response
+
+When the firmware receives a compact `request_reading` command targeted to
+`sensor-zone1-ch0`, it sends one compact state/result frame.
+
+Compact command example:
+
+```json
+{"t":"cmd","c":"rr","n":"sensor-zone1-ch0","mid":"pi-001","sq":1}
+```
+
+Command fields:
+
+| Field | Meaning |
+| --- | --- |
+| `t` | compact message type, currently `cmd` |
+| `c` | compact command code; `rr` means `request_reading` |
+| `n` | target node id |
+| `mid` | original command `message_id` |
+| `sq` | optional LoRa transmit sequence from the gateway |
+
+Compact response example:
+
+```json
+{"t":"state","z":"zone1","n":"sensor-zone1-ch0","mid":"pi-001","mr":2345,"mp":55,"sq":1,"up":123}
+```
+
+Response fields:
+
+| Field | Meaning |
+| --- | --- |
+| `t` | compact message type, currently `state` |
+| `z` | zone id |
+| `n` | node id |
+| `mid` | original command `message_id` |
+| `mr` | synthetic moisture raw value |
+| `mp` | synthetic moisture percent value |
+| `sq` | optional echoed LoRa transmit sequence |
+| `up` | Pico uptime seconds |
+
+The Pi gateway is responsible for translating this compact LoRa frame into the
+canonical MQTT `node-state/v1` payload.
 
 ## Verified LR22 settings
 

@@ -41,6 +41,8 @@ Current keys:
 - `LORA_RECONNECT_DELAY_SECONDS`
 - `LORA_MAX_FRAME_SIZE`
 - `LORA_DEDUP_RECENT_FRAMES`
+- `LORA_COMMAND_MAX_ATTEMPTS`
+- `LORA_COMMAND_RETRY_DELAY_SECONDS`
 - `SOLID_QUEUE_IN_PUMA`
 - `SECRET_KEY_BASE`
 - `RUBY_SERVICE_DATABASE_PASSWORD`
@@ -71,6 +73,8 @@ It reads:
 | `LORA_RECONNECT_DELAY_SECONDS` | `2.0` | Delay before retrying after USB serial disconnect/error |
 | `LORA_MAX_FRAME_SIZE` | `1024` | Maximum accepted newline-delimited frame size |
 | `LORA_DEDUP_RECENT_FRAMES` | `32` | Recent exact frames remembered for duplicate suppression |
+| `LORA_COMMAND_MAX_ATTEMPTS` | `3` | Total transmit attempts for a correlated LoRa `request_reading` command, including the first send |
+| `LORA_COMMAND_RETRY_DELAY_SECONDS` | `6.0` | Delay before retrying a LoRa command that has not produced a correlated published state result |
 
 `LORA_SERIAL_PORT` should be a `/dev/serial/by-id/...` path. Do not save `/dev/ttyUSB0` or `/dev/ttyACM0` in production config because those names can change after reboot or reconnect.
 
@@ -81,7 +85,11 @@ The receiver also uses the shared MQTT keys:
 - `MQTT_USERNAME`
 - `MQTT_PASSWORD`
 
-It publishes validated inbound LoRa `node-state/v1` frames to MQTT with QoS 1 and retained delivery. It also subscribes to `greenhouse/nodes/+/lora/command` and routes valid `lora-command/v1` command frames to the Pi-connected LR22 serial stream while the serial connection is live.
+It publishes validated inbound LoRa state frames to canonical MQTT
+`node-state/v1` topics with QoS 1 and retained delivery. It also subscribes to
+`greenhouse/nodes/+/lora/command` and routes valid `lora-command/v1` command
+payloads to newline-delimited compact LoRa command frames on the Pi-connected
+LR22 serial stream while the serial connection is live.
 
 For the LoRa application protocol, see:
 

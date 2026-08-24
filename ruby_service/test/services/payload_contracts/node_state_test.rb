@@ -43,6 +43,37 @@ module PayloadContracts
       assert_equal "sensor-zone1", normalized["device_id"]
     end
 
+    test "accepts optional command correlation id" do
+      payload = load_fixture("node-state-v1.json").merge(
+        "publish_reason" => "request_reading",
+        "command_message_id" => "pi-001"
+      )
+
+      normalized = NodeState.normalize!(payload)
+
+      assert_equal "pi-001", normalized["command_message_id"]
+    end
+
+    test "accepts optional LoRa sequence metadata" do
+      payload = load_fixture("node-state-v1.json").merge(
+        "publish_reason" => "request_reading",
+        "command_message_id" => "pi-001",
+        "lora_sequence" => 42
+      )
+
+      normalized = NodeState.normalize!(payload)
+
+      assert_equal 42, normalized["lora_sequence"]
+    end
+
+    test "rejects invalid LoRa sequence metadata" do
+      payload = load_fixture("node-state-v1.json").merge("lora_sequence" => 0)
+
+      error = assert_raises(ArgumentError) { NodeState.normalize!(payload) }
+
+      assert_equal "lora_sequence out of range", error.message
+    end
+
     test "accepts an environmental reading without soil moisture" do
       payload = load_fixture("node-state-v1.json").except("moisture_raw", "moisture_percent").merge(
         "air_temperature_c" => 24.5,

@@ -18,6 +18,11 @@ pico_sdk_init()
 
 add_executable(lora_test
     src/main.c
+    ${CMAKE_CURRENT_LIST_DIR}/../shared/json_lite.c
+)
+
+target_include_directories(lora_test PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../shared
 )
 
 target_link_libraries(lora_test

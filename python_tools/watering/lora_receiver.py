@@ -1,4 +1,4 @@
-"""LoRa serial receive framing and node-state validation."""
+"""LoRa serial receive framing and inbound gateway frame validation."""
 
 from __future__ import annotations
 
@@ -17,7 +17,13 @@ import paho.mqtt.client as mqtt
 import serial
 
 from watering.controller_mqtt import mqtt_reason_code_value
-from watering.lora_messages import LORA_COMMAND_TOPIC_FILTER
+from watering.lora_messages import (
+    LORA_COMMAND_ACK_SCHEMA_VERSION,
+    LORA_COMMAND_ACK_TARGET,
+    LORA_COMMAND_TOPIC_FILTER,
+    canonical_lora_command_ack_topic,
+    validate_lora_command_ack,
+)
 from watering.lora_transmitter import LoRaCommandRouteResult
 from watering.schemas import SensorReading
 from watering.serial_frames import SerialFrameDecodeError, SerialFrameDecoder, SerialFrameWriteStream
@@ -31,6 +37,7 @@ MQTT_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 class NodeStatePublishRequest:
     topic: str
     payload: bytes
+    dedup_key: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -39,10 +46,22 @@ class NodeStatePublishResult:
     reason: str | None = None
 
 
-class InvalidNodeStateFrameError(ValueError):
+class InvalidLoRaFrameError(ValueError):
     def __init__(self, *, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class InvalidNodeStateFrameError(InvalidLoRaFrameError):
+    pass
+
+
+class InvalidCompactLoRaStateFrameError(InvalidLoRaFrameError):
+    pass
+
+
+class InvalidLoRaCommandAckFrameError(InvalidLoRaFrameError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -314,12 +333,13 @@ class ExactFrameDeduplicatingPublisher:
         self._recent_frames: OrderedDict[bytes, None] = OrderedDict()
 
     def publish_node_state(self, request: NodeStatePublishRequest) -> NodeStatePublishResult:
-        if request.payload in self._recent_frames:
+        dedup_key = request.dedup_key or request.payload
+        if dedup_key in self._recent_frames:
             return NodeStatePublishResult(accepted=False, reason="duplicate_frame")
 
         result = self._inner.publish_node_state(request)
         if result.accepted:
-            self._remember_frame(request.payload)
+            self._remember_frame(dedup_key)
 
         return result
 
@@ -513,6 +533,7 @@ class ReconnectingLoRaSerialReader:
             serial_ready_cleanup: Callable[[], None] | None = None
             try:
                 port = self._port_factory(self._settings)
+                self._reset_input_buffer(port)
                 if on_serial_connected is not None:
                     on_serial_connected()
                 if on_serial_ready is not None:
@@ -549,6 +570,11 @@ class ReconnectingLoRaSerialReader:
         except (OSError, serial.SerialException):
             pass
 
+    def _reset_input_buffer(self, port: SerialGatewayStream) -> None:
+        reset_input_buffer = getattr(port, "reset_input_buffer", None)
+        if callable(reset_input_buffer):
+            reset_input_buffer()
+
 
 def parse_json_frame(frame: bytes) -> dict[str, Any]:
     payload = json.loads(frame.decode("utf-8"))
@@ -578,6 +604,73 @@ def canonical_node_state_topic(reading: SensorReading) -> str:
     return f"greenhouse/zones/{reading.zone_id}/nodes/{reading.node_id}/state"
 
 
+def validate_compact_lora_state(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("t") != "state":
+        raise ValueError("t must be state")
+
+    required_fields = ("z", "n", "mid", "mr", "mp", "up")
+    for field_name in required_fields:
+        if field_name not in payload:
+            raise ValueError(f"missing compact LoRa state field: {field_name}")
+
+    zone_id = payload["z"]
+    node_id = payload["n"]
+    correlation_id = payload["mid"]
+    for field_name, value in (("z", zone_id), ("n", node_id), ("mid", correlation_id)):
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name} must be a string")
+        validate_mqtt_safe_id(field_name, value)
+
+    canonical_payload: dict[str, Any] = {
+        "schema_version": NODE_STATE_SCHEMA_VERSION,
+        "zone_id": zone_id,
+        "node_id": node_id,
+        "moisture_raw": payload["mr"],
+        "uptime_seconds": payload["up"],
+        "health": "ok",
+        "last_error": "none",
+        "publish_reason": "request_reading",
+        "command_message_id": correlation_id,
+    }
+    if "mp" in payload:
+        canonical_payload["moisture_percent"] = payload["mp"]
+    if "sq" in payload:
+        sequence = payload["sq"]
+        if not isinstance(sequence, int) or isinstance(sequence, bool):
+            raise ValueError("sq must be an integer")
+        if sequence < 1:
+            raise ValueError("sq must be greater than or equal to 1")
+        canonical_payload["lora_sequence"] = sequence
+
+    reading = validate_sensor_reading(canonical_payload)
+    return reading.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+def build_compact_lora_state_publish_request(frame: bytes) -> NodeStatePublishRequest:
+    try:
+        payload = parse_json_frame(frame)
+        return _build_compact_lora_state_publish_request_from_payload(payload, frame)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise InvalidCompactLoRaStateFrameError(
+            reason=type(exc).__name__,
+            message=str(exc),
+        ) from exc
+
+
+def _build_compact_lora_state_publish_request_from_payload(
+    payload: dict[str, Any],
+    frame: bytes,
+) -> NodeStatePublishRequest:
+    canonical_payload = validate_compact_lora_state(payload)
+    payload_bytes = json.dumps(canonical_payload, separators=(",", ":")).encode("utf-8")
+    reading = validate_sensor_reading(canonical_payload)
+    return NodeStatePublishRequest(
+        topic=canonical_node_state_topic(reading),
+        payload=payload_bytes,
+        dedup_key=frame,
+    )
+
+
 def build_node_state_publish_request(frame: bytes) -> NodeStatePublishRequest:
     try:
         payload = parse_json_frame(frame)
@@ -591,4 +684,77 @@ def build_node_state_publish_request(frame: bytes) -> NodeStatePublishRequest:
     return NodeStatePublishRequest(
         topic=canonical_node_state_topic(reading),
         payload=frame,
+    )
+
+
+def build_lora_command_ack_publish_request(frame: bytes) -> NodeStatePublishRequest:
+    try:
+        payload = parse_json_frame(frame)
+        ack = validate_lora_command_ack(payload)
+        if ack.target != LORA_COMMAND_ACK_TARGET:
+            raise ValueError(f"target must be {LORA_COMMAND_ACK_TARGET}")
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise InvalidLoRaCommandAckFrameError(
+            reason=type(exc).__name__,
+            message=str(exc),
+        ) from exc
+
+    return NodeStatePublishRequest(
+        topic=canonical_lora_command_ack_topic(ack),
+        payload=frame,
+    )
+
+
+def build_lora_frame_publish_request(frame: bytes) -> NodeStatePublishRequest:
+    try:
+        payload = parse_json_frame(frame)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise InvalidLoRaFrameError(
+            reason=type(exc).__name__,
+            message=str(exc),
+        ) from exc
+
+    schema_version = payload.get("schema_version")
+    if payload.get("t") == "state":
+        try:
+            return _build_compact_lora_state_publish_request_from_payload(payload, frame)
+        except ValueError as exc:
+            raise InvalidCompactLoRaStateFrameError(
+                reason=type(exc).__name__,
+                message=str(exc),
+            ) from exc
+
+    if schema_version == NODE_STATE_SCHEMA_VERSION:
+        try:
+            reading = validate_sensor_reading(payload)
+        except ValueError as exc:
+            raise InvalidNodeStateFrameError(
+                reason=type(exc).__name__,
+                message=str(exc),
+            ) from exc
+
+        return NodeStatePublishRequest(
+            topic=canonical_node_state_topic(reading),
+            payload=frame,
+        )
+
+    if schema_version == LORA_COMMAND_ACK_SCHEMA_VERSION:
+        try:
+            ack = validate_lora_command_ack(payload)
+            if ack.target != LORA_COMMAND_ACK_TARGET:
+                raise ValueError(f"target must be {LORA_COMMAND_ACK_TARGET}")
+        except ValueError as exc:
+            raise InvalidLoRaCommandAckFrameError(
+                reason=type(exc).__name__,
+                message=str(exc),
+            ) from exc
+
+        return NodeStatePublishRequest(
+            topic=canonical_lora_command_ack_topic(ack),
+            payload=frame,
+        )
+
+    raise InvalidLoRaFrameError(
+        reason="unsupported_schema_version",
+        message=f"unsupported schema_version: {schema_version!r}",
     )

@@ -66,7 +66,7 @@ secrets do not enter shell history or process listings.
 
 Both tools expect a running MQTT broker. Override the broker with `--mqtt-host` and `--mqtt-port` if needed.
 Both also accept `--mqtt-username` and `--mqtt-password`, and default those from `MQTT_USERNAME` / `MQTT_PASSWORD` when present.
-The LoRa receiver uses the same MQTT options, publishes newline-delimited `node-state/v1` frames to the canonical retained node-state topic, and routes valid `greenhouse/nodes/+/lora/command` messages to newline-delimited LoRa command frames while serial is connected.
+The LoRa receiver uses the same MQTT options, publishes newline-delimited `node-state/v1` frames to the canonical retained node-state topic, and routes valid `greenhouse/nodes/+/lora/command` messages to newline-delimited compact LoRa command frames while serial is connected.
 When available, the controller prefers retained `greenhouse/system/config/current` from Rails over local YAML so `allowed_hours`, active zones, and crop thresholds stay consistent with the UI.
 The controller also refuses to act on stale retained readings older than `--max-reading-age-seconds` (default: 900) so an old dry payload cannot trigger watering after a long outage or restart.
 For multi-sensor zones, it averages fresh readings from the zone's configured `node_ids` and can require a quorum with `--min-zone-sensor-readings` before watering.

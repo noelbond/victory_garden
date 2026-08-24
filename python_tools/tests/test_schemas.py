@@ -62,6 +62,31 @@ class TestSensorReading:
         )
         assert reading.schema_version == "node-state/v1"
 
+    def test_sensor_reading_accepts_command_message_id(self):
+        reading = SensorReading(
+            schema_version="node-state/v1",
+            node_id="sensor-1",
+            zone_id="z1",
+            moisture_raw=2000,
+            publish_reason="request_reading",
+            command_message_id="pi-001",
+        )
+
+        assert reading.command_message_id == "pi-001"
+
+    def test_sensor_reading_accepts_lora_sequence(self):
+        reading = SensorReading(
+            schema_version="node-state/v1",
+            node_id="sensor-1",
+            zone_id="z1",
+            moisture_raw=2000,
+            publish_reason="request_reading",
+            command_message_id="pi-001",
+            lora_sequence=42,
+        )
+
+        assert reading.lora_sequence == 42
+
     def test_sensor_reading_timestamp_auto_generated(self):
         reading1 = SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000)
         reading2 = SensorReading(node_id="s1", zone_id="z1", moisture_raw=1000)

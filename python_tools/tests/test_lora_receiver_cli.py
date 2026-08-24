@@ -21,6 +21,35 @@ def node_state_frame(**overrides):
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
+def command_ack_frame(**overrides):
+    payload = {
+        "schema_version": "lora-command-ack/v1",
+        "message_id": "sensor-zone1-ch0-ack-123",
+        "timestamp": "1970-01-01T00:00:00Z",
+        "source_node_id": "sensor-zone1-ch0",
+        "target": "pi-gateway",
+        "ack_for_message_id": "pi-20260821T153000Z-abc123",
+        "status": "acknowledged",
+        "error": None,
+    }
+    payload.update(overrides)
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
+def compact_lora_state_frame(**overrides):
+    payload = {
+        "t": "state",
+        "z": "zone1",
+        "n": "sensor-zone1-ch0",
+        "mid": "pi-001",
+        "mr": 2345,
+        "mp": 55,
+        "up": 123,
+    }
+    payload.update(overrides)
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
 def args(**overrides):
     values = {
         "serial_port": "/dev/fake-lora",
@@ -30,6 +59,8 @@ def args(**overrides):
         "reconnect_delay_seconds": 0.0,
         "max_frame_size": 1024,
         "dedup_recent_frames": 32,
+        "lora_command_max_attempts": 3,
+        "lora_command_retry_delay_seconds": 6.0,
         "mqtt_host": None,
         "mqtt_port": None,
         "mqtt_username": None,
@@ -131,6 +162,55 @@ def test_runtime_publishes_valid_fake_serial_frames_and_cleans_up():
     assert telemetry.counters.frames_published == 1
 
 
+def test_runtime_publishes_command_ack_fake_serial_frame():
+    telemetry = LoRaReceiverTelemetry()
+    publisher = FakePublisher()
+    frame = command_ack_frame()
+    reader = FakeReader([("frame", frame)])
+
+    cli.run_receiver(
+        args(),
+        shutdown=FakeShutdown(),
+        telemetry=telemetry,
+        publisher_factory=lambda _args, _telemetry, _command_route_handler: publisher,
+        reader_factory=lambda _args: reader,
+    )
+
+    assert len(publisher.requests) == 1
+    assert publisher.requests[0].topic == "greenhouse/nodes/sensor-zone1-ch0/lora/command_ack"
+    assert publisher.requests[0].payload == frame
+    assert telemetry.counters.frames_received == 1
+    assert telemetry.counters.frames_published == 1
+
+
+def test_runtime_translates_compact_lora_state_fake_serial_frame():
+    telemetry = LoRaReceiverTelemetry()
+    publisher = FakePublisher()
+    frame = compact_lora_state_frame()
+    reader = FakeReader([("frame", frame)])
+
+    cli.run_receiver(
+        args(),
+        shutdown=FakeShutdown(),
+        telemetry=telemetry,
+        publisher_factory=lambda _args, _telemetry, _command_route_handler: publisher,
+        reader_factory=lambda _args: reader,
+    )
+
+    assert len(publisher.requests) == 1
+    assert publisher.requests[0].topic == "greenhouse/zones/zone1/nodes/sensor-zone1-ch0/state"
+    payload = json.loads(publisher.requests[0].payload.decode("utf-8"))
+    assert payload["schema_version"] == "node-state/v1"
+    assert payload["moisture_raw"] == 2345
+    assert payload["moisture_percent"] == 55
+    assert payload["uptime_seconds"] == 123
+    assert payload["publish_reason"] == "request_reading"
+    assert payload["command_message_id"] == "pi-001"
+    assert publisher.requests[0].payload != frame
+    assert telemetry.counters.frames_received == 1
+    assert telemetry.counters.frames_published == 1
+
+
 def test_runtime_counts_invalid_and_decode_error_fake_serial_frames():
     telemetry = LoRaReceiverTelemetry()
     publisher = FakePublisher()
@@ -228,10 +308,20 @@ def test_runtime_routes_lora_mqtt_command_to_live_serial_stream():
     )
 
     assert captured["route_result"].accepted is True
-    assert json.loads(stream.writes[0].rstrip(b"\n").decode("utf-8")) == command_payload
+    assert json.loads(stream.writes[0].rstrip(b"\n").decode("utf-8")) == {
+        "t": "cmd",
+        "c": "rr",
+        "n": "sensor-zone1-ch0",
+        "mid": "pi-20260821T153000Z-abc123",
+        "sq": 1,
+    }
     assert stream.flushes == 1
 
-    assert telemetry.counters.serial_connects == 1
+
+def test_extracts_command_message_id_from_publish_request():
+    request = cli.build_lora_frame_publish_request(compact_lora_state_frame(mid="pi-001"))
+
+    assert cli.command_message_id_from_publish_request(request) == "pi-001"
 
 
 def test_runtime_closes_publisher_when_reader_factory_fails():

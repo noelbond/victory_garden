@@ -7,6 +7,9 @@ from pydantic import ValidationError
 import watering.lora_receiver as lora_receiver
 from watering.lora_receiver import (
     ExactFrameDeduplicatingPublisher,
+    InvalidCompactLoRaStateFrameError,
+    InvalidLoRaCommandAckFrameError,
+    InvalidLoRaFrameError,
     InvalidNodeStateFrameError,
     LoRaReceiverCounters,
     LoRaReceiverTelemetry,
@@ -17,10 +20,14 @@ from watering.lora_receiver import (
     PahoNodeStatePublisher,
     ShutdownController,
     build_paho_node_state_publisher,
+    build_compact_lora_state_publish_request,
+    build_lora_command_ack_publish_request,
+    build_lora_frame_publish_request,
     build_node_state_publish_request,
     canonical_node_state_topic,
     mqtt_connection_settings_from_env,
     parse_json_frame,
+    validate_compact_lora_state,
     validate_sensor_reading,
 )
 from watering.lora_transmitter import LoRaCommandRouteResult
@@ -33,6 +40,35 @@ def node_state_payload(**overrides):
         "zone_id": "zone1",
         "node_id": "sensor-zone1-ch0",
         "moisture_raw": 1820,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def lora_command_ack_payload(**overrides):
+    payload = {
+        "schema_version": "lora-command-ack/v1",
+        "message_id": "sensor-zone1-ch0-ack-123",
+        "timestamp": "1970-01-01T00:00:00Z",
+        "source_node_id": "sensor-zone1-ch0",
+        "target": "pi-gateway",
+        "ack_for_message_id": "pi-20260821T153000Z-abc123",
+        "status": "acknowledged",
+        "error": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def compact_lora_state_payload(**overrides):
+    payload = {
+        "t": "state",
+        "z": "zone1",
+        "n": "sensor-zone1-ch0",
+        "mid": "pi-001",
+        "mr": 2345,
+        "mp": 55,
+        "up": 123,
     }
     payload.update(overrides)
     return payload
@@ -147,6 +183,54 @@ def test_derives_canonical_node_state_topic():
     assert canonical_node_state_topic(reading) == "greenhouse/zones/zone1/nodes/sensor-zone1-ch0/state"
 
 
+class TestValidateCompactLoRaState:
+    def test_expands_compact_state_to_canonical_node_state_payload(self):
+        payload = validate_compact_lora_state(compact_lora_state_payload())
+
+        assert payload["schema_version"] == "node-state/v1"
+        assert payload["zone_id"] == "zone1"
+        assert payload["node_id"] == "sensor-zone1-ch0"
+        assert payload["moisture_raw"] == 2345
+        assert payload["moisture_percent"] == 55
+        assert payload["uptime_seconds"] == 123
+        assert payload["health"] == "ok"
+        assert payload["last_error"] == "none"
+        assert payload["publish_reason"] == "request_reading"
+        assert payload["command_message_id"] == "pi-001"
+        assert "mid" not in payload
+
+    def test_expands_optional_compact_state_sequence(self):
+        payload = validate_compact_lora_state(compact_lora_state_payload(sq=42))
+
+        assert payload["lora_sequence"] == 42
+        assert "sq" not in payload
+
+    @pytest.mark.parametrize(
+        ("field_name", "bad_value", "expected"),
+        [
+            ("t", "other", "t must be state"),
+            ("z", "zone/1", "z must be MQTT-safe"),
+            ("n", "node 1", "n must be MQTT-safe"),
+            ("mid", "pi/001", "mid must be MQTT-safe"),
+            ("mr", -1, "greater than or equal to 0"),
+            ("mp", 101, "less than or equal to 100"),
+            ("up", -1, "greater than or equal to 0"),
+            ("sq", 0, "sq must be greater than or equal to 1"),
+            ("sq", "1", "sq must be an integer"),
+        ],
+    )
+    def test_rejects_invalid_compact_state_fields(self, field_name, bad_value, expected):
+        with pytest.raises(ValueError, match=expected):
+            validate_compact_lora_state(compact_lora_state_payload(**{field_name: bad_value}))
+
+    def test_requires_compact_state_fields(self):
+        payload = compact_lora_state_payload()
+        del payload["mid"]
+
+        with pytest.raises(ValueError, match="missing compact LoRa state field: mid"):
+            validate_compact_lora_state(payload)
+
+
 class TestBuildNodeStatePublishRequest:
     def test_builds_publish_request_from_valid_frame(self):
         frame = json.dumps(node_state_payload()).encode("utf-8")
@@ -162,6 +246,107 @@ class TestBuildNodeStatePublishRequest:
 
         assert exc_info.value.reason == "JSONDecodeError"
         assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
+
+
+class TestBuildCompactLoRaStatePublishRequest:
+    def test_builds_canonical_node_state_publish_request_from_compact_frame(self):
+        frame = json.dumps(compact_lora_state_payload(), separators=(",", ":")).encode("utf-8")
+
+        request = build_compact_lora_state_publish_request(frame)
+        payload = json.loads(request.payload.decode("utf-8"))
+
+        assert request.topic == "greenhouse/zones/zone1/nodes/sensor-zone1-ch0/state"
+        assert payload["schema_version"] == "node-state/v1"
+        assert payload["zone_id"] == "zone1"
+        assert payload["node_id"] == "sensor-zone1-ch0"
+        assert payload["moisture_raw"] == 2345
+        assert payload["moisture_percent"] == 55
+        assert payload["uptime_seconds"] == 123
+        assert payload["publish_reason"] == "request_reading"
+        assert payload["command_message_id"] == "pi-001"
+        assert request.payload != frame
+        assert request.dedup_key == frame
+
+    def test_builds_publish_request_with_lora_sequence(self):
+        frame = json.dumps(compact_lora_state_payload(sq=42), separators=(",", ":")).encode("utf-8")
+
+        request = build_compact_lora_state_publish_request(frame)
+        payload = json.loads(request.payload.decode("utf-8"))
+
+        assert payload["lora_sequence"] == 42
+
+    def test_wraps_invalid_compact_state_errors_with_reason(self):
+        frame = json.dumps(compact_lora_state_payload(n="node 1"), separators=(",", ":")).encode("utf-8")
+
+        with pytest.raises(InvalidCompactLoRaStateFrameError) as exc_info:
+            build_compact_lora_state_publish_request(frame)
+
+        assert exc_info.value.reason == "ValueError"
+        assert "n must be MQTT-safe" in str(exc_info.value)
+
+
+class TestBuildLoRaCommandAckPublishRequest:
+    def test_builds_publish_request_from_valid_ack_frame(self):
+        frame = json.dumps(lora_command_ack_payload(), separators=(",", ":")).encode("utf-8")
+
+        request = build_lora_command_ack_publish_request(frame)
+
+        assert request.topic == "greenhouse/nodes/sensor-zone1-ch0/lora/command_ack"
+        assert request.payload == frame
+
+    def test_rejects_ack_targeted_elsewhere(self):
+        frame = json.dumps(lora_command_ack_payload(target="other-gateway"), separators=(",", ":")).encode("utf-8")
+
+        with pytest.raises(InvalidLoRaCommandAckFrameError) as exc_info:
+            build_lora_command_ack_publish_request(frame)
+
+        assert exc_info.value.reason == "ValueError"
+        assert "target must be pi-gateway" in str(exc_info.value)
+
+
+class TestBuildLoRaFramePublishRequest:
+    def test_dispatches_node_state_frame(self):
+        frame = json.dumps(node_state_payload(), separators=(",", ":")).encode("utf-8")
+
+        request = build_lora_frame_publish_request(frame)
+
+        assert request.topic == "greenhouse/zones/zone1/nodes/sensor-zone1-ch0/state"
+        assert request.payload == frame
+
+    def test_dispatches_lora_command_ack_frame(self):
+        frame = json.dumps(lora_command_ack_payload(), separators=(",", ":")).encode("utf-8")
+
+        request = build_lora_frame_publish_request(frame)
+
+        assert request.topic == "greenhouse/nodes/sensor-zone1-ch0/lora/command_ack"
+        assert request.payload == frame
+
+    def test_dispatches_compact_lora_state_frame(self):
+        frame = json.dumps(compact_lora_state_payload(), separators=(",", ":")).encode("utf-8")
+
+        request = build_lora_frame_publish_request(frame)
+        payload = json.loads(request.payload.decode("utf-8"))
+
+        assert request.topic == "greenhouse/zones/zone1/nodes/sensor-zone1-ch0/state"
+        assert payload["schema_version"] == "node-state/v1"
+        assert payload["publish_reason"] == "request_reading"
+        assert request.payload != frame
+
+    def test_rejects_unknown_schema_version(self):
+        frame = json.dumps({"schema_version": "other/v1"}).encode("utf-8")
+
+        with pytest.raises(InvalidLoRaFrameError) as exc_info:
+            build_lora_frame_publish_request(frame)
+
+        assert exc_info.value.reason == "unsupported_schema_version"
+
+    def test_wraps_invalid_ack_errors(self):
+        frame = json.dumps(lora_command_ack_payload(error="not allowed"), separators=(",", ":")).encode("utf-8")
+
+        with pytest.raises(InvalidLoRaCommandAckFrameError) as exc_info:
+            build_lora_frame_publish_request(frame)
+
+        assert exc_info.value.reason == "ValidationError"
 
 
 class FakePublishInfo:
@@ -247,6 +432,15 @@ class FakeSerialStream:
         self.closed = True
 
 
+class FakeResettableSerialStream(FakeSerialStream):
+    def __init__(self, chunks, events):
+        super().__init__(chunks)
+        self.events = events
+
+    def reset_input_buffer(self):
+        self.events.append("reset_input_buffer")
+
+
 class FakeLogger:
     def __init__(self):
         self.events = []
@@ -302,6 +496,35 @@ class TestShutdownController:
         assert frames == [b"one"]
         assert serial_stream.closed is True
         assert serial_stream.read_sizes == [8]
+
+    def test_reconnecting_reader_resets_input_buffer_before_ready_callbacks(self):
+        events = []
+        serial_stream = FakeResettableSerialStream([], events)
+        stop_checks = 0
+        reader = lora_receiver.ReconnectingLoRaSerialReader(
+            lora_receiver.SerialConnectionSettings(
+                port="/dev/fake-lora",
+                read_size=8,
+                reconnect_delay_seconds=0,
+            ),
+            port_factory=lambda _settings: serial_stream,
+            sleep=lambda _seconds: None,
+        )
+
+        def should_stop():
+            nonlocal stop_checks
+            stop_checks += 1
+            return stop_checks > 1
+
+        reader.run(
+            on_frame=lambda _frame: None,
+            should_stop=should_stop,
+            on_serial_connected=lambda: events.append("serial_connected"),
+            on_serial_ready=lambda _port: events.append("serial_ready"),
+        )
+
+        assert events == ["reset_input_buffer", "serial_connected", "serial_ready"]
+        assert serial_stream.closed is True
 
 
 class TestLoRaReceiverTelemetry:
@@ -689,6 +912,28 @@ class TestExactFrameDeduplicatingPublisher:
             assert publisher.publish_node_state(NodeStatePublishRequest("topic", payload)).accepted
 
         assert [request.payload for request in inner.requests] == [b"a", b"b", b"c", b"a"]
+
+    def test_uses_dedup_key_when_request_payload_is_translated(self):
+        inner = FakePublisher()
+        publisher = ExactFrameDeduplicatingPublisher(inner)
+
+        first = NodeStatePublishRequest(
+            topic="greenhouse/zones/zone1/nodes/sensor-zone1-ch0/state",
+            payload=b'{"schema_version":"node-state/v1","timestamp":"one"}',
+            dedup_key=b'{"t":"state","mid":"pi-001"}',
+        )
+        translated_duplicate = NodeStatePublishRequest(
+            topic="greenhouse/zones/zone1/nodes/sensor-zone1-ch0/state",
+            payload=b'{"schema_version":"node-state/v1","timestamp":"two"}',
+            dedup_key=b'{"t":"state","mid":"pi-001"}',
+        )
+
+        assert publisher.publish_node_state(first) == NodeStatePublishResult(accepted=True)
+        assert publisher.publish_node_state(translated_duplicate) == NodeStatePublishResult(
+            accepted=False,
+            reason="duplicate_frame",
+        )
+        assert inner.requests == [first]
 
     def test_forwards_close_to_inner_publisher(self):
         inner = FakePublisher()

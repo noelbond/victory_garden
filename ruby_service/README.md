@@ -122,7 +122,9 @@ Node state:
   "ip": "192.168.4.21",
   "health": "ok",
   "last_error": "none",
-  "publish_reason": "scheduled"
+  "publish_reason": "scheduled",
+  "command_message_id": null,
+  "lora_sequence": null
 }
 ```
 

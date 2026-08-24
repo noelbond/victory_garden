@@ -144,6 +144,8 @@ LoRa receiver runtime defaults:
 | `LORA_RECONNECT_DELAY_SECONDS` | `2.0` |
 | `LORA_MAX_FRAME_SIZE` | `1024` |
 | `LORA_DEDUP_RECENT_FRAMES` | `32` |
+| `LORA_COMMAND_MAX_ATTEMPTS` | `3` |
+| `LORA_COMMAND_RETRY_DELAY_SECONDS` | `6.0` |
 
 ## LoRa Inbound Manual Validation
 

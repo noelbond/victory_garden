@@ -293,6 +293,8 @@ LORA_READ_SIZE=256
 LORA_RECONNECT_DELAY_SECONDS=2.0
 LORA_MAX_FRAME_SIZE=1024
 LORA_DEDUP_RECENT_FRAMES=32
+LORA_COMMAND_MAX_ATTEMPTS=3
+LORA_COMMAND_RETRY_DELAY_SECONDS=6.0
 SOLID_QUEUE_IN_PUMA=1
 SECRET_KEY_BASE=$secret_key_base
 RUBY_SERVICE_DATABASE_PASSWORD=$db_password
@@ -314,6 +316,8 @@ EOF
   grep -q '^LORA_RECONNECT_DELAY_SECONDS=' "$ENV_FILE" || echo 'LORA_RECONNECT_DELAY_SECONDS=2.0' >> "$ENV_FILE"
   grep -q '^LORA_MAX_FRAME_SIZE=' "$ENV_FILE" || echo 'LORA_MAX_FRAME_SIZE=1024' >> "$ENV_FILE"
   grep -q '^LORA_DEDUP_RECENT_FRAMES=' "$ENV_FILE" || echo 'LORA_DEDUP_RECENT_FRAMES=32' >> "$ENV_FILE"
+  grep -q '^LORA_COMMAND_MAX_ATTEMPTS=' "$ENV_FILE" || echo 'LORA_COMMAND_MAX_ATTEMPTS=3' >> "$ENV_FILE"
+  grep -q '^LORA_COMMAND_RETRY_DELAY_SECONDS=' "$ENV_FILE" || echo 'LORA_COMMAND_RETRY_DELAY_SECONDS=6.0' >> "$ENV_FILE"
   if [[ -d "$FIRMWARE_BUNDLE_DIR" ]]; then
     grep -q '^VG_FIRMWARE_BUNDLE_ROOT=' "$ENV_FILE" || echo "VG_FIRMWARE_BUNDLE_ROOT=$FIRMWARE_BUNDLE_DIR" >> "$ENV_FILE"
   fi
@@ -579,7 +583,7 @@ User=$RUN_USER
 SupplementaryGroups=dialout
 WorkingDirectory=$PYTHON_TOOLS_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=/bin/sh -lc 'exec "\$0" -m tools.lora_receiver --serial-port "\${LORA_SERIAL_PORT:-$DEFAULT_LORA_SERIAL_PORT}" --baudrate "\${LORA_BAUDRATE:-9600}" --serial-timeout-seconds "\${LORA_SERIAL_TIMEOUT_SECONDS:-1.0}" --read-size "\${LORA_READ_SIZE:-256}" --reconnect-delay-seconds "\${LORA_RECONNECT_DELAY_SECONDS:-2.0}" --max-frame-size "\${LORA_MAX_FRAME_SIZE:-1024}" --dedup-recent-frames "\${LORA_DEDUP_RECENT_FRAMES:-32}"' "$PYTHON_VENV_DIR/bin/python"
+ExecStart=/bin/sh -lc 'exec "\$0" -m tools.lora_receiver --serial-port "\${LORA_SERIAL_PORT:-$DEFAULT_LORA_SERIAL_PORT}" --baudrate "\${LORA_BAUDRATE:-9600}" --serial-timeout-seconds "\${LORA_SERIAL_TIMEOUT_SECONDS:-1.0}" --read-size "\${LORA_READ_SIZE:-256}" --reconnect-delay-seconds "\${LORA_RECONNECT_DELAY_SECONDS:-2.0}" --max-frame-size "\${LORA_MAX_FRAME_SIZE:-1024}" --dedup-recent-frames "\${LORA_DEDUP_RECENT_FRAMES:-32}" --lora-command-max-attempts "\${LORA_COMMAND_MAX_ATTEMPTS:-3}" --lora-command-retry-delay-seconds "\${LORA_COMMAND_RETRY_DELAY_SECONDS:-6.0}"' "$PYTHON_VENV_DIR/bin/python"
 $SYSTEMD_SERVICE_RESTART_POLICY
 Environment=PYTHONUNBUFFERED=1
 $SYSTEMD_SERVICE_LOGGING

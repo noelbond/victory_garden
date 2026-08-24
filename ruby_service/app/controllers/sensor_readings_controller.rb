@@ -26,7 +26,9 @@ class SensorReadingsController < ApplicationController
       :ip,
       :health,
       :last_error,
-      :publish_reason
+      :publish_reason,
+      :command_message_id,
+      :lora_sequence
     )
   end
 end

@@ -23,6 +23,8 @@ module PayloadContracts
       health
       last_error
       publish_reason
+      command_message_id
+      lora_sequence
     ].freeze
     LEGACY_ALIASES = {
       "rssi" => "wifi_rssi"
@@ -82,6 +84,8 @@ module PayloadContracts
       validate_length!(normalized, "health", max: 50)
       validate_length!(normalized, "last_error", max: 300)
       validate_length!(normalized, "publish_reason", max: 50)
+      validate_length!(normalized, "command_message_id", max: 120)
+      validate_integer!(normalized, "lora_sequence", min: 1)
       normalized
     rescue ArgumentError
       raise

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from watering.lora_messages import (
     DEFAULT_LORA_MAX_FRAME_SIZE,
@@ -20,12 +20,26 @@ class LoRaCommandTransmitter:
         stream: SerialFrameWriteStream,
         *,
         max_frame_size: int = DEFAULT_LORA_MAX_FRAME_SIZE,
+        initial_sequence: int = 1,
     ) -> None:
+        if initial_sequence < 1:
+            raise ValueError("initial_sequence must be at least 1")
+
         self._max_frame_size = max_frame_size
         self._writer = SerialFrameWriter(stream, max_frame_size=max_frame_size)
+        self._sequence = initial_sequence
+        self._lock = threading.Lock()
 
     def transmit_command(self, command: LoRaCommand | Mapping[str, Any]) -> bytes:
-        frame = serialize_lora_command_frame(command, max_frame_size=self._max_frame_size)
+        with self._lock:
+            sequence = self._sequence
+            self._sequence += 1
+
+        frame = serialize_lora_command_frame(
+            command,
+            max_frame_size=self._max_frame_size,
+            sequence=sequence,
+        )
         self._writer.write_frame(frame)
         return frame
 
@@ -106,3 +120,123 @@ class LoRaCommandRouteTarget:
                 )
 
             return router.route_mqtt_command(topic, payload)
+
+
+class LoRaCommandRetryTimer(Protocol):
+    def start(self) -> None:
+        """Start the pending retry timer."""
+
+    def cancel(self) -> None:
+        """Cancel the pending retry timer."""
+
+
+@dataclass
+class _PendingLoRaCommand:
+    topic: str
+    payload: bytes
+    attempts: int
+    timer: LoRaCommandRetryTimer | None = None
+
+
+def _build_daemon_retry_timer(delay_seconds: float, callback: Callable[[], None]) -> LoRaCommandRetryTimer:
+    timer = threading.Timer(delay_seconds, callback)
+    timer.daemon = True
+    return timer
+
+
+class LoRaCommandRetryController:
+    def __init__(
+        self,
+        route_command: Callable[[str, bytes], LoRaCommandRouteResult],
+        *,
+        max_attempts: int = 3,
+        retry_delay_seconds: float = 6.0,
+        timer_factory: Callable[[float, Callable[[], None]], LoRaCommandRetryTimer] = (
+            _build_daemon_retry_timer
+        ),
+        on_retry_result: Callable[[LoRaCommandRouteResult], None] | None = None,
+    ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if retry_delay_seconds < 0:
+            raise ValueError("retry_delay_seconds must be at least 0")
+
+        self._route_command = route_command
+        self._max_attempts = max_attempts
+        self._retry_delay_seconds = retry_delay_seconds
+        self._timer_factory = timer_factory
+        self._on_retry_result = on_retry_result
+        self._lock = threading.Lock()
+        self._pending: dict[str, _PendingLoRaCommand] = {}
+
+    def route_mqtt_command(self, topic: str, payload: bytes) -> LoRaCommandRouteResult:
+        result = self._route_command(topic, payload)
+        if result.accepted and result.message_id is not None:
+            self._track_command(result.message_id, topic, payload)
+        return result
+
+    def mark_command_completed(self, message_id: str) -> None:
+        with self._lock:
+            pending = self._pending.pop(message_id, None)
+        if pending is not None and pending.timer is not None:
+            pending.timer.cancel()
+
+    def close(self) -> None:
+        with self._lock:
+            pending_commands = list(self._pending.values())
+            self._pending.clear()
+        for pending in pending_commands:
+            if pending.timer is not None:
+                pending.timer.cancel()
+
+    def _track_command(self, message_id: str, topic: str, payload: bytes) -> None:
+        if self._max_attempts <= 1:
+            return
+
+        pending = _PendingLoRaCommand(topic=topic, payload=payload, attempts=1)
+        timer = self._build_retry_timer(message_id)
+        pending.timer = timer
+
+        with self._lock:
+            previous = self._pending.get(message_id)
+            self._pending[message_id] = pending
+        if previous is not None and previous.timer is not None:
+            previous.timer.cancel()
+        timer.start()
+
+    def _build_retry_timer(self, message_id: str) -> LoRaCommandRetryTimer:
+        return self._timer_factory(
+            self._retry_delay_seconds,
+            lambda: self._retry_command(message_id),
+        )
+
+    def _retry_command(self, message_id: str) -> None:
+        with self._lock:
+            pending = self._pending.get(message_id)
+            if pending is None:
+                return
+            if pending.attempts >= self._max_attempts:
+                self._pending.pop(message_id, None)
+                return
+
+            pending.attempts += 1
+            topic = pending.topic
+            payload = pending.payload
+
+        result = self._route_command(topic, payload)
+        if self._on_retry_result is not None:
+            self._on_retry_result(result)
+
+        timer_to_start: LoRaCommandRetryTimer | None = None
+        with self._lock:
+            pending = self._pending.get(message_id)
+            if pending is None:
+                return
+            if pending.attempts >= self._max_attempts:
+                self._pending.pop(message_id, None)
+                return
+
+            timer_to_start = self._build_retry_timer(message_id)
+            pending.timer = timer_to_start
+
+        timer_to_start.start()

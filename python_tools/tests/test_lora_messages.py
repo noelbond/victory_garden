@@ -4,13 +4,19 @@ import pytest
 from pydantic import ValidationError
 
 from watering.lora_messages import (
+    COMPACT_LORA_COMMAND_REQUEST_READING,
+    COMPACT_LORA_COMMAND_TYPE,
     InvalidLoRaCommandMessageError,
+    LORA_COMMAND_ACK_SCHEMA_VERSION,
     LORA_COMMAND_SCHEMA_VERSION,
+    LoRaCommandAck,
     LoRaCommand,
     build_lora_command_from_mqtt,
+    canonical_lora_command_ack_topic,
     parse_lora_command_topic,
     require_lora_command_target_match,
     serialize_lora_command_frame,
+    validate_lora_command_ack,
     validate_lora_command,
 )
 from watering.serial_frames import SerialFrameWriter
@@ -32,6 +38,21 @@ def lora_command_payload(**overrides):
 
 def lora_command_bytes(**overrides):
     return json.dumps(lora_command_payload(**overrides), separators=(",", ":")).encode("utf-8")
+
+
+def lora_command_ack_payload(**overrides):
+    payload = {
+        "schema_version": LORA_COMMAND_ACK_SCHEMA_VERSION,
+        "message_id": "sensor-zone1-ch0-ack-123",
+        "timestamp": "2026-08-21T15:30:01Z",
+        "source_node_id": "sensor-zone1-ch0",
+        "target": "pi-gateway",
+        "ack_for_message_id": "pi-20260821T153000Z-abc123",
+        "status": "acknowledged",
+        "error": None,
+    }
+    payload.update(overrides)
+    return payload
 
 
 class TestParseLoRaCommandTopic:
@@ -98,6 +119,47 @@ class TestLoRaCommand:
     def test_rejects_request_reading_args(self):
         with pytest.raises(ValidationError, match="args must be empty for request_reading"):
             validate_lora_command(lora_command_payload(args={"reason": "manual"}))
+
+
+class TestLoRaCommandAck:
+    def test_validates_acknowledged_command_ack(self):
+        ack = validate_lora_command_ack(lora_command_ack_payload())
+
+        assert isinstance(ack, LoRaCommandAck)
+        assert ack.schema_version == "lora-command-ack/v1"
+        assert ack.message_id == "sensor-zone1-ch0-ack-123"
+        assert ack.source_node_id == "sensor-zone1-ch0"
+        assert ack.target == "pi-gateway"
+        assert ack.ack_for_message_id == "pi-20260821T153000Z-abc123"
+        assert ack.status == "acknowledged"
+        assert ack.error is None
+
+    def test_derives_node_specific_command_ack_topic(self):
+        ack = validate_lora_command_ack(lora_command_ack_payload())
+
+        assert canonical_lora_command_ack_topic(ack) == "greenhouse/nodes/sensor-zone1-ch0/lora/command_ack"
+
+    @pytest.mark.parametrize("status", ["rejected", "failed", "duplicate"])
+    def test_requires_error_for_non_acknowledged_statuses(self, status):
+        with pytest.raises(ValidationError, match="error is required"):
+            validate_lora_command_ack(lora_command_ack_payload(status=status, error=None))
+
+    def test_rejects_error_on_acknowledged_status(self):
+        with pytest.raises(ValidationError, match="error must be null"):
+            validate_lora_command_ack(lora_command_ack_payload(error="not needed"))
+
+    @pytest.mark.parametrize(
+        ("field_name", "bad_value"),
+        [
+            ("message_id", "ack/1"),
+            ("source_node_id", "sensor zone1"),
+            ("target", "pi/gateway"),
+            ("ack_for_message_id", "pi command 1"),
+        ],
+    )
+    def test_rejects_non_mqtt_safe_identifiers(self, field_name, bad_value):
+        with pytest.raises(ValidationError, match="must be MQTT-safe"):
+            validate_lora_command_ack(lora_command_ack_payload(**{field_name: bad_value}))
 
 
 class TestRequireLoRaCommandTargetMatch:
@@ -172,18 +234,28 @@ class TestSerializeLoRaCommandFrame:
         assert b"\n" not in frame
         assert b"\r" not in frame
         assert json.loads(frame.decode("utf-8")) == {
-            "schema_version": "lora-command/v1",
-            "message_id": "pi-20260821T153000Z-abc123",
-            "timestamp": "2026-08-21T15:30:00Z",
-            "source": "pi-gateway",
-            "target_node_id": "sensor-zone1-ch0",
-            "command": "request_reading",
-            "args": {},
+            "c": COMPACT_LORA_COMMAND_REQUEST_READING,
+            "mid": "pi-20260821T153000Z-abc123",
+            "n": "sensor-zone1-ch0",
+            "t": COMPACT_LORA_COMMAND_TYPE,
         }
         assert frame == (
-            b'{"args":{},"command":"request_reading","message_id":"pi-20260821T153000Z-abc123",'
-            b'"schema_version":"lora-command/v1","source":"pi-gateway","target_node_id":"sensor-zone1-ch0",'
-            b'"timestamp":"2026-08-21T15:30:00Z"}'
+            b'{"c":"rr","mid":"pi-20260821T153000Z-abc123","n":"sensor-zone1-ch0","t":"cmd"}'
+        )
+
+    def test_serializes_optional_sequence(self):
+        frame = serialize_lora_command_frame(lora_command_payload(), sequence=42)
+
+        assert json.loads(frame.decode("utf-8")) == {
+            "c": COMPACT_LORA_COMMAND_REQUEST_READING,
+            "mid": "pi-20260821T153000Z-abc123",
+            "n": "sensor-zone1-ch0",
+            "sq": 42,
+            "t": COMPACT_LORA_COMMAND_TYPE,
+        }
+        assert frame == (
+            b'{"c":"rr","mid":"pi-20260821T153000Z-abc123",'
+            b'"n":"sensor-zone1-ch0","sq":42,"t":"cmd"}'
         )
 
     def test_accepts_already_validated_command(self):
@@ -207,6 +279,10 @@ class TestSerializeLoRaCommandFrame:
     def test_rejects_invalid_max_frame_size(self):
         with pytest.raises(ValueError, match="max_frame_size must be at least 1"):
             serialize_lora_command_frame(lora_command_payload(), max_frame_size=0)
+
+    def test_rejects_invalid_sequence(self):
+        with pytest.raises(ValueError, match="sequence must be at least 1"):
+            serialize_lora_command_frame(lora_command_payload(), sequence=0)
 
     def test_serialized_command_can_be_written_as_one_serial_frame(self):
         class FakeWriteStream:

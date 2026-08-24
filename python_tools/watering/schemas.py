@@ -43,6 +43,8 @@ class SensorReading(BaseModel):
     health: Optional[str] = Field(default=None, max_length=50, examples=["ok"])
     last_error: Optional[str] = Field(default=None, max_length=300, examples=["none"])
     publish_reason: Optional[str] = Field(default=None, max_length=50, examples=["scheduled"])
+    command_message_id: Optional[str] = Field(default=None, max_length=120, examples=["pi-001"])
+    lora_sequence: Optional[int] = Field(default=None, ge=1, examples=[42])
 
 class HubCommand(str, Enum):
     START_WATER = "start_watering"

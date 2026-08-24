@@ -1,27 +1,34 @@
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Callable
 
 from watering.lora_receiver import (
     ExactFrameDeduplicatingPublisher,
-    InvalidNodeStateFrameError,
+    InvalidLoRaFrameError,
     LoRaReceiverTelemetry,
     MqttConnectionSettings,
     NodeStatePublisher,
+    NodeStatePublishRequest,
     ReconnectingLoRaSerialReader,
     SerialConnectionSettings,
     SerialFrameDecoder,
     ShutdownController,
     build_paho_node_state_publisher,
-    build_node_state_publish_request,
+    build_lora_frame_publish_request,
     mqtt_connection_settings_from_env,
 )
-from watering.lora_transmitter import LoRaCommandRouteTarget, LoRaCommandRouter, LoRaCommandTransmitter
+from watering.lora_transmitter import (
+    LoRaCommandRetryController,
+    LoRaCommandRouteTarget,
+    LoRaCommandRouter,
+    LoRaCommandTransmitter,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Receive LoRa node-state frames and publish them to MQTT.")
+    parser = argparse.ArgumentParser(description="Receive LoRa gateway frames and publish them to MQTT.")
     parser.add_argument("--serial-port", required=True, help="Serial device for the Pi-connected LR22.")
     parser.add_argument("--baudrate", type=int, default=9600)
     parser.add_argument("--serial-timeout-seconds", type=float, default=1.0)
@@ -29,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reconnect-delay-seconds", type=float, default=2.0)
     parser.add_argument("--max-frame-size", type=int, default=1024)
     parser.add_argument("--dedup-recent-frames", type=int, default=32)
+    parser.add_argument("--lora-command-max-attempts", type=int, default=3)
+    parser.add_argument("--lora-command-retry-delay-seconds", type=float, default=6.0)
     parser.add_argument("--mqtt-host")
     parser.add_argument("--mqtt-port", type=int)
     parser.add_argument("--mqtt-username")
@@ -83,6 +92,19 @@ def build_reconnecting_reader(args: argparse.Namespace) -> ReconnectingLoRaSeria
     )
 
 
+def command_message_id_from_publish_request(request: NodeStatePublishRequest) -> str | None:
+    try:
+        payload = json.loads(request.payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    command_message_id = payload.get("command_message_id")
+    return command_message_id if isinstance(command_message_id, str) and command_message_id else None
+
+
 def run_receiver(
     args: argparse.Namespace,
     *,
@@ -97,20 +119,31 @@ def run_receiver(
     shutdown.install_signal_handlers()
     telemetry = telemetry or LoRaReceiverTelemetry()
     command_route_target = LoRaCommandRouteTarget()
+    retry_controller = LoRaCommandRetryController(
+        command_route_target.route_mqtt_command,
+        max_attempts=args.lora_command_max_attempts,
+        retry_delay_seconds=args.lora_command_retry_delay_seconds,
+        on_retry_result=telemetry.lora_command_route_result,
+    )
     publisher: NodeStatePublisher | None = None
 
     try:
-        publisher = publisher_factory(args, telemetry, command_route_target.route_mqtt_command)
+        publisher = publisher_factory(args, telemetry, retry_controller.route_mqtt_command)
 
         def on_frame(frame: bytes) -> None:
             telemetry.frame_received(frame)
             try:
-                request = build_node_state_publish_request(frame)
-            except InvalidNodeStateFrameError as exc:
+                request = build_lora_frame_publish_request(frame)
+            except InvalidLoRaFrameError as exc:
                 telemetry.invalid_frame(reason=exc.reason, error=exc)
                 return
 
-            telemetry.publish_result(request, publisher.publish_node_state(request))
+            publish_result = publisher.publish_node_state(request)
+            telemetry.publish_result(request, publish_result)
+            if publish_result.accepted:
+                command_message_id = command_message_id_from_publish_request(request)
+                if command_message_id is not None:
+                    retry_controller.mark_command_completed(command_message_id)
 
         def on_serial_ready(port):
             router = LoRaCommandRouter(
@@ -132,6 +165,7 @@ def run_receiver(
             on_serial_ready=on_serial_ready,
         )
     finally:
+        retry_controller.close()
         if publisher is not None:
             publisher.close()
         telemetry.shutdown()

@@ -5,23 +5,41 @@ This document defines the LoRa application contract for Victory Garden.
 LoRa is treated as a low-bandwidth serial transport. MQTT remains the canonical
 system boundary on the Pi.
 
+Design rule:
+
+- LoRa wire frames should stay compact and bounded.
+- The Pi gateway translates compact LoRa frames into canonical MQTT payloads.
+- MQTT topics and payloads remain the stable integration contract for the rest
+  of the Victory Garden system.
+- For `request_reading`, the returned sensor-state result is the acknowledgement
+  of the command.
+- Explicit acknowledgement frames are reserved for commands that do not
+  naturally return a result payload.
+
 ## Current Status
 
 Implemented and bench-validated:
 
 - Pico/Pico W -> DX-LR22 -> Pi inbound sensor state
-- newline-delimited `node-state/v1` JSON frames
+- newline-delimited JSON frames
 - Pi receiver validation through the shared `SensorReading` model
 - MQTT publish to `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
 - QoS 1 retained MQTT publish
 - USB serial disconnect/reconnect recovery
+- Pi -> Pico LoRa command transmit
+- Pico command parsing
+- Pico -> Pi `request_reading` result response
+- compact Pi -> Pico command frames
+- compact Pico -> Pi state/result frames
+- gateway translation from compact LoRa state/result frames into canonical
+  `node-state/v1` MQTT payloads
+- bounded gateway retry for `request_reading` until a correlated state result is
+  published
 
 Not implemented yet:
 
-- Pi -> Pico LoRa command transmit
-- Pico command parsing
-- Pico -> Pi command acknowledgement
-- retry/timeout handling
+- explicit acknowledgements for commands that do not return result payloads
+- durable retry/timeout handling across gateway restarts
 - message authentication
 
 ## Transport Framing
@@ -46,7 +64,8 @@ identity.
 
 ## Inbound Sensor State
 
-Inbound sensor state is already implemented.
+Inbound sensor state is the canonical MQTT payload after gateway translation.
+The LoRa wire frame may be compact; MQTT remains `node-state/v1`.
 
 Schema:
 
@@ -56,13 +75,14 @@ Payload shape:
 
 - see [`mqtt.md`](mqtt.md#node-state)
 
-Serial frame example:
+Canonical MQTT payload example:
 
 ```json
 {"schema_version":"node-state/v1","timestamp":"2026-08-21T15:20:00Z","zone_id":"zone1","node_id":"lora-bridge-test","moisture_raw":2345,"moisture_percent":55,"health":"ok","last_error":"none","publish_reason":"lora_bridge_ingest_test"}
 ```
 
-The Pi receiver validates the frame and publishes the exact payload bytes to:
+The Pi receiver validates or translates the inbound LoRa frame, then publishes a
+canonical `node-state/v1` payload to:
 
 ```text
 greenhouse/zones/{zone_id}/nodes/{node_id}/state
@@ -78,8 +98,10 @@ greenhouse/zones/{zone_id}/nodes/{node_id}/state
 
 ## Outbound Command Contract
 
-Outbound command support should use a LoRa-specific command schema rather than
-reusing the existing Wi-Fi/MQTT node-command payload directly.
+Outbound command support uses a canonical MQTT command at the gateway boundary
+and a compact LoRa command on the radio boundary. The gateway validates the full
+MQTT payload first, then translates it to the compact wire frame before writing
+to the LR22 serial port.
 
 The first supported command should be:
 
@@ -117,30 +139,98 @@ Example:
 }
 ```
 
+### Compact Command Wire Frame
+
+The Pi writes the compact command form over LoRa:
+
+```json
+{"t":"cmd","c":"rr","n":"sensor-zone1-ch0","mid":"pi-20260821T153000Z-abc123","sq":1}
+```
+
+Fields:
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `t` | string | Compact type, currently `cmd` |
+| `c` | string | Compact command code; `rr` means `request_reading` |
+| `n` | string | Target node id |
+| `mid` | string | Original canonical MQTT `message_id` |
+| `sq` | integer | Optional gateway-owned LoRa transmit sequence |
+
 Node behavior:
 
-- if `schema_version` is not `lora-command/v1`, ignore the frame
-- if `target_node_id` does not match the node's configured `node_id`, ignore the frame
-- if `message_id` was recently handled, treat it as a duplicate
-- if `command` is unsupported, send a rejected acknowledgement
-- for `request_reading`, publish a fresh `node-state/v1` frame over LoRa
+- if compact `t` is not `cmd`, ignore the frame
+- if compact `n` does not match the node's configured `node_id`, ignore the frame
+- if `command` is unsupported, send a compact rejected acknowledgement once
+  explicit ack frames are implemented
+- for `request_reading`, send a fresh compact state/result frame over LoRa and
+  include the original `mid` as the correlation id
+- if compact `sq` is present, echo it in the compact state/result frame
 
 Ignored non-target commands should not be acknowledged. That avoids an ack storm
 when multiple nodes hear the same shared-air LoRa transmission.
 
-### Command Acknowledgement
+### Compact Reading Result
 
-Schema:
+`request_reading` does not require a separate acknowledgement frame. The reading
+result is the acknowledgement.
 
-- `schema_version`: `lora-command-ack/v1`
+The compact LoRa result frame should carry the smallest practical field set
+needed for the gateway to build the canonical MQTT state payload.
 
 Required fields:
 
 | Field | Type | Purpose |
 | --- | --- | --- |
+| `t` | string | Compact type, initially `state` |
+| `z` | string | Zone id |
+| `n` | string | Node id |
+| `mid` | string | Original command `message_id` for correlation |
+| `mr` | integer | Moisture raw reading |
+| `mp` | integer or null | Moisture percent, if known |
+| `sq` | integer | Optional echoed LoRa transmit sequence |
+| `up` | integer | Pico uptime seconds |
+
+Example compact LoRa result frame:
+
+```json
+{"t":"state","z":"zone1","n":"sensor-zone1-ch0","mid":"pi-001","mr":2345,"mp":55,"sq":1,"up":123}
+```
+
+Gateway behavior:
+
+- validate the compact LoRa frame
+- require `t` to be `state`
+- require `z`, `n`, and `mid` to be MQTT-safe
+- expand the result into canonical `node-state/v1`
+- publish the canonical payload to
+  `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
+- set `publish_reason` to `request_reading`
+- preserve `mid` as canonical `command_message_id`
+- preserve `sq`, when present, as canonical `lora_sequence`
+
+### Explicit Command Acknowledgement
+
+Explicit acknowledgements are not used for `request_reading` because the result
+frame is already proof that the command was received and handled.
+
+Ack frames remain part of the protocol for future commands that do not naturally
+return a result payload, such as configuration changes or actuator commands.
+
+The acknowledgement frame should also be compact on the LoRa wire and translated
+by the gateway into the canonical MQTT acknowledgement topic if needed.
+
+Canonical MQTT ack schema:
+
+- `schema_version`: `lora-command-ack/v1`
+
+Canonical MQTT ack fields:
+
+| Field | Type | Purpose |
+| --- | --- | --- |
 | `schema_version` | string | Must be `lora-command-ack/v1` |
 | `message_id` | string | Unique ack message id |
-| `timestamp` | string | UTC ISO 8601 time when the node created the ack |
+| `timestamp` | string | UTC ISO 8601 time when the node created the ack or when the gateway translated it |
 | `source_node_id` | string | Node that handled or rejected the command |
 | `target` | string | Ack target, initially `pi-gateway` |
 | `ack_for_message_id` | string | Original command `message_id` |
@@ -154,7 +244,7 @@ Statuses:
 - `failed`: command was accepted but failed while executing
 - `duplicate`: command was already handled recently
 
-Example:
+Canonical MQTT ack example:
 
 ```json
 {
@@ -198,9 +288,18 @@ Initial bridge behavior:
 2. validate the payload as `lora-command/v1`
 3. require the topic node id and `target_node_id` to match
 4. serialize the command as compact JSON plus trailing newline
-5. write the frame to the Pi-connected LR22 serial port
-6. receive `lora-command-ack/v1` over the same serial reader
-7. publish the ack to `greenhouse/nodes/{source_node_id}/lora/command_ack`
+5. stamp the compact command with a process-local LoRa sequence `sq`
+6. write the frame to the Pi-connected LR22 serial port
+7. receive a compact LoRa result frame over the same serial reader
+8. translate the compact result into canonical `node-state/v1`
+9. publish the state to `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
+
+For future commands that do not produce a result payload, the gateway should
+translate compact ack/result frames into:
+
+```text
+greenhouse/nodes/{node_id}/lora/command_ack
+```
 
 ## Freshness, Deduplication, and Retry Rules
 
@@ -208,18 +307,25 @@ Initial recommended rules:
 
 - `message_id` must be MQTT-safe and unique enough for practical command
   correlation
-- nodes remember a small recent set of handled command `message_id`s
-- duplicates addressed to the same node should produce `duplicate` or be
-  ignored; choose one behavior during implementation and test it explicitly
+- gateway compact command `sq` is a process-local LoRa transmit sequence used
+  for debugging ordering/retry behavior; it is not a deduplication key
+- production node firmware should eventually remember a small recent set of
+  handled command `message_id`s
+- duplicates addressed to the same node should eventually produce `duplicate`
+  or be ignored; choose one behavior when node-side deduplication is added and
+  test it explicitly
 - commands older than 60 seconds should be rejected if the node has a valid
   clock
 - if the node does not have valid time, it may skip age rejection but should
   still deduplicate by `message_id`
-- the gateway should treat a command as timed out if no ack arrives within a
-  configured window
+- for `request_reading`, the gateway retries a bounded number of times if no
+  correlated state/result is successfully published
+- for future non-result commands, the gateway should treat a command as timed
+  out if no correlated ack/result arrives within a configured window
 
 Retry behavior should be conservative. Repeated command frames consume shared
-airtime and can delay sensor-state traffic.
+airtime and can delay sensor-state traffic. The current gateway defaults to
+three total transmit attempts with a six-second retry delay.
 
 ## First Implementation Scope
 
@@ -227,28 +333,34 @@ In scope:
 
 - Pi subscribes to `greenhouse/nodes/+/lora/command`
 - Pi validates `lora-command/v1`
-- Pi writes newline-delimited command frames to the LR22 serial port
-- Pico filters by `target_node_id`
+- Pi writes newline-delimited compact command frames to the LR22 serial port
+- Pico filters by compact target node id
 - Pico handles `request_reading`
-- Pico emits `lora-command-ack/v1`
-- Pi publishes acks to MQTT
+- Pico emits one compact state/result frame for `request_reading`
+- Pi translates compact state/result frames into canonical MQTT `node-state/v1`
+- Pi retries `request_reading` commands until the correlated state result is
+  published or the bounded attempt limit is reached
 
 Out of scope:
 
+- explicit ack frames for commands that do not produce result payloads
 - wildcard/broadcast commands
 - multi-hop routing
 - durable command queues
 - guaranteed delivery
 - encryption/signatures
 - radio-level addressing
-- complex retry policy
+- durable or adaptive retry policy
 
 ## Design Notes
 
 - Transparent LoRa behaves like shared-air broadcast in this setup. Routing is
   application-level filtering, not radio-level routing.
 - Inbound sensor state can tolerate dropped frames because a future reading
-  refreshes retained MQTT state. Commands and acks need stricter correlation
-  because they represent operator intent.
+  refreshes retained MQTT state. Commands need stricter correlation because
+  they represent operator intent.
+- Verbose JSON is appropriate at MQTT and database boundaries. The radio path is
+  constrained, so LoRa wire frames should be compact and translated at the
+  gateway.
 - Message authentication should be revisited before outdoor or multi-node
   production deployment.

@@ -60,6 +60,10 @@ Schema:
 - `health`: nullable string such as `ok` or `degraded`
 - `last_error`: nullable string or `none`
 - `publish_reason`: nullable string such as `scheduled`, `interval`, or `request_reading`
+- `command_message_id`: nullable command correlation id, present when a state
+  payload is the result of a command such as LoRa `request_reading`
+- `lora_sequence`: nullable LoRa transmit sequence, present when a LoRa result
+  echoes the gateway's compact command `sq`
 
 Example:
 
@@ -80,7 +84,9 @@ Example:
   "ip": "192.168.4.40",
   "health": "ok",
   "last_error": "none",
-  "publish_reason": "interval"
+  "publish_reason": "interval",
+  "command_message_id": null,
+  "lora_sequence": null
 }
 ```
 
@@ -92,9 +98,12 @@ Compatibility note:
 
 ### LoRa Gateway Bridge
 
-The current LoRa path carries the same canonical `node-state/v1` payload shown above. LoRa is a transport boundary, not a separate application-level schema.
+The LoRa path is a transport boundary. The radio wire frames should stay compact
+and bounded; the Pi gateway translates valid LoRa frames into the canonical MQTT
+payloads described in this document.
 
-For the full LoRa protocol, including outbound command and planned acknowledgement frames, see:
+For the full LoRa protocol, including outbound command, compact reading-result,
+and future acknowledgement frames, see:
 
 - [`lora.md`](lora.md)
 
@@ -103,8 +112,8 @@ Inbound physical flow:
 1. the Pico sends one UTF-8 JSON object followed by `\n` over UART to its DX-LR22 radio
 2. the Pi-connected DX-LR22 receives the bytes through its USB serial adapter
 3. `victory-garden-lora-receiver.service` reassembles newline-delimited frames
-4. the receiver validates the JSON through the shared `SensorReading` model
-5. the receiver publishes the exact validated frame to MQTT
+4. the receiver validates or translates the JSON frame
+5. the receiver publishes canonical MQTT payloads
 
 Receiver rules:
 
@@ -112,7 +121,6 @@ Receiver rules:
 - CRLF input is accepted; trailing `\r` is stripped before JSON parsing
 - maximum frame size: `1024` bytes by default
 - malformed JSON, invalid UTF-8, oversized frames, and schema-invalid payloads are dropped and logged
-- `schema_version` must be exactly `node-state/v1`
 - `zone_id` and `node_id` must be MQTT-safe: letters, numbers, `.`, `_`, and `-`
 - the MQTT topic is derived from the validated payload:
 
@@ -129,13 +137,14 @@ Publish behavior:
 Example LoRa serial frame:
 
 ```json
-{"schema_version":"node-state/v1","timestamp":"2026-08-21T15:20:00Z","zone_id":"zone1","node_id":"lora-bridge-test","moisture_raw":2345,"moisture_percent":55,"health":"ok","last_error":"none","publish_reason":"lora_bridge_ingest_test"}
+{"t":"state","z":"zone1","n":"sensor-zone1-ch0","mid":"pi-001","mr":2345,"mp":55,"sq":1,"up":123}
 ```
 
-The line above is transmitted with a trailing newline over LoRa. The receiver publishes it to:
+The line above is transmitted with a trailing newline over LoRa. The gateway
+translates it to canonical `node-state/v1` and publishes it to:
 
 ```text
-greenhouse/zones/zone1/nodes/lora-bridge-test/state
+greenhouse/zones/zone1/nodes/sensor-zone1-ch0/state
 ```
 
 Outbound command bridge:
@@ -145,12 +154,14 @@ Outbound command bridge:
 - the `{node_id}` topic segment must match `target_node_id`
 - accepted commands are serialized as compact JSON plus trailing newline and written to the Pi-connected LR22 serial stream
 - if the LR22 serial connection is down, commands are dropped and logged with reason `serial_disconnected`
+- `request_reading` commands are retried by the gateway until the correlated state result is published or the bounded attempt limit is reached
 
 Current scope:
 
 - inbound Pico-to-Pi sensor state is implemented and bench-validated
 - outbound Pi-to-Pico `request_reading` command routing is implemented and Pi-service validated
-- command acknowledgements and retry/timeout handling are documented protocol work but are not implemented yet
+- `request_reading` should use the returned state/result as the acknowledgement
+- explicit command acknowledgements and durable/adaptive retry handling are documented protocol work for future non-result commands
 
 ### Node Command
 

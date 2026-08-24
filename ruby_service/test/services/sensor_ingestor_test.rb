@@ -55,6 +55,27 @@ class SensorIngestorTest < ActiveSupport::TestCase
     assert_equal 0, WateringEvent.count
   end
 
+  test "preserves command correlation id in raw payload" do
+    Node.create!(
+      node_id: "pico-w-zone1",
+      zone: @zone,
+      last_seen_at: 1.hour.ago,
+      config_status: "applied"
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "publish_reason" => "request_reading",
+      "command_message_id" => "pi-001",
+      "lora_sequence" => 42
+    )
+
+    SensorIngestor.new(payload).call
+
+    reading = SensorReading.order(:created_at).last
+    assert_equal "request_reading", reading.publish_reason
+    assert_equal "pi-001", reading.raw_payload["command_message_id"]
+    assert_equal 42, reading.raw_payload["lora_sequence"]
+  end
+
   test "ingests partial payload for an assigned node without making watering decision" do
     Node.create!(
       node_id: "partial-zone1",
