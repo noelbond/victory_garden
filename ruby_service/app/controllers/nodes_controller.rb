@@ -128,7 +128,7 @@ class NodesController < ApplicationController
     return unless require_online_for_command("#{@node.display_name} hasn't reported in a while and appears offline; a reading request would likely just time out.")
 
     queue_reading_request(@node)
-    redirect_to resolved_return_path, notice: reading_request_notice_for(@node)
+    redirect_to resolved_return_path, notice: reading_request_notice_for
   end
 
   def manually_water

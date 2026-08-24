@@ -104,7 +104,7 @@ class OnboardingController < ApplicationController
       node_id: node.node_id
     )
 
-    redirect_to onboarding_step_redirect("reading"), notice: reading_request_notice_for(node)
+    redirect_to onboarding_step_redirect("reading"), notice: reading_request_notice_for
   end
 
   def water_now

@@ -129,7 +129,7 @@ class SetupApiController < ApplicationController
       command_id: result[:command_id],
       requested_at: result[:requested_at],
       next_expected_wake_at: next_wake_at&.utc&.iso8601,
-      message: reading_request_notice_for(node),
+      message: reading_request_notice_for,
       node: node_payload(node)
     }
   end

@@ -85,7 +85,7 @@ class ApplicationController < ActionController::Base
     @firstboot_status
   end
 
-  def reading_request_notice_for(node)
+  def reading_request_notice_for
     "Reading request queued. The sleeping Pico will receive it on its next scheduled wake. Restart the Pico if you need a reading immediately."
   end
 
