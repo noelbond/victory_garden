@@ -113,6 +113,24 @@ class MqttConsumerTest < ActiveSupport::TestCase
     assert_equal "combined-zone1-ch0-abc-reboot", enqueued.first["command_id"]
   end
 
+  test "node diagnostic event topic is routed to node diagnostic event ingest job" do
+    consumer = MqttConsumer.new(status_path: @status_path)
+    payload = {
+      node_id: "combined-zone1",
+      zone_id: "zone1",
+      event_code: "BROKER_DISCOVERY_APPLIED",
+      detail: "unreachable for 42s; discovery_no_response=2 discovery_rejected=0 last_rejected=none:0",
+      timestamp: "2026-08-10T14:25:14Z"
+    }.to_json
+    enqueued = []
+    stub_singleton_method(NodeDiagnosticEventIngestJob, :perform_later, ->(data) { enqueued << data }) do
+      consumer.send(:handle_message, "greenhouse/nodes/combined-zone1/diagnostic_event", payload)
+    end
+
+    assert_equal 1, enqueued.length
+    assert_equal "BROKER_DISCOVERY_APPLIED", enqueued.first["event_code"]
+  end
+
   test "controller events are deduped by payload within the dedupe window" do
     now = 100.0
     consumer = MqttConsumer.new(dedupe_window_seconds: 60, monotonic_clock: -> { now }, status_path: @status_path)

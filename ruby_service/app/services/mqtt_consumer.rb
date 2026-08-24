@@ -32,6 +32,7 @@ class MqttConsumer
     @controller_events_topic = "greenhouse/zones/+/controller/event"
     @node_config_ack_topic = "greenhouse/nodes/+/config_ack"
     @command_ack_topic = "greenhouse/zones/+/command_ack"
+    @node_diagnostic_event_topic = "greenhouse/nodes/+/diagnostic_event"
     @dedupe_window_seconds = dedupe_window_seconds
     @monotonic_clock = monotonic_clock || -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
     @sleeper = sleeper || ->(seconds) { sleep seconds }
@@ -61,7 +62,7 @@ class MqttConsumer
 
   def connect_and_subscribe
     MQTT::Client.connect(mqtt_options) do |client|
-      topics = [@readings_topic, @actuators_topic, @controller_events_topic, @node_config_ack_topic, @command_ack_topic].compact.uniq
+      topics = [@readings_topic, @actuators_topic, @controller_events_topic, @node_config_ack_topic, @command_ack_topic, @node_diagnostic_event_topic].compact.uniq
       client.subscribe(*topics)
       log "Subscribed to #{topics.join(', ')}"
       mark_connected(topics)
@@ -91,6 +92,9 @@ class MqttConsumer
     elsif topic_matches?(@command_ack_topic, topic)
       data = payload["node_command_ack"] || payload
       NodeCommandAckIngestJob.perform_later(data)
+    elsif topic_matches?(@node_diagnostic_event_topic, topic)
+      data = payload["node_diagnostic_event"] || payload
+      NodeDiagnosticEventIngestJob.perform_later(data)
     else
       log "Unknown topic: #{topic}", level: :warn
     end
@@ -229,7 +233,8 @@ class MqttConsumer
       topic_matches?(@actuators_topic, topic) ||
       topic_matches?(@controller_events_topic, topic) ||
       topic_matches?(@node_config_ack_topic, topic) ||
-      topic_matches?(@command_ack_topic, topic)
+      topic_matches?(@command_ack_topic, topic) ||
+      topic_matches?(@node_diagnostic_event_topic, topic)
   end
 
   def sensor_topic?(topic)

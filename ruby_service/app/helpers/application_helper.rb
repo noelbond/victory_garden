@@ -85,6 +85,26 @@ module ApplicationHelper
     "CONTROLLER_EVENT_INGEST_FAILED" => {
       description: "An incoming controller event could not be saved, most likely because the payload was malformed or referenced an unknown zone.",
       fix: "Check the greenhouse controller's logs for the event that failed, and check the Rails log for the specific payload."
+    },
+    "NODE_DIAGNOSTIC_EVENT_INGEST_FAILED" => {
+      description: "A node's diagnostic event (e.g. a broker-outage summary) could not be saved, most likely because the payload was malformed or referenced an unknown zone.",
+      fix: "Check the Rails log for the specific payload that failed."
+    },
+    "BROKER_UNREACHABLE" => {
+      description: "This node lost its connection to the MQTT broker and reconnected to the same host after a plain, unexplained connectivity blip (no broker relocation was needed). See the detail field for how long it was down.",
+      fix: "If this is a one-off, no action needed. If it recurs, check the node's Wi-Fi signal strength and the Pi's own network stability around the times this fires."
+    },
+    "BROKER_DISCOVERY_NO_RESPONSE" => {
+      description: "This node's configured broker stopped answering, and it broadcast for a replacement but got zero responses for a while before eventually reconnecting (see detail for how many attempts). A node stuck in this state forever without recovering usually means broadcast/UDP traffic between devices is being blocked on this Wi-Fi network.",
+      fix: "Check whether AP/client isolation is enabled on the router -- it's the most common cause of this. Also confirm the mqtt_discovery_responder service is actually running on the Pi. Assigning the Pi a static DHCP reservation avoids needing this rediscovery at all."
+    },
+    "BROKER_DISCOVERY_REJECTED" => {
+      description: "This node's broker relocation broadcast got a reply, but the replying host did not accept the node's real MQTT credentials, so the node discarded it and reverted to its last-known-good broker. See detail for which host/port answered.",
+      fix: "If you don't recognize the host in detail, something else on this network is answering broker-discovery broadcasts -- worth investigating as a possible spoofing attempt. If it's expected (e.g. a stale/misconfigured second install), fix or remove it."
+    },
+    "BROKER_DISCOVERY_APPLIED" => {
+      description: "This node's configured broker became unreachable, it broadcast for a replacement, found the broker running at a new host/port, verified it by successfully authenticating, and saved it. Informational -- typically means the Pi's IP address changed.",
+      fix: "No action needed for this occurrence. If this fires repeatedly, give the Pi a static DHCP reservation on the router so its address stops changing."
     }
   }.freeze
 
