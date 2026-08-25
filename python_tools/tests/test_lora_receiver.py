@@ -1,5 +1,6 @@
 import json
 from dataclasses import asdict
+import threading
 
 import pytest
 from pydantic import ValidationError
@@ -12,12 +13,14 @@ from watering.lora_receiver import (
     InvalidLoRaFrameError,
     InvalidNodeStateFrameError,
     LoRaReceiverCounters,
+    LoRaReceiverStatusWriter,
     LoRaReceiverTelemetry,
     MqttConnectionSettings,
     MqttConnectionEvent,
     NodeStatePublishRequest,
     NodeStatePublishResult,
     PahoNodeStatePublisher,
+    SerialConnectionSettings,
     ShutdownController,
     build_paho_node_state_publisher,
     build_compact_lora_state_publish_request,
@@ -456,6 +459,39 @@ class FakeLogger:
         )
 
 
+class CountingStatusWriter:
+    def __init__(self):
+        self.statuses = []
+
+    def write(self, status):
+        self.statuses.append(dict(status))
+
+
+class BlockingStatusWriter:
+    def __init__(self):
+        self.block_next_write = False
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.overlapped = False
+        self.writes = 0
+        self._active = False
+        self._lock = threading.Lock()
+
+    def write(self, _status):
+        with self._lock:
+            if self._active:
+                self.overlapped = True
+            self._active = True
+            self.writes += 1
+
+        if self.block_next_write:
+            self.entered.set()
+            self.release.wait(timeout=1)
+
+        with self._lock:
+            self._active = False
+
+
 class TestShutdownController:
     def test_tracks_stop_request(self):
         shutdown = ShutdownController()
@@ -526,8 +562,160 @@ class TestShutdownController:
         assert events == ["reset_input_buffer", "serial_connected", "serial_ready"]
         assert serial_stream.closed is True
 
+    def test_serial_reader_reports_idle_reads(self):
+        serial_stream = FakeSerialStream([b"", b"ok\n"])
+        reader = lora_receiver.LoRaSerialReader(serial_stream, read_size=8)
+        idle_reads = []
+
+        reader.run(
+            on_frame=lambda _frame: None,
+            should_stop=lambda: len(serial_stream.read_sizes) >= 2,
+            on_idle=lambda: idle_reads.append("idle"),
+        )
+
+        assert idle_reads == ["idle"]
+
+    def test_rejects_non_blocking_serial_timeout_that_could_spin(self):
+        with pytest.raises(ValueError, match="timeout_seconds must be greater than 0"):
+            SerialConnectionSettings(port="/dev/lora", timeout_seconds=0)
+
 
 class TestLoRaReceiverTelemetry:
+    def test_writes_lora_receiver_status_file(self, tmp_path):
+        status_path = tmp_path / "nested" / "lora_receiver_status.json"
+        telemetry = LoRaReceiverTelemetry(
+            status_writer=LoRaReceiverStatusWriter(status_path),
+            serial_port="/dev/serial/by-id/lora",
+            clock=lambda: "2026-08-25T12:00:00Z",
+        )
+
+        status = json.loads(status_path.read_text())
+
+        assert status["component"] == "lora_receiver"
+        assert status["status"] == "starting"
+        assert status["serial_port"] == "/dev/serial/by-id/lora"
+        assert status["mqtt_connected"] is False
+        assert status["serial_connected"] is False
+        assert status["counters"] == asdict(telemetry.counters)
+
+    def test_updates_lora_receiver_status_from_telemetry_events(self, tmp_path):
+        status_path = tmp_path / "lora_receiver_status.json"
+        telemetry = LoRaReceiverTelemetry(
+            status_writer=LoRaReceiverStatusWriter(status_path),
+            serial_port="/dev/lora",
+            clock=lambda: "2026-08-25T12:00:00Z",
+        )
+        request = NodeStatePublishRequest("greenhouse/zones/zone1/nodes/node1/state", b'{"ok":true}')
+
+        telemetry.serial_connected()
+        telemetry.mqtt_connected(MqttConnectionEvent(connected=True, reason_code=0))
+        telemetry.frame_received(request.payload)
+        telemetry.publish_result(request, NodeStatePublishResult(accepted=True))
+        telemetry.lora_command_received("greenhouse/nodes/node1/lora/command")
+        telemetry.lora_command_route_result(
+            LoRaCommandRouteResult(
+                accepted=True,
+                topic="greenhouse/nodes/node1/lora/command",
+                target_node_id="node1",
+                message_id="msg-1",
+                frame_size=42,
+            )
+        )
+
+        status = json.loads(status_path.read_text())
+
+        assert status["status"] == "connected"
+        assert status["mqtt_connected"] is True
+        assert status["serial_connected"] is True
+        assert status["last_serial_connected_at"] == "2026-08-25T12:00:00Z"
+        assert status["last_mqtt_connected_at"] == "2026-08-25T12:00:00Z"
+        assert status["last_frame_received_at"] == "2026-08-25T12:00:00Z"
+        assert status["last_frame_published_at"] == "2026-08-25T12:00:00Z"
+        assert status["last_command_received_at"] == "2026-08-25T12:00:00Z"
+        assert status["last_command_routed_at"] == "2026-08-25T12:00:00Z"
+        assert status["last_error"] is None
+        assert status["counters"]["frames_published"] == 1
+        assert status["counters"]["lora_commands_routed"] == 1
+
+    def test_marks_lora_receiver_status_degraded_and_stopped(self, tmp_path):
+        status_path = tmp_path / "lora_receiver_status.json"
+        telemetry = LoRaReceiverTelemetry(
+            status_writer=LoRaReceiverStatusWriter(status_path),
+            clock=lambda: "2026-08-25T12:00:00Z",
+        )
+
+        telemetry.serial_connected()
+        status = json.loads(status_path.read_text())
+        assert status["status"] == "degraded"
+
+        telemetry.serial_disconnected(RuntimeError("usb gone"))
+        status = json.loads(status_path.read_text())
+        assert status["status"] == "degraded"
+        assert status["serial_connected"] is False
+        assert status["last_error"] == "usb gone"
+
+        telemetry.shutdown()
+        status = json.loads(status_path.read_text())
+        assert status["status"] == "stopped"
+
+    def test_logs_status_write_failures_without_breaking_telemetry(self):
+        class FailingStatusWriter:
+            def write(self, _status):
+                raise OSError("disk full")
+
+        logger = FakeLogger()
+        telemetry = LoRaReceiverTelemetry(status_writer=FailingStatusWriter(), logger=logger)
+
+        telemetry.serial_connected()
+
+        assert telemetry.counters.serial_connects == 1
+        assert [event["event"] for event in logger.events] == [
+            "status_write_failed",
+            "status_write_failed",
+            "serial_connected",
+        ]
+
+    def test_heartbeat_refreshes_status_file_without_spamming_writes(self):
+        monotonic_times = iter([0.0, 5.0, 35.0, 35.0])
+        writer = CountingStatusWriter()
+        telemetry = LoRaReceiverTelemetry(
+            status_writer=writer,
+            clock=lambda: "2026-08-25T12:00:00Z",
+            monotonic_clock=lambda: next(monotonic_times),
+            status_heartbeat_seconds=30.0,
+        )
+
+        telemetry.heartbeat()
+        telemetry.heartbeat()
+
+        assert len(writer.statuses) == 2
+        assert writer.statuses[-1]["status"] == "starting"
+
+    def test_rejects_invalid_status_heartbeat_interval(self):
+        with pytest.raises(ValueError, match="status_heartbeat_seconds"):
+            LoRaReceiverTelemetry(status_heartbeat_seconds=-1)
+
+    def test_serializes_concurrent_status_writes(self):
+        writer = BlockingStatusWriter()
+        telemetry = LoRaReceiverTelemetry(status_writer=writer)
+        writer.block_next_write = True
+
+        serial_thread = threading.Thread(target=telemetry.serial_connected)
+        mqtt_thread = threading.Thread(
+            target=lambda: telemetry.mqtt_connected(MqttConnectionEvent(connected=True, reason_code=0))
+        )
+
+        serial_thread.start()
+        assert writer.entered.wait(timeout=1)
+        mqtt_thread.start()
+        writer.release.set()
+        serial_thread.join(timeout=1)
+        mqtt_thread.join(timeout=1)
+
+        assert serial_thread.is_alive() is False
+        assert mqtt_thread.is_alive() is False
+        assert writer.overlapped is False
+
     def test_logs_serial_and_mqtt_connection_events_with_counters(self):
         logger = FakeLogger()
         telemetry = LoRaReceiverTelemetry(logger=logger)

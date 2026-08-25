@@ -1,5 +1,6 @@
 import argparse
 import json
+from pathlib import Path
 
 import tools.lora_receiver as cli
 from watering.lora_receiver import (
@@ -61,11 +62,13 @@ def args(**overrides):
         "dedup_recent_frames": 32,
         "lora_command_max_attempts": 3,
         "lora_command_retry_delay_seconds": 6.0,
+        "status_heartbeat_seconds": 30.0,
         "mqtt_host": None,
         "mqtt_port": None,
         "mqtt_username": None,
         "mqtt_password": None,
         "mqtt_max_queued_messages": 100,
+        "status_path": Path("../ruby_service/tmp/lora_receiver_status.json"),
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -160,6 +163,26 @@ def test_runtime_publishes_valid_fake_serial_frames_and_cleans_up():
     assert telemetry.counters.serial_connects == 1
     assert telemetry.counters.frames_received == 1
     assert telemetry.counters.frames_published == 1
+
+
+def test_runtime_builds_default_telemetry_status_writer(tmp_path):
+    status_path = tmp_path / "lora_receiver_status.json"
+    publisher = FakePublisher()
+    reader = FakeReader([("frame", node_state_frame())])
+
+    cli.run_receiver(
+        args(status_path=status_path),
+        shutdown=FakeShutdown(),
+        publisher_factory=lambda _args, _telemetry, _command_route_handler: publisher,
+        reader_factory=lambda _args: reader,
+    )
+
+    status = json.loads(status_path.read_text())
+    assert status["component"] == "lora_receiver"
+    assert status["status"] == "stopped"
+    assert status["serial_port"] == "/dev/fake-lora"
+    assert status["counters"]["frames_received"] == 1
+    assert status["counters"]["frames_published"] == 1
 
 
 def test_runtime_publishes_command_ack_fake_serial_frame():

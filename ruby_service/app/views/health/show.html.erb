@@ -77,6 +77,34 @@
       <% end %>
     </div>
   </div>
+  <% lora_receiver_tone =
+      case @summary[:lora_receiver_status]
+      when "connected" then "metric-ok"
+      when "starting", "degraded" then "metric-warn"
+      when "stopped", "missing", "invalid", "stale" then "metric-alert"
+      else ""
+      end %>
+  <div class="card metric-card <%= lora_receiver_tone %>">
+    <div class="metric-label">LoRa Gateway</div>
+    <div class="metric-value"><%= @summary[:lora_receiver_status].to_s.humanize %></div>
+    <div class="muted">
+      <% if @lora_receiver_status["status"] == "connected" %>
+        serial and MQTT connected
+      <% elsif @lora_receiver_status["status"] == "disabled" %>
+        LoRa is disabled
+      <% elsif @lora_receiver_status["status"] == "starting" %>
+        receiver is starting
+      <% elsif @lora_receiver_status["status"] == "degraded" %>
+        serial or MQTT needs attention
+      <% elsif @lora_receiver_status["status"] == "stopped" %>
+        receiver stopped
+      <% elsif @lora_receiver_status["status"].in?(%w[missing invalid stale]) %>
+        status needs attention
+      <% else %>
+        not reporting yet
+      <% end %>
+    </div>
+  </div>
   <div class="card metric-card <%= @summary[:open_faults] > 0 ? "metric-alert" : "metric-ok" %>">
     <div class="metric-label">Open Faults</div>
     <div class="metric-value"><%= @summary[:open_faults] %></div>

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 import re
 import signal
 import time
@@ -17,6 +19,7 @@ import paho.mqtt.client as mqtt
 import serial
 
 from watering.controller_mqtt import mqtt_reason_code_value
+from watering.state_store import atomic_write_text
 from watering.lora_messages import (
     LORA_COMMAND_ACK_SCHEMA_VERSION,
     LORA_COMMAND_ACK_TARGET,
@@ -31,6 +34,10 @@ from watering.structured_logging import log_event
 
 NODE_STATE_SCHEMA_VERSION = "node-state/v1"
 MQTT_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def utc_iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,16 @@ class SerialConnectionSettings:
     read_size: int = 256
     reconnect_delay_seconds: float = 2.0
 
+    def __post_init__(self) -> None:
+        if self.baudrate < 1:
+            raise ValueError("baudrate must be at least 1")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than 0")
+        if self.read_size < 1:
+            raise ValueError("read_size must be at least 1")
+        if self.reconnect_delay_seconds < 0:
+            raise ValueError("reconnect_delay_seconds must be at least 0")
+
 
 @dataclass
 class LoRaReceiverCounters:
@@ -105,6 +122,15 @@ class LoRaReceiverCounters:
     lora_commands_received: int = 0
     lora_commands_routed: int = 0
     lora_commands_dropped: int = 0
+
+
+@dataclass(frozen=True)
+class LoRaReceiverStatusWriter:
+    path: Path
+
+    def write(self, status: Mapping[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(self.path, json.dumps(status, indent=2, sort_keys=True))
 
 
 class NodeStatePublisher(Protocol):
@@ -157,13 +183,53 @@ class LoRaReceiverTelemetry:
         counters: LoRaReceiverCounters | None = None,
         logger: Callable[..., None] = log_event,
         component: str = "lora_receiver",
+        status_writer: LoRaReceiverStatusWriter | None = None,
+        serial_port: str | None = None,
+        clock: Callable[[], str] = utc_iso_now,
+        status_heartbeat_seconds: float = 30.0,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if status_heartbeat_seconds < 0:
+            raise ValueError("status_heartbeat_seconds must be greater than or equal to 0")
+
         self.counters = counters or LoRaReceiverCounters()
         self._logger = logger
         self._component = component
+        self._status_writer = status_writer
+        self._clock = clock
+        self._status_heartbeat_seconds = status_heartbeat_seconds
+        self._monotonic_clock = monotonic_clock
+        self._last_status_write_monotonic: float | None = None
+        self._status_lock = threading.Lock()
+        self._status: dict[str, Any] = {
+            "component": component,
+            "status": "starting",
+            "mqtt_connected": False,
+            "serial_connected": False,
+            "serial_port": serial_port,
+            "updated_at": self._clock(),
+            "last_mqtt_connected_at": None,
+            "last_mqtt_disconnected_at": None,
+            "last_serial_connected_at": None,
+            "last_serial_disconnected_at": None,
+            "last_frame_received_at": None,
+            "last_frame_published_at": None,
+            "last_command_received_at": None,
+            "last_command_routed_at": None,
+            "last_error": None,
+            "counters": asdict(self.counters),
+        }
+        self._write_status(updated_at=self._status["updated_at"])
 
     def serial_connected(self) -> None:
         self.counters.serial_connects += 1
+        now = self._clock()
+        self._status.update(
+            serial_connected=True,
+            last_serial_connected_at=now,
+        )
+        self._clear_error_when_connected()
+        self._write_status(updated_at=now)
         self._logger(
             self._component,
             "serial_connected",
@@ -172,6 +238,13 @@ class LoRaReceiverTelemetry:
 
     def serial_disconnected(self, error: Exception) -> None:
         self.counters.serial_disconnects += 1
+        now = self._clock()
+        self._status.update(
+            serial_connected=False,
+            last_serial_disconnected_at=now,
+            last_error=str(error),
+        )
+        self._write_status(updated_at=now)
         self._logger(
             self._component,
             "serial_disconnected",
@@ -182,6 +255,13 @@ class LoRaReceiverTelemetry:
 
     def mqtt_connected(self, event: MqttConnectionEvent) -> None:
         self.counters.mqtt_connects += 1
+        now = self._clock()
+        self._status.update(
+            mqtt_connected=True,
+            last_mqtt_connected_at=now,
+        )
+        self._clear_error_when_connected()
+        self._write_status(updated_at=now)
         self._logger(
             self._component,
             "mqtt_connected",
@@ -191,6 +271,14 @@ class LoRaReceiverTelemetry:
 
     def mqtt_disconnected(self, event: MqttConnectionEvent) -> None:
         self.counters.mqtt_disconnects += 1
+        now = self._clock()
+        reason = f"mqtt_disconnected:{event.reason_code}" if event.reason_code is not None else "mqtt_disconnected"
+        self._status.update(
+            mqtt_connected=False,
+            last_mqtt_disconnected_at=now,
+            last_error=reason,
+        )
+        self._write_status(updated_at=now)
         self._logger(
             self._component,
             "mqtt_disconnected",
@@ -203,6 +291,8 @@ class LoRaReceiverTelemetry:
     def frame_received(self, frame: bytes) -> None:
         self.counters.frames_received += 1
         self.counters.frame_bytes_received += len(frame)
+        now = self._clock()
+        self._write_status(last_frame_received_at=now, updated_at=now)
         self._logger(
             self._component,
             "frame_received",
@@ -213,6 +303,7 @@ class LoRaReceiverTelemetry:
 
     def decode_error(self, error: SerialFrameDecodeError) -> None:
         self.counters.decoder_errors += 1
+        self._write_status(last_error=f"{error.reason}: {error.message}")
         self._logger(
             self._component,
             "serial_decode_error",
@@ -224,6 +315,7 @@ class LoRaReceiverTelemetry:
 
     def invalid_frame(self, *, reason: str, error: Exception) -> None:
         self.counters.invalid_frames += 1
+        self._write_status(last_error=f"{reason}: {error}")
         self._logger(
             self._component,
             "invalid_frame",
@@ -236,6 +328,8 @@ class LoRaReceiverTelemetry:
     def publish_result(self, request: NodeStatePublishRequest, result: NodeStatePublishResult) -> None:
         if result.accepted:
             self.counters.frames_published += 1
+            now = self._clock()
+            self._write_status(last_frame_published_at=now, updated_at=now)
             self._logger(
                 self._component,
                 "frame_published",
@@ -245,6 +339,7 @@ class LoRaReceiverTelemetry:
             return
 
         self.counters.frames_dropped += 1
+        self._write_status(last_error=result.reason)
         self._logger(
             self._component,
             "frame_dropped",
@@ -256,6 +351,8 @@ class LoRaReceiverTelemetry:
 
     def lora_command_received(self, topic: str) -> None:
         self.counters.lora_commands_received += 1
+        now = self._clock()
+        self._write_status(last_command_received_at=now, updated_at=now)
         self._logger(
             self._component,
             "lora_command_received",
@@ -266,6 +363,8 @@ class LoRaReceiverTelemetry:
     def lora_command_route_result(self, result: LoRaCommandRouteResult) -> None:
         if result.accepted:
             self.counters.lora_commands_routed += 1
+            now = self._clock()
+            self._write_status(last_command_routed_at=now, updated_at=now)
             self._logger(
                 self._component,
                 "lora_command_routed",
@@ -278,6 +377,7 @@ class LoRaReceiverTelemetry:
             return
 
         self.counters.lora_commands_dropped += 1
+        self._write_status(last_error=result.reason)
         self._logger(
             self._component,
             "lora_command_dropped",
@@ -288,7 +388,52 @@ class LoRaReceiverTelemetry:
         )
 
     def shutdown(self) -> None:
+        self._write_status(status="stopped")
         self._logger(self._component, "shutdown", counters=asdict(self.counters))
+
+    def heartbeat(self) -> None:
+        if self._status_writer is None:
+            return
+
+        now = self._monotonic_clock()
+        if (
+            self._last_status_write_monotonic is not None
+            and now - self._last_status_write_monotonic < self._status_heartbeat_seconds
+        ):
+            return
+
+        self._write_status()
+
+    def _clear_error_when_connected(self) -> None:
+        if self._status["mqtt_connected"] and self._status["serial_connected"]:
+            self._status["last_error"] = None
+
+    def _derive_status(self) -> str:
+        if self._status.get("status") == "stopped":
+            return "stopped"
+        if self._status["mqtt_connected"] and self._status["serial_connected"]:
+            return "connected"
+        return "starting" if sum(asdict(self.counters).values()) == 0 else "degraded"
+
+    def _write_status(self, **updates: Any) -> None:
+        if self._status_writer is None:
+            return
+
+        try:
+            with self._status_lock:
+                self._status.update(updates)
+                self._status["status"] = updates.get("status") or self._derive_status()
+                self._status["updated_at"] = updates.get("updated_at") or self._clock()
+                self._status["counters"] = asdict(self.counters)
+                self._last_status_write_monotonic = self._monotonic_clock()
+                self._status_writer.write(dict(self._status))
+        except OSError as exc:
+            self._logger(
+                self._component,
+                "status_write_failed",
+                level="warning",
+                error=str(exc),
+            )
 
 
 class PahoNodeStatePublisher:
@@ -482,10 +627,13 @@ class LoRaSerialReader:
         on_frame: Callable[[bytes], None],
         should_stop: Callable[[], bool],
         on_decode_error: Callable[[SerialFrameDecodeError], None] | None = None,
+        on_idle: Callable[[], None] | None = None,
     ) -> None:
         while not should_stop():
             chunk = self._port.read(self._read_size)
             if not chunk:
+                if on_idle is not None:
+                    on_idle()
                 continue
 
             result = self._decoder.feed(chunk)
@@ -508,11 +656,6 @@ class ReconnectingLoRaSerialReader:
         decoder: SerialFrameDecoder | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        if settings.read_size < 1:
-            raise ValueError("read_size must be at least 1")
-        if settings.reconnect_delay_seconds < 0:
-            raise ValueError("reconnect_delay_seconds must be at least 0")
-
         self._settings = settings
         self._port_factory = port_factory
         self._decoder = decoder or SerialFrameDecoder()
@@ -527,6 +670,7 @@ class ReconnectingLoRaSerialReader:
         on_serial_connected: Callable[[], None] | None = None,
         on_serial_disconnected: Callable[[Exception], None] | None = None,
         on_serial_ready: Callable[[SerialGatewayStream], Callable[[], None] | None] | None = None,
+        on_idle: Callable[[], None] | None = None,
     ) -> None:
         while not should_stop():
             port: SerialGatewayStream | None = None
@@ -548,6 +692,7 @@ class ReconnectingLoRaSerialReader:
                     on_frame=on_frame,
                     should_stop=should_stop,
                     on_decode_error=on_decode_error,
+                    on_idle=on_idle,
                 )
                 if serial_ready_cleanup is not None:
                     serial_ready_cleanup()

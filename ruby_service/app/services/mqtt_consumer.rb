@@ -11,6 +11,10 @@ class MqttConsumer
   DEFAULT_RECONNECT_MAX_SECONDS = 30.0
   DEGRADED_RETRY_THRESHOLD = 3
 
+  def self.status_path
+    STATUS_PATH
+  end
+
   def initialize(
     dedupe_window_seconds: 120,
     monotonic_clock: nil,

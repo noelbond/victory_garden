@@ -211,32 +211,53 @@ class LoRaCommandRetryController:
         )
 
     def _retry_command(self, message_id: str) -> None:
+        exhausted_pending: _PendingLoRaCommand | None = None
         with self._lock:
             pending = self._pending.get(message_id)
             if pending is None:
                 return
             if pending.attempts >= self._max_attempts:
-                self._pending.pop(message_id, None)
-                return
+                exhausted_pending = self._pending.pop(message_id, None)
+            else:
+                pending.attempts += 1
+                topic = pending.topic
+                payload = pending.payload
 
-            pending.attempts += 1
-            topic = pending.topic
-            payload = pending.payload
+        if exhausted_pending is not None:
+            self._notify_retry_exhausted(message_id, exhausted_pending)
+            return
 
         result = self._route_command(topic, payload)
         if self._on_retry_result is not None:
             self._on_retry_result(result)
 
+        exhausted_pending = None
         timer_to_start: LoRaCommandRetryTimer | None = None
         with self._lock:
             pending = self._pending.get(message_id)
             if pending is None:
                 return
             if pending.attempts >= self._max_attempts:
-                self._pending.pop(message_id, None)
-                return
+                exhausted_pending = self._pending.pop(message_id, None)
+            else:
+                timer_to_start = self._build_retry_timer(message_id)
+                pending.timer = timer_to_start
 
-            timer_to_start = self._build_retry_timer(message_id)
-            pending.timer = timer_to_start
+        if exhausted_pending is not None:
+            self._notify_retry_exhausted(message_id, exhausted_pending)
+            return
 
         timer_to_start.start()
+
+    def _notify_retry_exhausted(self, message_id: str, pending: _PendingLoRaCommand) -> None:
+        if self._on_retry_result is None:
+            return
+
+        self._on_retry_result(
+            LoRaCommandRouteResult(
+                accepted=False,
+                reason="retry_exhausted",
+                topic=pending.topic,
+                message_id=message_id,
+            )
+        )

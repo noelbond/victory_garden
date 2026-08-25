@@ -3,6 +3,7 @@ class HealthController < ApplicationController
 
   def show
     @mqtt_consumer_status = load_mqtt_consumer_status
+    @lora_receiver_status = LoraReceiverStatus.current
     @nodes = Node.includes(:zone).to_a.sort_by do |node|
       [
         node_freshness_rank(node),
@@ -28,6 +29,7 @@ class HealthController < ApplicationController
       config_pending: @nodes.count { |node| node.config_status == "pending" },
       open_faults: Fault.where(resolved_at: nil).count,
       mqtt_consumer_status: @mqtt_consumer_status["status"] || "unknown",
+      lora_receiver_status: @lora_receiver_status["status"] || "unknown",
       firstboot_status: firstboot_status.status
     }
     @attention_items = build_attention_items
@@ -158,6 +160,22 @@ class HealthController < ApplicationController
       }
     end
 
+    if @lora_receiver_status["status"].in?(%w[degraded stopped missing invalid stale])
+      detail = "LoRa gateway is #{@lora_receiver_status['status']}."
+      if @lora_receiver_status.key?("serial_connected")
+        detail += " Serial is #{@lora_receiver_status['serial_connected'] ? 'connected' : 'disconnected'}."
+      end
+      if @lora_receiver_status.key?("mqtt_connected")
+        detail += " MQTT is #{@lora_receiver_status['mqtt_connected'] ? 'connected' : 'disconnected'}."
+      end
+      detail += " Last error: #{@lora_receiver_status['last_error']}." if @lora_receiver_status["last_error"].present?
+      items << {
+        label: "LoRa Gateway",
+        detail: detail,
+        tone: @lora_receiver_status["status"].in?(%w[missing invalid stale stopped]) ? "alert" : "warn"
+      }
+    end
+
     if firstboot_status.failed? || firstboot_status.running?
       items << {
         label: "Image Provisioning",
@@ -170,7 +188,7 @@ class HealthController < ApplicationController
   end
 
   def load_mqtt_consumer_status
-    path = MqttConsumer::STATUS_PATH
+    path = MqttConsumer.status_path
     return {} unless path.exist?
 
     JSON.parse(File.read(path))

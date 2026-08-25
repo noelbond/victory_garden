@@ -295,6 +295,7 @@ class TestLoRaCommandRetryController:
 
     def test_stops_after_max_attempts(self):
         route_calls = []
+        retry_results = []
         timer_factory = FakeRetryTimerFactory()
 
         def route_command(topic, payload):
@@ -312,6 +313,7 @@ class TestLoRaCommandRetryController:
             max_attempts=2,
             retry_delay_seconds=5.0,
             timer_factory=timer_factory,
+            on_retry_result=retry_results.append,
         )
 
         controller.route_mqtt_command(
@@ -322,6 +324,12 @@ class TestLoRaCommandRetryController:
 
         assert len(route_calls) == 2
         assert len(timer_factory.timers) == 1
+        assert retry_results[-1] == LoRaCommandRouteResult(
+            accepted=False,
+            reason="retry_exhausted",
+            topic="greenhouse/nodes/sensor-zone1-ch0/lora/command",
+            message_id="pi-20260821T153000Z-abc123",
+        )
 
     def test_does_not_track_rejected_command_or_single_attempt_mode(self):
         timer_factory = FakeRetryTimerFactory()

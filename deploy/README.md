@@ -173,6 +173,11 @@ LoRa receiver runtime defaults:
 | `LORA_DEDUP_RECENT_FRAMES` | `32` |
 | `LORA_COMMAND_MAX_ATTEMPTS` | `3` |
 | `LORA_COMMAND_RETRY_DELAY_SECONDS` | `6.0` |
+| `LORA_STATUS_PATH` | `<repo>/ruby_service/tmp/lora_receiver_status.json` |
+| `LORA_STATUS_HEARTBEAT_SECONDS` | `30.0` |
+| `LORA_STATUS_STALE_AFTER_SECONDS` | `120` |
+
+When `LORA_ENABLED=true`, Rails reads the LoRa receiver status file and shows missing, invalid, stale, degraded, or stopped gateway state on the Health page. Wi-Fi-only installs should keep `LORA_ENABLED=false`, which leaves LoRa health disabled rather than alerting.
 
 ## LoRa Inbound Manual Validation
 

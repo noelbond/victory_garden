@@ -2,8 +2,10 @@ require "test_helper"
 
 class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
   setup do
-    @mqtt_consumer_status_path = MqttConsumer::STATUS_PATH
-    @mqtt_consumer_status_backup = @mqtt_consumer_status_path.exist? ? File.read(@mqtt_consumer_status_path) : nil
+    @lora_enabled_before = ENV["LORA_ENABLED"]
+    @lora_status_stale_after_before = ENV["LORA_STATUS_STALE_AFTER_SECONDS"]
+    ENV["LORA_ENABLED"] = "false"
+    ENV.delete("LORA_STATUS_STALE_AFTER_SECONDS")
     @firstboot_state_dir = Dir.mktmpdir("vg-firstboot")
     @firstboot_state_dir_before = ENV["VG_FIRSTBOOT_STATE_DIR"]
     ENV["VG_FIRSTBOOT_STATE_DIR"] = @firstboot_state_dir
@@ -21,14 +23,9 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
   end
 
   teardown do
-    if @mqtt_consumer_status_backup.nil?
-      File.delete(@mqtt_consumer_status_path) if @mqtt_consumer_status_path.exist?
-    else
-      FileUtils.mkdir_p(@mqtt_consumer_status_path.dirname)
-      File.write(@mqtt_consumer_status_path, @mqtt_consumer_status_backup)
-    end
-
     ENV["VG_FIRSTBOOT_STATE_DIR"] = @firstboot_state_dir_before
+    ENV["LORA_ENABLED"] = @lora_enabled_before
+    ENV["LORA_STATUS_STALE_AFTER_SECONDS"] = @lora_status_stale_after_before
     FileUtils.rm_rf(@firstboot_state_dir) if @firstboot_state_dir.present?
     ENV["VG_FIRMWARE_BUNDLE_ROOT"] = @firmware_bundle_dir_before
     FileUtils.rm_rf(@firmware_bundle_dir) if @firmware_bundle_dir.present?
@@ -123,28 +120,86 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
   end
 
   test "health page shows degraded mqtt consumer state" do
-    FileUtils.mkdir_p(@mqtt_consumer_status_path.dirname)
-    File.write(
-      @mqtt_consumer_status_path,
-      JSON.pretty_generate(
-        {
-          component: "mqtt_consumer",
-          status: "degraded",
-          connected: false,
-          retry_count: 3,
-          last_error: "MQTT::ProtocolException boom",
-          next_retry_at: "2026-05-26T15:00:10Z",
-          updated_at: "2026-05-26T15:00:06Z"
-        }
+    Dir.mktmpdir("vg-mqtt-status") do |dir|
+      status_path = Pathname.new(File.join(dir, "mqtt_consumer_status.json"))
+      File.write(
+        status_path,
+        JSON.pretty_generate(
+          {
+            component: "mqtt_consumer",
+            status: "degraded",
+            connected: false,
+            retry_count: 3,
+            last_error: "MQTT::ProtocolException boom",
+            next_retry_at: "2026-05-26T15:00:10Z",
+            updated_at: "2026-05-26T15:00:06Z"
+          }
+        )
       )
-    )
 
-    get health_path
+      stub_singleton_method(MqttConsumer, :status_path, -> { status_path }) do
+        get health_path
 
-    assert_response :success
-    assert_includes response.body, "MQTT Consumer"
-    assert_includes response.body, "Degraded"
-    assert_includes response.body, "Last error: MQTT::ProtocolException boom."
+        assert_response :success
+        assert_includes response.body, "MQTT Consumer"
+        assert_includes response.body, "Degraded"
+        assert_includes response.body, "Last error: MQTT::ProtocolException boom."
+      end
+    end
+  end
+
+  test "health page shows degraded lora gateway state" do
+    stub_singleton_method(
+      LoraReceiverStatus,
+      :current,
+      lambda {
+        {
+          "component" => "lora_receiver",
+          "enabled" => true,
+          "status" => "degraded",
+          "mqtt_connected" => true,
+          "serial_connected" => false,
+          "serial_port" => "/dev/serial/by-id/usb-lora",
+          "last_error" => "usb gone",
+          "updated_at" => 1.minute.ago.utc.iso8601,
+          "counters" => {
+            "serial_connects" => 1,
+            "serial_disconnects" => 1
+          }
+        }
+      }
+    ) do
+      get health_path
+
+      assert_response :success
+      assert_includes response.body, "LoRa Gateway"
+      assert_includes response.body, "Degraded"
+      assert_includes response.body, "LoRa gateway is degraded."
+      assert_includes response.body, "Serial is disconnected."
+      assert_includes response.body, "MQTT is connected."
+      assert_includes response.body, "Last error: usb gone."
+    end
+  end
+
+  test "health page alerts when lora is enabled but status is missing" do
+    stub_singleton_method(
+      LoraReceiverStatus,
+      :current,
+      lambda {
+        {
+          "enabled" => true,
+          "status" => "missing",
+          "last_error" => "LoRa receiver status file is missing"
+        }
+      }
+    ) do
+      get health_path
+
+      assert_response :success
+      assert_includes response.body, "LoRa Gateway"
+      assert_includes response.body, "Missing"
+      assert_includes response.body, "LoRa receiver status file is missing."
+    end
   end
 
   test "onboarding and health surface firstboot failure state and log download" do

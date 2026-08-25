@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Callable
 
 from watering.lora_receiver import (
     ExactFrameDeduplicatingPublisher,
     InvalidLoRaFrameError,
+    LoRaReceiverStatusWriter,
     LoRaReceiverTelemetry,
     MqttConnectionSettings,
     NodeStatePublisher,
@@ -38,11 +40,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dedup-recent-frames", type=int, default=32)
     parser.add_argument("--lora-command-max-attempts", type=int, default=3)
     parser.add_argument("--lora-command-retry-delay-seconds", type=float, default=6.0)
+    parser.add_argument("--status-heartbeat-seconds", type=float, default=30.0)
     parser.add_argument("--mqtt-host")
     parser.add_argument("--mqtt-port", type=int)
     parser.add_argument("--mqtt-username")
     parser.add_argument("--mqtt-password")
     parser.add_argument("--mqtt-max-queued-messages", type=int, default=100)
+    parser.add_argument(
+        "--status-path",
+        type=Path,
+        default=Path("../ruby_service/tmp/lora_receiver_status.json"),
+        help="Path for the LoRa receiver health/status JSON file.",
+    )
     return parser
 
 
@@ -117,7 +126,11 @@ def run_receiver(
 ) -> None:
     shutdown = shutdown or ShutdownController()
     shutdown.install_signal_handlers()
-    telemetry = telemetry or LoRaReceiverTelemetry()
+    telemetry = telemetry or LoRaReceiverTelemetry(
+        status_writer=LoRaReceiverStatusWriter(args.status_path),
+        serial_port=args.serial_port,
+        status_heartbeat_seconds=args.status_heartbeat_seconds,
+    )
     command_route_target = LoRaCommandRouteTarget()
     retry_controller = LoRaCommandRetryController(
         command_route_target.route_mqtt_command,
@@ -163,6 +176,7 @@ def run_receiver(
             on_serial_connected=telemetry.serial_connected,
             on_serial_disconnected=telemetry.serial_disconnected,
             on_serial_ready=on_serial_ready,
+            on_idle=telemetry.heartbeat,
         )
     finally:
         retry_controller.close()

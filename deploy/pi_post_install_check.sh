@@ -3,6 +3,8 @@ set -euo pipefail
 
 APP_DB="ruby_service_production"
 export PAGER=cat
+CHECK_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$CHECK_TMP_DIR"' EXIT
 
 if [[ -r /etc/victory_garden.env ]]; then
   set -a
@@ -49,15 +51,15 @@ else
 fi
 
 for _ in $(seq 1 15); do
-  if curl -fsS http://127.0.0.1:3000/up >/tmp/vg_up.out 2>/dev/null; then
+  if curl -fsS http://127.0.0.1:3000/up >"$CHECK_TMP_DIR/up.out" 2>/dev/null; then
     break
   fi
   sleep 1
 done
 
-printf 'UP %s\n' "$(curl -s -o /tmp/vg_up.out -w '%{http_code}' http://127.0.0.1:3000/up)"
-printf 'ROOT %s\n' "$(curl -s -o /tmp/vg_root.out -w '%{http_code}' http://127.0.0.1:3000/)"
-printf 'ROOT_HAS_ZONES %s\n' "$(grep -qi zones /tmp/vg_root.out && echo yes || echo no)"
+printf 'UP %s\n' "$(curl -s -o "$CHECK_TMP_DIR/up.out" -w '%{http_code}' http://127.0.0.1:3000/up)"
+printf 'ROOT %s\n' "$(curl -s -o "$CHECK_TMP_DIR/root.out" -w '%{http_code}' http://127.0.0.1:3000/)"
+printf 'ROOT_HAS_ZONES %s\n' "$(grep -qi zones "$CHECK_TMP_DIR/root.out" && echo yes || echo no)"
 
 sudo -u postgres psql --pset pager=off -d "$APP_DB" -Atc "
 select 'zones=' || count(*) from zones;

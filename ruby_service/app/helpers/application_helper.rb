@@ -46,6 +46,10 @@ module ApplicationHelper
     "Open Faults" => {
       description: "There are unresolved zone fault records that still need operator review.",
       fix: "Open Recent Faults, identify the affected zone or actuator issue, and correct the underlying cause before retrying."
+    },
+    "LoRa Gateway" => {
+      description: "The Pi LoRa gateway receiver is reporting that one of its runtime connections is not healthy.",
+      fix: "Check the LoRa USB serial adapter, confirm the MQTT broker is reachable, then restart victory-garden-lora-receiver.service if the status does not recover."
     }
   }.freeze
 
