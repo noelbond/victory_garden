@@ -34,6 +34,7 @@ Current keys:
 - `MQTT_DISCOVERY_PORT`
 - `MQTT_USERNAME`
 - `MQTT_PASSWORD`
+- `LORA_ENABLED`
 - `LORA_SERIAL_PORT`
 - `LORA_BAUDRATE`
 - `LORA_SERIAL_TIMEOUT_SECONDS`
@@ -62,10 +63,12 @@ The LoRa receiver service is:
 
 - `victory-garden-lora-receiver.service`
 
-It reads:
+The installer uses `LORA_ENABLED` to decide whether to install, enable, and
+restart the service. The running service uses the remaining `LORA_*` keys.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
+| `LORA_ENABLED` | `false` | Installer switch for enabling the Pi LoRa gateway service; leave `false` for Wi-Fi-only installs |
 | `LORA_SERIAL_PORT` | `/dev/serial/by-id/REPLACE_WITH_LORA_ADAPTER` | Stable USB serial path for the Pi-connected LR22 adapter |
 | `LORA_BAUDRATE` | `9600` | LR22 UART baud rate |
 | `LORA_SERIAL_TIMEOUT_SECONDS` | `1.0` | Serial read timeout used by the receiver loop |

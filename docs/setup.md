@@ -32,10 +32,23 @@ Use one Pi on the same LAN as the sensor nodes. The Pi runs:
 On the Pi:
 
 ```bash
-git clone <your-repo-url> victory_garden
+git clone https://github.com/noelbond/victory_garden.git victory_garden
 cd victory_garden
 sudo ./deploy/install_pi.sh
 ```
+
+For later updates from the same Git checkout:
+
+```bash
+cd /mnt/vgdata/victory_garden
+git pull --ff-only
+sudo ./deploy/install_pi.sh --skip-system-packages
+```
+
+See the deployment guide for the full source-checkout vs release-tarball
+details:
+
+- [`../deploy/README.md`](../deploy/README.md)
 
 ### Install from a packaged release
 

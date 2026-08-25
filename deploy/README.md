@@ -65,10 +65,11 @@ That keeps first-time user installs deterministic and pushes native Ruby bundlin
 
 For a single-Pi source install:
 
-1. Copy or clone this repository onto the Pi.
+1. Clone this repository onto the Pi.
 2. Run:
 
 ```bash
+git clone https://github.com/noelbond/victory_garden.git victory_garden
 cd victory_garden
 sudo ./deploy/install_pi.sh
 ```
@@ -85,6 +86,29 @@ The script will:
 - run `db:prepare` and `db:seed`
 - install or update systemd units for `greenhouse.service`, `victory-garden-mqtt-discovery.service`, `victory-garden-web.service`, `victory-garden-mqtt-consumer.service`, and `victory-garden-lora-receiver.service`
 - restart the full stack
+
+For routine updates after the first install, keep the runtime tree as a Git
+checkout and run:
+
+```bash
+cd /mnt/vgdata/victory_garden
+git pull --ff-only
+sudo ./deploy/install_pi.sh --skip-system-packages
+```
+
+`git pull` only updates source files. The installer is still required after a
+pull because it applies environment defaults, dependencies, database
+preparation, systemd units, and service restarts.
+
+Source-checkout installs should not keep release-only packaging artifacts in
+the active runtime tree:
+
+- `deploy/release_manifest.json`
+- `python_wheelhouse/`
+
+Those files are expected in release tarballs. In a live Git checkout,
+`deploy/release_manifest.json` makes the installer treat the tree like a
+packaged release.
 
 Generated config:
 
@@ -123,12 +147,15 @@ The Pi install also starts `victory-garden-mqtt-discovery.service`, a small UDP 
 LoRa receiver serial path:
 
 - Use a stable USB path from `/dev/serial/by-id/`, not `/dev/ttyUSB0` or `/dev/ttyACM0`.
+- Set `LORA_ENABLED=true` in `/etc/victory_garden.env` on a Pi that should run
+  as a LoRa gateway. Leave it `false` for Wi-Fi-only installs.
 - The installer writes `LORA_SERIAL_PORT` to `/etc/victory_garden.env`. If exactly one USB serial adapter is present during install, it uses that `/dev/serial/by-id/...` path automatically.
 - If the adapter was not present, or more than one USB serial adapter was present, set it manually:
 
 ```bash
 ls -l /dev/serial/by-id/
 sudoedit /etc/victory_garden.env
+sudo ./deploy/install_pi.sh --skip-system-packages
 sudo systemctl restart victory-garden-lora-receiver.service
 ```
 
@@ -228,6 +255,15 @@ Expected events include:
 If the serial adapter is disconnected, the command is dropped and logged with reason `serial_disconnected`.
 
 Notes:
+
+- Manual LoRa command tests use retained MQTT messages so a sleeping or
+  restarting gateway can see them. Clear a test command after a successful run
+  so it does not replay on the next receiver restart:
+
+```bash
+mosquitto_pub -h 127.0.0.1 -p 1883 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -q 1 -r -n \
+  -t 'greenhouse/nodes/sensor-zone1-ch0/lora/command'
+```
 
 - The install script expects a Ruby version compatible with Rails 8. If the distro Ruby is too old, the script stops with a clear error.
 - Release tarballs also pin the exact Ruby and Python versions used to build the packaged artifacts.
