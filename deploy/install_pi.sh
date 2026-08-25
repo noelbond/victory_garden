@@ -137,6 +137,10 @@ print(value)
 PY
 }
 
+run_user_ruby() {
+  sudo -u "$RUN_USER" bash -lc 'exec ruby "$@"' bash "$@"
+}
+
 read_master_key() {
   if [[ -f "$RUBY_SERVICE_DIR/config/master.key" ]]; then
     tr -d '\n' < "$RUBY_SERVICE_DIR/config/master.key"
@@ -175,7 +179,7 @@ validate_release_manifest() {
   [[ "$expected_target" == "$current_target" ]] || fail "This release targets '$expected_target' but this Pi is '$current_target'."
 
   expected_ruby="$(manifest_value "ruby.version")"
-  current_ruby="$(ruby -e 'print RUBY_VERSION')"
+  current_ruby="$(run_user_ruby -e 'print RUBY_VERSION')"
   [[ "$expected_ruby" == "$current_ruby" ]] || fail "Release was built for Ruby $expected_ruby but this Pi has Ruby $current_ruby."
 
   expected_python="$(manifest_value "python.version")"
@@ -232,13 +236,13 @@ ensure_system_packages() {
 }
 
 ensure_bundler() {
-  if ! command -v bundle >/dev/null 2>&1; then
-    gem install bundler
+  if ! sudo -u "$RUN_USER" bash -lc 'command -v bundle >/dev/null 2>&1'; then
+    sudo -u "$RUN_USER" bash -lc 'gem install bundler'
   fi
 }
 
 ensure_ruby_version() {
-  ruby - <<'RUBY'
+  run_user_ruby - <<'RUBY'
 required_major = 3
 required_minor = 2
 major, minor, = RUBY_VERSION.split(".").map(&:to_i)
