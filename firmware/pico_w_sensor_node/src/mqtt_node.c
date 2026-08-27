@@ -15,6 +15,7 @@
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "json_lite.h"
+#include "sensor_state_payload.h"
 #include "time_sync.h"
 #include "topics.h"
 #include "wifi.h"
@@ -1111,63 +1112,23 @@ bool mqtt_node_publish_state(mqtt_node_t *node, const sensor_snapshot_t *snapsho
 
     int32_t rssi = wifi_rssi();
     bool has_ip = wifi_ip_string(g_runtime.tx_ip, sizeof(g_runtime.tx_ip));
-    char soil_fields[128];
-    char environment_fields[160];
-    char ip_field[80];
-    if (snapshot->soil_moisture_read) {
-        snprintf(
-            soil_fields,
-            sizeof(soil_fields),
-            "\"moisture_raw\":%u,\"moisture_percent\":%d,\"soil_moisture_read\":true",
-            snapshot->moisture_raw,
-            snapshot->moisture_percent
-        );
-    } else {
-        snprintf(
-            soil_fields,
-            sizeof(soil_fields),
-            "\"moisture_raw\":null,\"moisture_percent\":null,\"soil_moisture_read\":false"
-        );
-    }
-    if (has_ip) {
-        snprintf(ip_field, sizeof(ip_field), "\"ip\":\"%s\"", g_runtime.tx_ip);
-    } else {
-        snprintf(ip_field, sizeof(ip_field), "\"ip\":null");
-    }
-    if (snapshot->environment_valid) {
-        snprintf(
-            environment_fields,
-            sizeof(environment_fields),
-            "\"air_temperature_c\":%.2f,\"humidity_percent\":%.2f",
-            (double)snapshot->air_temperature_c,
-            (double)snapshot->humidity_percent
-        );
-    } else {
-        snprintf(
-            environment_fields,
-            sizeof(environment_fields),
-            "\"air_temperature_c\":null,\"humidity_percent\":null"
-        );
-    }
     topic_state(&topic_config, g_runtime.tx_topic, sizeof(g_runtime.tx_topic));
     time_sync_format_iso8601(g_runtime.tx_timestamp, sizeof(g_runtime.tx_timestamp));
 
-    if (!format_tx_payload(
-            node,
-            "{\"schema_version\":\"node-state/v1\",\"timestamp\":\"%s\",\"zone_id\":\"%s\",\"node_id\":\"%s\",\"device_id\":\"%s\",%s,%s,\"soil_temp_c\":null,\"battery_voltage\":null,\"battery_percent\":null,\"wifi_rssi\":%ld,\"uptime_seconds\":%lu,\"wake_count\":%lu,%s,\"health\":\"%s\",\"last_error\":\"%s\",\"publish_reason\":\"%s\"}",
+    if (!sensor_state_payload_format(
+            g_runtime.tx_payload,
+            sizeof(g_runtime.tx_payload),
+            node->config,
+            snapshot,
             g_runtime.tx_timestamp,
-            node->config->zone_id,
             publish_node_id,
-            node->config->node_id,
-            soil_fields,
-            environment_fields,
-            (long)rssi,
-            (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000u),
-            (unsigned long)wake_count,
-            ip_field,
-            snapshot->healthy ? "ok" : "degraded",
-            node->last_error,
-            reason)) {
+            reason,
+            wake_count,
+            (uint32_t)(to_ms_since_boot(get_absolute_time()) / 1000u),
+            rssi,
+            has_ip ? g_runtime.tx_ip : NULL,
+            node->last_error)) {
+        set_error(node, "mqtt payload buffer too small");
         return false;
     }
 

@@ -7,6 +7,10 @@
 #include "config.h"
 #include "hardware/xosc.h"
 #include "hardware/watchdog.h"
+#if VG_ENABLE_LORA_TRANSPORT
+#include "lora_protocol.h"
+#include "lora_transport.h"
+#endif
 #include "mqtt_node.h"
 #include "pico/aon_timer.h"
 #include "pico/cyw43_arch.h"
@@ -524,6 +528,22 @@ int main(void) {
             (unsigned)config.channel_moisture_raw_dry[ch],
             (unsigned)config.channel_moisture_raw_wet[ch]);
     }
+#if VG_ENABLE_LORA_TRANSPORT
+    lora_transport_t lora_transport;
+    lora_transport_config_t lora_config = lora_transport_default_config();
+    bool lora_ready = lora_transport_init(&lora_transport, &lora_config);
+    if (lora_ready) {
+        printf("[main] lora: uart=uart1 baud=%u tx=GP%u rx=GP%u aux=GP%d m0=GP%d m1=GP%d\n",
+            (unsigned)lora_config.baud_rate,
+            (unsigned)lora_config.tx_gpio,
+            (unsigned)lora_config.rx_gpio,
+            lora_config.aux_gpio,
+            lora_config.m0_gpio,
+            lora_config.m1_gpio);
+    } else {
+        printf("[main] lora init failed\n");
+    }
+#endif
     stdio_flush();
 
     // Forces exactly one reading on the first wake after a boot, regardless
@@ -675,6 +695,12 @@ int main(void) {
         is_first_wake = false;
         uint8_t successful_soil_reads = 0;
         bool all_mqtt_published = true;
+#if VG_ENABLE_LORA_TRANSPORT
+        bool lora_cycle_warmed = false;
+        bool lora_cycle_available = true;
+        uint8_t lora_frames_sent = 0;
+        uint8_t lora_send_failures = 0;
+#endif
         for (uint8_t ch = 0; ch < VG_ADS1115_CHANNEL_COUNT; ++ch) {
             sensor_snapshot_t ch_snapshot = {0};
             ch_snapshot.air_temperature_c = air_temperature_c;
@@ -746,6 +772,49 @@ int main(void) {
                 printf("[main] channel %u publish failed err=%s\n", (unsigned)ch, node.last_error);
                 stdio_flush();
             }
+#if VG_ENABLE_LORA_TRANSPORT
+            if (lora_ready && lora_cycle_available && read_soil && ch_snapshot.soil_moisture_read) {
+                char lora_frame[VG_LORA_MAX_FRAME_SIZE + 1u] = {0};
+                if (!lora_cycle_warmed) {
+                    if (!lora_transport_send_frame(&lora_transport, "\n", 1u)) {
+                        lora_cycle_available = false;
+                        lora_send_failures++;
+                        printf("[lora] warm-up send failed; skipping LoRa sends for this cycle\n");
+                        stdio_flush();
+                    }
+                    sleep_ms(100);
+                    lora_cycle_warmed = true;
+                }
+                if (lora_cycle_available) {
+                    bool lora_formatted = lora_format_autonomous_channel_state_frame(
+                        lora_frame,
+                        sizeof(lora_frame),
+                        &config,
+                        &ch_snapshot,
+                        ch,
+                        reason,
+                        wake_count,
+                        (uint32_t)(to_ms_since_boot(get_absolute_time()) / 1000u)
+                    );
+                    if (lora_formatted &&
+                        lora_transport_send_frame(&lora_transport, lora_frame, strlen(lora_frame))) {
+                        lora_frames_sent++;
+                        printf("[lora] sent channel %u node=%s bytes=%u\n",
+                            (unsigned)ch,
+                            config.channel_node_id[ch],
+                            (unsigned)strlen(lora_frame));
+                    } else {
+                        lora_cycle_available = false;
+                        lora_send_failures++;
+                        printf("[lora] send failed channel %u node=%s formatted=%s; skipping remaining LoRa sends this cycle\n",
+                            (unsigned)ch,
+                            config.channel_node_id[ch],
+                            lora_formatted ? "true" : "false");
+                    }
+                    stdio_flush();
+                }
+            }
+#endif
             service_mqtt_window(&node, 100u);
         }
 
@@ -753,6 +822,16 @@ int main(void) {
             printf("[main] all soil channel reads failed; environment readings were still published\n");
             stdio_flush();
         }
+#if VG_ENABLE_LORA_TRANSPORT
+        if (read_soil) {
+            printf("[lora] cycle summary ready=%s sent=%u failures=%u available=%s\n",
+                lora_ready ? "true" : "false",
+                (unsigned)lora_frames_sent,
+                (unsigned)lora_send_failures,
+                lora_cycle_available ? "true" : "false");
+            stdio_flush();
+        }
+#endif
 
         if (publish_requested && all_mqtt_published) {
             mqtt_node_mark_publish_request_handled(&node);

@@ -12,6 +12,7 @@ include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 project(victory_garden_pico_w_sensor_node C CXX ASM)
 
 option(VG_BUNDLED_BUILD "Build distributable firmware without config_local.h" OFF)
+option(VG_ENABLE_LORA_TRANSPORT "Enable sensor-node LoRa transport runtime scaffolding" OFF)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -22,9 +23,12 @@ add_executable(pico_w_sensor_node
     src/main.c
     src/ads1115.c
     src/i2c1_bus.c
+    src/lora_protocol.c
+    src/lora_transport.c
     src/mqtt_node.c
     src/node_config.c
     src/sensors.c
+    src/sensor_state_payload.c
     src/sht40.c
     src/time_sync.c
     src/topics.c
@@ -41,6 +45,10 @@ if(VG_BUNDLED_BUILD)
     target_compile_definitions(pico_w_sensor_node PRIVATE VG_BUNDLED_BUILD=1)
 endif()
 
+if(VG_ENABLE_LORA_TRANSPORT)
+    target_compile_definitions(pico_w_sensor_node PRIVATE VG_ENABLE_LORA_TRANSPORT=true)
+endif()
+
 target_link_libraries(pico_w_sensor_node
     pico_stdlib
     pico_aon_timer
@@ -49,6 +57,7 @@ target_link_libraries(pico_w_sensor_node
     pico_lwip_sntp
     hardware_flash
     hardware_i2c
+    hardware_uart
     hardware_sync
     hardware_xosc
 )
