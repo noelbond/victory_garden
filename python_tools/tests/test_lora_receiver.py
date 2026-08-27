@@ -208,6 +208,21 @@ class TestValidateCompactLoRaState:
         assert payload["lora_sequence"] == 42
         assert "sq" not in payload
 
+    def test_expands_optional_compact_state_environment_readings(self):
+        payload = validate_compact_lora_state(compact_lora_state_payload(at=24.62, h=57.27))
+
+        assert payload["air_temperature_c"] == 24.62
+        assert payload["humidity_percent"] == 57.27
+        assert "at" not in payload
+        assert "h" not in payload
+
+    def test_expands_autonomous_compact_state_reason_without_command_message_id(self):
+        payload = validate_compact_lora_state(compact_lora_state_payload(r="interval", sq=42))
+
+        assert payload["publish_reason"] == "interval"
+        assert payload["lora_sequence"] == 42
+        assert "command_message_id" not in payload
+
     @pytest.mark.parametrize(
         ("field_name", "bad_value", "expected"),
         [
@@ -215,9 +230,15 @@ class TestValidateCompactLoRaState:
             ("z", "zone/1", "z must be MQTT-safe"),
             ("n", "node 1", "n must be MQTT-safe"),
             ("mid", "pi/001", "mid must be MQTT-safe"),
+            ("r", "bad reason", "r must be MQTT-safe"),
+            ("r", 1, "r must be a string"),
             ("mr", -1, "greater than or equal to 0"),
             ("mp", 101, "less than or equal to 100"),
             ("up", -1, "greater than or equal to 0"),
+            ("at", -41, "greater than or equal to -40"),
+            ("at", 126, "less than or equal to 125"),
+            ("h", -1, "greater than or equal to 0"),
+            ("h", 101, "less than or equal to 100"),
             ("sq", 0, "sq must be greater than or equal to 1"),
             ("sq", "1", "sq must be an integer"),
         ],

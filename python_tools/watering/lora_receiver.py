@@ -766,6 +766,11 @@ def validate_compact_lora_state(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"{field_name} must be a string")
         validate_mqtt_safe_id(field_name, value)
 
+    publish_reason = payload.get("r", "request_reading")
+    if not isinstance(publish_reason, str):
+        raise ValueError("r must be a string")
+    validate_mqtt_safe_id("r", publish_reason)
+
     canonical_payload: dict[str, Any] = {
         "schema_version": NODE_STATE_SCHEMA_VERSION,
         "zone_id": zone_id,
@@ -774,11 +779,16 @@ def validate_compact_lora_state(payload: dict[str, Any]) -> dict[str, Any]:
         "uptime_seconds": payload["up"],
         "health": "ok",
         "last_error": "none",
-        "publish_reason": "request_reading",
-        "command_message_id": correlation_id,
+        "publish_reason": publish_reason,
     }
+    if publish_reason == "request_reading":
+        canonical_payload["command_message_id"] = correlation_id
     if "mp" in payload:
         canonical_payload["moisture_percent"] = payload["mp"]
+    if "at" in payload:
+        canonical_payload["air_temperature_c"] = payload["at"]
+    if "h" in payload:
+        canonical_payload["humidity_percent"] = payload["h"]
     if "sq" in payload:
         sequence = payload["sq"]
         if not isinstance(sequence, int) or isinstance(sequence, bool):
