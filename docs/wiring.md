@@ -102,18 +102,20 @@ Current hardware assumption:
 
 This keeps the outdoor relay and pump wiring local to the actuator Pico and avoids routing live relay control through the Pi.
 
-## LoRa Inbound Gateway Wiring
+## LoRa Sensor Node and Gateway Wiring
 
-The current LoRa path is an inbound sensor-data bridge:
+The current LoRa path lets the sensor Pico W send real sensor telemetry through
+the Pi gateway:
 
-1. a Pico/Pico W speaks UART to a DX-LR22 radio
+1. the sensor Pico W speaks UART to a DX-LR22 radio
 2. the matching DX-LR22 radio is connected to the Pi through a USB serial adapter
-3. the Pi receiver service reads newline-delimited `node-state/v1` JSON frames
-4. the receiver publishes the validated payload to the canonical MQTT node-state topic
+3. the Pi receiver service reads newline-delimited compact JSON frames
+4. the receiver expands them into canonical `node-state/v1` MQTT payloads
+5. the backend consumes the normal MQTT node-state topic
 
 ### Pico to DX-LR22 wiring
 
-The bench-verified Pico wiring is:
+The bench-verified sensor Pico W wiring is:
 
 | Pico | Physical pin | Direction | DX-LR22 |
 | --- | ---: | --- | --- |
@@ -137,6 +139,9 @@ Notes:
 - The LR22 power input supports 3.3-5.5 V; the verified bench setup uses Pico `VBUS` while the Pico is USB-powered.
 - The LR22 UART logic is compatible with the Pico's 3.3 V GPIO. Do not drive Pico GPIO with a separate 5 V UART signal.
 - Keep all grounds common.
+- The same sensor Pico W also uses `GP14` / `GP15` for the ADS1115 and SHT40 I2C bus.
+- The LoRa pins above do not conflict with the current sensor I2C pins.
+- Enable LoRa in the sensor firmware with `VG_ENABLE_LORA_TRANSPORT true` in the local firmware config or build defines.
 
 ### Pi to DX-LR22 USB adapter
 
@@ -172,7 +177,7 @@ Both DX-LR22-900T22D modules were verified with this shared profile:
 | IQ inversion | enabled |
 | Transmit power | 22 dBm |
 
-For the temporary USB-to-LoRa bridge firmware, build and test notes live in:
+For the older temporary USB-to-LoRa bridge firmware, build and test notes live in:
 
 - [`../firmware/lora_test/README.md`](../firmware/lora_test/README.md)
 

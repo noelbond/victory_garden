@@ -131,6 +131,7 @@ Typical values to set before flashing:
 - ADS1115 SDA/SCL pins
 - ADS1115 I2C address
 - per-channel node IDs and dry/wet calibration bounds once measured
+- optional LoRa telemetry settings when `VG_ENABLE_LORA_TRANSPORT` is enabled
 
 Important:
 
@@ -140,6 +141,22 @@ Important:
 
 The Pico also supports persisted config in flash at runtime through retained `node-config/v1` messages from Rails.
 If the Pi broker IP changes later, the Pico will fall back to UDP discovery on `MQTT_DISCOVERY_PORT`, update its saved `mqtt_host`, and reconnect automatically.
+
+Optional sensor-node LoRa telemetry is compile-time controlled by:
+
+- `VG_ENABLE_LORA_TRANSPORT`
+- `VG_DEFAULT_LORA_BAUD_RATE`
+- `VG_DEFAULT_LORA_TX_GPIO`
+- `VG_DEFAULT_LORA_RX_GPIO`
+- `VG_DEFAULT_LORA_AUX_GPIO`
+- `VG_DEFAULT_LORA_M0_GPIO`
+- `VG_DEFAULT_LORA_M1_GPIO`
+- `VG_DEFAULT_LORA_IDLE_TIMEOUT_MS`
+
+Bench-validated defaults are UART1 at `9600` baud with `GP8` -> LR22 `RXD`,
+`GP9` <- LR22 `TXD`, `GP10` <- `AUX`, `GP4` -> `M0`, and `GP3` -> `M1`.
+The sensor node treats LoRa telemetry as best-effort: local sends are bounded
+and logged, but normal telemetry does not wait for a gateway acknowledgement.
 
 ## Pico W Actuator Node Config
 

@@ -20,26 +20,27 @@ Design rule:
 
 Implemented and bench-validated:
 
-- Pico/Pico W -> DX-LR22 -> Pi inbound sensor state
+- Pico W sensor firmware -> DX-LR22 -> Pi inbound sensor state
 - newline-delimited JSON frames
 - Pi receiver validation through the shared `SensorReading` model
 - MQTT publish to `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
 - QoS 1 retained MQTT publish
 - USB serial disconnect/reconnect recovery
-- Pi -> Pico LoRa command transmit
-- Pico command parsing
-- Pico -> Pi `request_reading` result response
-- compact Pi -> Pico command frames
-- compact Pico -> Pi state/result frames
+- compact Pico -> Pi autonomous state frames
 - gateway translation from compact LoRa state/result frames into canonical
   `node-state/v1` MQTT payloads
-- bounded gateway retry for `request_reading` until a correlated state result is
-  published
+- sensor firmware preserves the normal boot/read/transmit/sleep rhythm when
+  LoRa is enabled
+- basic sensor-side LoRa transmit failure handling is bounded and visible in
+  USB serial logs
 
 Not implemented yet:
 
+- sensor-firmware runtime receive/dispatch for Pi -> Pico LoRa commands
+- end-to-end Pi -> Pico `request_reading` command handling over LoRa
 - explicit acknowledgements for commands that do not return result payloads
 - durable retry/timeout handling across gateway restarts
+- sensor-side detection that the gateway actually heard autonomous telemetry
 - message authentication
 
 ## Transport Framing
@@ -95,6 +96,57 @@ greenhouse/zones/{zone_id}/nodes/{node_id}/state
 - `.`
 - `_`
 - `-`
+
+### Autonomous Sensor Telemetry
+
+The sensor firmware can send compact LoRa state frames during the normal sensor
+cycle. This is best-effort telemetry; it does not wait for a telemetry
+acknowledgement.
+
+The current sensor Pico sends one compact frame per ADS1115 channel when soil is
+read. The compact frame includes:
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `t` | string | Compact type, currently `state` |
+| `z` | string | Zone id |
+| `n` | string | Channel node id, for example `sensor-zone1-ch0` |
+| `mid` | string | Sensor-generated message id for this reading |
+| `mr` | integer | Moisture raw reading |
+| `mp` | integer or null | Moisture percent, if known |
+| `at` | number | Air temperature C when the SHT40 read succeeds |
+| `h` | number | Humidity percent when the SHT40 read succeeds |
+| `r` | string | Publish reason, for example `boot` or `interval` |
+| `sq` | integer | Sensor-generated LoRa sequence for this channel reading |
+| `up` | integer | Pico uptime seconds |
+
+Example compact autonomous frame:
+
+```json
+{"t":"state","z":"zone1","n":"sensor-zone1-ch0","mid":"sensor-zone1-ch0-w5-c0","mr":15218,"mp":42,"at":25.64,"h":57.3,"r":"boot","sq":17,"up":29}
+```
+
+Gateway translation rules:
+
+- expand `z` to canonical `zone_id`
+- expand `n` to canonical `node_id`
+- expand `mr` / `mp` to `moisture_raw` / `moisture_percent`
+- expand `at` / `h` to `air_temperature_c` / `humidity_percent`
+- expand `r` to `publish_reason`; default to `request_reading` only for older
+  compact frames without `r`
+- preserve `sq` as canonical `lora_sequence`
+- include `command_message_id` only when `publish_reason` is `request_reading`
+
+The Pico logs a per-cycle LoRa summary over USB serial:
+
+```text
+[lora] cycle summary ready=true sent=4 failures=0 available=true
+```
+
+If a local LoRa send fails, the Pico skips remaining LoRa sends for that wake
+cycle and continues the normal MQTT/sensor/sleep flow. Without telemetry ACKs,
+the Pico cannot know whether the Pi gateway heard a frame after the LR22 module
+accepts it locally.
 
 ## Outbound Command Contract
 

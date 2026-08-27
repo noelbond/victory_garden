@@ -17,6 +17,8 @@ Current scope:
 - syncs UTC time over SNTP after Wi-Fi is up
 - reads SHT40 temperature/humidity at I2C address `0x44`
 - reads four ADS1115 soil channels at I2C address `0x48`
+- optionally sends compact LoRa telemetry frames through a DX-LR22 radio when
+  `VG_ENABLE_LORA_TRANSPORT` is enabled
 
 Current limitations:
 - no provisioning AP yet
@@ -24,6 +26,8 @@ Current limitations:
 - MQTT broker host must currently be an IPv4 address, not a hostname
 - the Pico moisture path now expects one ADS1115 I2C ADC with up to four analog capacitive probes
 - if `raw_dry` / `raw_wet` are not configured yet, `moisture_percent` uses a rough fallback range until calibration is completed
+- LoRa telemetry is best-effort and does not use telemetry ACKs; gateway health
+  is monitored from the Pi/backend side
 
 Build prerequisites:
 - `arm-none-eabi-gcc`
@@ -78,6 +82,8 @@ before flashing:
 - ADS1115 SDA/SCL pins
 - ADS1115 I2C address
 - per-channel node IDs and dry/wet calibration bounds
+- `VG_ENABLE_LORA_TRANSPORT true` plus LoRa UART/control pins if this sensor
+  node should transmit over LoRa
 
 Example:
 
@@ -90,4 +96,49 @@ Then edit `src/config_local.h` with your real Wi-Fi and broker settings.
 
 For the current calibration story, see:
 
-- [`../../docs/calibration.md`](../docs/calibration.md)
+- [`../../docs/calibration.md`](../../docs/calibration.md)
+
+## Optional LoRa Telemetry
+
+When `VG_ENABLE_LORA_TRANSPORT` is enabled, the sensor Pico W sends one compact
+LoRa state frame per ADS1115 channel whenever soil readings are taken. The Pi
+gateway expands those compact frames into canonical `node-state/v1` MQTT
+payloads.
+
+Bench-validated LoRa pin defaults:
+
+| Pico W | DX-LR22 |
+| --- | --- |
+| `GP8` / UART1 TX / physical pin 11 | `RXD` |
+| `GP9` / UART1 RX / physical pin 12 | `TXD` |
+| `GP10` / physical pin 14 | `AUX` |
+| `GP4` / physical pin 6 | `M0` |
+| `GP3` / physical pin 5 | `M1` |
+| `VBUS` / physical pin 40 | `VCC` |
+| `GND` / physical pin 38 | `GND` |
+
+The LoRa path preserves the normal firmware rhythm:
+
+1. boot/wake
+2. connect Wi-Fi and MQTT
+3. read SHT40 and ADS1115 sensors
+4. publish canonical MQTT state
+5. send best-effort compact LoRa state frames
+6. sleep until the next scheduled wake
+
+Failure behavior:
+
+- local LoRa sends use a bounded AUX wait
+- after one local LoRa send failure, the node skips remaining LoRa sends for
+  that wake cycle
+- MQTT publishing and sleep continue
+- without telemetry ACKs, the Pico cannot detect that the Pi gateway did not
+  hear an otherwise successful LR22 UART send
+
+For the final wiring and radio settings, see:
+
+- [`../../docs/wiring.md`](../../docs/wiring.md#lora-sensor-node-and-gateway-wiring)
+
+For the compact LoRa frame contract, see:
+
+- [`../../docs/lora.md`](../../docs/lora.md)
