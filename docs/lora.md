@@ -33,14 +33,15 @@ Implemented and bench-validated:
   LoRa is enabled
 - basic sensor-side LoRa transmit failure handling is bounded and visible in
   USB serial logs
+- sensor-firmware runtime receive/dispatch for Pi -> Pico LoRa commands
+- end-to-end Pi -> Pico `request_reading` command handling over LoRa
 
 Not implemented yet:
 
-- sensor-firmware runtime receive/dispatch for Pi -> Pico LoRa commands
-- end-to-end Pi -> Pico `request_reading` command handling over LoRa
 - explicit acknowledgements for commands that do not return result payloads
 - durable retry/timeout handling across gateway restarts
 - sensor-side detection that the gateway actually heard autonomous telemetry
+- receive-while-sleeping / LR22 air wake-up behavior
 - message authentication
 
 ## Transport Framing
@@ -215,12 +216,23 @@ Node behavior:
 - if compact `n` does not match the node's configured `node_id`, ignore the frame
 - if `command` is unsupported, send a compact rejected acknowledgement once
   explicit ack frames are implemented
-- for `request_reading`, send a fresh compact state/result frame over LoRa and
-  include the original `mid` as the correlation id
+- for `request_reading`, take a fresh reading for the targeted channel, send a
+  compact state/result frame over LoRa, and include the original `mid` as the
+  correlation id
 - if compact `sq` is present, echo it in the compact state/result frame
 
 Ignored non-target commands should not be acknowledged. That avoids an ack storm
 when multiple nodes hear the same shared-air LoRa transmission.
+
+Current sensor firmware handles commands during bounded awake windows only. It
+does not receive LoRa commands while sleeping. The gateway should therefore
+retry `request_reading` commands within its bounded retry policy, and future
+low-power wake-on-demand work should add LR22 air wake-up behavior explicitly.
+
+If a Pico sends a `request_reading` result during a wake cycle, it suppresses
+the normal autonomous LoRa telemetry for the rest of that same cycle. Wi-Fi/MQTT
+publishing continues normally. This avoids a command response colliding with
+immediate boot or interval LoRa telemetry on the shared radio.
 
 ### Compact Reading Result
 

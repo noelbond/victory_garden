@@ -35,6 +35,10 @@ static const uint32_t VG_MQTT_LOG_INTERVAL_MS = 5000u;
 static const uint32_t VG_CANARY_LOG_INTERVAL_MS = 2000u;
 static const uint32_t VG_RETAINED_LOG_INTERVAL_MS = 2000u;
 static const uint32_t VG_DRAIN_LOG_INTERVAL_MS = 2000u;
+#if VG_ENABLE_LORA_TRANSPORT
+static const uint32_t VG_LORA_COMMAND_WINDOW_MS = 100u;
+static const uint32_t VG_LORA_COMMAND_INTAKE_WINDOW_MS = 7000u;
+#endif
 static const size_t VG_PROVISION_LINE_MAX = 2048u;
 // RP2040 hardware watchdog max is ~8388ms (RP2040-E1); stay comfortably under it.
 static const uint32_t VG_WATCHDOG_TIMEOUT_MS = 8000u;
@@ -48,6 +52,329 @@ static bool g_aon_timer_seeded = false;
 static void sleep_alarm_handler(void) {
     g_sleep_alarm_fired = true;
 }
+
+#if VG_ENABLE_LORA_TRANSPORT
+typedef struct {
+    uint16_t frames;
+    uint16_t valid_commands;
+    uint16_t queued_commands;
+    uint16_t dropped_commands;
+    uint16_t executed_commands;
+    uint16_t command_failures;
+    uint16_t malformed_frames;
+    uint16_t wrong_target_frames;
+    uint16_t oversized_frames;
+    uint16_t ignored_frames;
+} lora_command_window_stats_t;
+
+typedef enum {
+    LORA_PENDING_COMMAND_NONE,
+    LORA_PENDING_COMMAND_REQUEST_READING,
+} lora_pending_command_type_t;
+
+typedef struct {
+    lora_pending_command_type_t type;
+    lora_command_t command;
+} lora_pending_command_t;
+
+static void lora_record_parse_result(lora_command_window_stats_t *stats, lora_command_parse_result_t result) {
+    if (!stats) {
+        return;
+    }
+
+    switch (result) {
+        case LORA_COMMAND_PARSE_REQUEST_READING:
+            stats->valid_commands++;
+            break;
+        case LORA_COMMAND_PARSE_MALFORMED:
+            stats->malformed_frames++;
+            break;
+        case LORA_COMMAND_PARSE_WRONG_TARGET:
+            stats->wrong_target_frames++;
+            break;
+        case LORA_COMMAND_PARSE_MISSING_FIELD:
+        case LORA_COMMAND_PARSE_INVALID_IDENTIFIER:
+        case LORA_COMMAND_PARSE_INVALID_SEQUENCE:
+        case LORA_COMMAND_PARSE_WRONG_SCHEMA:
+        case LORA_COMMAND_PARSE_UNSUPPORTED_COMMAND:
+            stats->ignored_frames++;
+            break;
+    }
+}
+
+static bool lora_command_window_had_activity(const lora_command_window_stats_t *stats) {
+    return stats &&
+        (stats->frames > 0u ||
+         stats->valid_commands > 0u ||
+         stats->queued_commands > 0u ||
+         stats->dropped_commands > 0u ||
+         stats->executed_commands > 0u ||
+         stats->command_failures > 0u ||
+         stats->malformed_frames > 0u ||
+         stats->wrong_target_frames > 0u ||
+         stats->oversized_frames > 0u ||
+         stats->ignored_frames > 0u);
+}
+
+static bool lora_queue_request_reading_command(
+    lora_pending_command_t *pending,
+    const lora_command_t *command,
+    lora_command_window_stats_t *stats
+) {
+    if (!pending || !command) {
+        return false;
+    }
+
+    if (pending->type != LORA_PENDING_COMMAND_NONE) {
+        if (stats) {
+            stats->dropped_commands++;
+        }
+        return false;
+    }
+
+    pending->type = LORA_PENDING_COMMAND_REQUEST_READING;
+    pending->command = *command;
+    if (stats) {
+        stats->queued_commands++;
+    }
+    return true;
+}
+
+static void lora_queue_parsed_request_reading_command(
+    const lora_command_t *command,
+    lora_pending_command_t *pending,
+    lora_command_window_stats_t *stats
+) {
+    if (!command) {
+        return;
+    }
+
+    bool queued = lora_queue_request_reading_command(pending, command, stats);
+    printf("[lora] command received type=request_reading target=%s mid=%s sq=%d action=%s\n",
+        command->target_node_id,
+        command->message_id,
+        command->sequence,
+        queued ? "queued" : "dropped_pending_command");
+    stdio_flush();
+}
+
+static bool lora_channel_for_target(const node_config_t *config, const char *target_node_id, uint8_t *channel_out) {
+    if (!config || !target_node_id || !channel_out) {
+        return false;
+    }
+
+    for (uint8_t channel = 0; channel < VG_ADS1115_CHANNEL_COUNT; ++channel) {
+        if (strcmp(target_node_id, config->channel_node_id[channel]) == 0) {
+            *channel_out = channel;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool lora_send_request_reading_result(
+    lora_transport_t *transport,
+    const node_config_t *config,
+    const lora_command_t *command,
+    float air_temperature_c,
+    float humidity_percent,
+    bool environment_valid,
+    bool *soil_sensors_initialized
+) {
+    if (!transport || !transport->initialized || !config || !command || !soil_sensors_initialized) {
+        return false;
+    }
+
+    uint8_t channel = 0;
+    if (!lora_channel_for_target(config, command->target_node_id, &channel)) {
+        printf("[lora] request_reading unsupported target=%s mid=%s reason=not_channel_node\n",
+            command->target_node_id,
+            command->message_id);
+        stdio_flush();
+        return false;
+    }
+
+    if (!*soil_sensors_initialized) {
+        sensors_init(config);
+        *soil_sensors_initialized = true;
+    }
+
+    sensor_snapshot_t snapshot = {0};
+    snapshot.air_temperature_c = air_temperature_c;
+    snapshot.humidity_percent = humidity_percent;
+    snapshot.environment_valid = environment_valid;
+    snapshot.healthy = environment_valid;
+
+    snapshot.soil_moisture_read = sensors_read(config, channel, &snapshot);
+    if (!snapshot.soil_moisture_read) {
+        printf("[lora] request_reading sensor read failed target=%s channel=%u mid=%s\n",
+            command->target_node_id,
+            (unsigned)channel,
+            command->message_id);
+        stdio_flush();
+        return false;
+    }
+
+    char frame[VG_LORA_MAX_FRAME_SIZE + 1u] = {0};
+    if (!lora_format_compact_channel_state_frame(
+            frame,
+            sizeof(frame),
+            config,
+            &snapshot,
+            channel,
+            command->message_id,
+            command->sequence,
+            (uint32_t)(to_ms_since_boot(get_absolute_time()) / 1000u))) {
+        printf("[lora] request_reading format failed target=%s channel=%u mid=%s\n",
+            command->target_node_id,
+            (unsigned)channel,
+            command->message_id);
+        stdio_flush();
+        return false;
+    }
+
+    if (!lora_transport_send_frame(transport, "\n", 1u)) {
+        printf("[lora] request_reading warm-up send failed target=%s channel=%u mid=%s\n",
+            command->target_node_id,
+            (unsigned)channel,
+            command->message_id);
+        stdio_flush();
+        return false;
+    }
+    sleep_ms(100);
+
+    if (!lora_transport_send_frame(transport, frame, strlen(frame))) {
+        printf("[lora] request_reading response send failed target=%s channel=%u mid=%s\n",
+            command->target_node_id,
+            (unsigned)channel,
+            command->message_id);
+        stdio_flush();
+        return false;
+    }
+
+    printf("[lora] request_reading response sent target=%s channel=%u mid=%s bytes=%u\n",
+        command->target_node_id,
+        (unsigned)channel,
+        command->message_id,
+        (unsigned)strlen(frame));
+    stdio_flush();
+    return true;
+}
+
+static void handle_pending_lora_command(
+    lora_transport_t *transport,
+    const node_config_t *config,
+    lora_pending_command_t *pending,
+    float air_temperature_c,
+    float humidity_percent,
+    bool environment_valid,
+    bool *soil_sensors_initialized,
+    lora_command_window_stats_t *stats
+) {
+    if (!pending || pending->type == LORA_PENDING_COMMAND_NONE) {
+        return;
+    }
+
+    bool handled = false;
+    switch (pending->type) {
+        case LORA_PENDING_COMMAND_REQUEST_READING:
+            handled = lora_send_request_reading_result(
+                transport,
+                config,
+                &pending->command,
+                air_temperature_c,
+                humidity_percent,
+                environment_valid,
+                soil_sensors_initialized
+            );
+            break;
+        case LORA_PENDING_COMMAND_NONE:
+            break;
+    }
+
+    if (stats) {
+        if (handled) {
+            stats->executed_commands++;
+        } else {
+            stats->command_failures++;
+        }
+    }
+
+    pending->type = LORA_PENDING_COMMAND_NONE;
+}
+
+static void service_lora_command_window(
+    lora_transport_t *transport,
+    lora_frame_buffer_t *buffer,
+    const node_config_t *config,
+    uint32_t timeout_ms,
+    lora_pending_command_t *pending,
+    lora_command_window_stats_t *stats
+) {
+    if (!transport || !transport->initialized || !buffer || !config || timeout_ms == 0u) {
+        return;
+    }
+
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        bool read_any = false;
+        while (uart_is_readable(transport->config.uart)) {
+            read_any = true;
+            char byte = (char)uart_getc(transport->config.uart);
+            const char *frame = NULL;
+            lora_transport_frame_result_t frame_result =
+                lora_frame_buffer_feed(buffer, byte, &frame, NULL);
+
+            if (frame_result == LORA_TRANSPORT_FRAME_OVERSIZED) {
+                if (stats) {
+                    stats->oversized_frames++;
+                }
+                continue;
+            }
+            if (frame_result != LORA_TRANSPORT_FRAME_READY) {
+                continue;
+            }
+
+            if (stats) {
+                stats->frames++;
+            }
+
+            lora_command_t command = {0};
+            lora_command_parse_result_t parse_result =
+                lora_parse_command_frame(config, frame, &command);
+            lora_record_parse_result(stats, parse_result);
+            if (parse_result == LORA_COMMAND_PARSE_REQUEST_READING) {
+                lora_queue_parsed_request_reading_command(&command, pending, stats);
+            }
+        }
+
+        watchdog_update();
+        if (!read_any) {
+            sleep_ms(5);
+        }
+    }
+}
+
+static void log_lora_command_window_summary(const lora_command_window_stats_t *stats) {
+    if (!lora_command_window_had_activity(stats)) {
+        return;
+    }
+
+    printf("[lora] command window frames=%u valid=%u queued=%u dropped=%u executed=%u failures=%u malformed=%u wrong_target=%u oversized=%u ignored=%u\n",
+        (unsigned)stats->frames,
+        (unsigned)stats->valid_commands,
+        (unsigned)stats->queued_commands,
+        (unsigned)stats->dropped_commands,
+        (unsigned)stats->executed_commands,
+        (unsigned)stats->command_failures,
+        (unsigned)stats->malformed_frames,
+        (unsigned)stats->wrong_target_frames,
+        (unsigned)stats->oversized_frames,
+        (unsigned)stats->ignored_frames);
+    stdio_flush();
+}
+#endif
 
 static void print_json_string(const char *value) {
     putchar('"');
@@ -530,7 +857,9 @@ int main(void) {
     }
 #if VG_ENABLE_LORA_TRANSPORT
     lora_transport_t lora_transport;
+    lora_frame_buffer_t lora_rx_buffer;
     lora_transport_config_t lora_config = lora_transport_default_config();
+    lora_frame_buffer_reset(&lora_rx_buffer);
     bool lora_ready = lora_transport_init(&lora_transport, &lora_config);
     if (lora_ready) {
         printf("[main] lora: uart=uart1 baud=%u tx=GP%u rx=GP%u aux=GP%d m0=GP%d m1=GP%d\n",
@@ -562,6 +891,14 @@ int main(void) {
         uint32_t sleep_sec = VG_TEMP_INTERVAL_MINUTES * 60u;
         uint32_t epoch_sec = 0u;
         bool time_synced = false;
+#if VG_ENABLE_LORA_TRANSPORT
+        bool lora_cycle_warmed = false;
+        bool lora_cycle_available = true;
+        uint8_t lora_frames_sent = 0;
+        uint8_t lora_send_failures = 0;
+        lora_pending_command_t lora_pending_command = {0};
+        lora_command_window_stats_t lora_command_stats = {0};
+#endif
 
         mqtt_node_init(&node, &config);
 
@@ -630,12 +967,28 @@ int main(void) {
             continue;
         }
 
+#if VG_ENABLE_LORA_TRANSPORT
+        if (lora_ready) {
+            service_lora_command_window(
+                &lora_transport,
+                &lora_rx_buffer,
+                &config,
+                VG_LORA_COMMAND_INTAKE_WINDOW_MS,
+                &lora_pending_command,
+                &lora_command_stats
+            );
+        }
+        const bool lora_publish_requested = lora_pending_command.type != LORA_PENDING_COMMAND_NONE;
+#else
+        const bool lora_publish_requested = false;
+#endif
+
         if (time_synced) {
             sleep_sec = seconds_until_next_wake(epoch_sec, config.utc_offset_hours);
             if (is_first_wake) {
                 printf("[cycle] first wake after boot, forcing a reading regardless of active window\n");
                 stdio_flush();
-            } else if (!is_active_window(epoch_sec, config.utc_offset_hours)) {
+            } else if (!lora_publish_requested && !is_active_window(epoch_sec, config.utc_offset_hours)) {
                 const uint32_t local_sec = local_seconds_today(epoch_sec, config.utc_offset_hours);
                 printf("[cycle] inactive local=%02lu:%02lu utc_offset_hours=%d no sensor reads next_wake=%lus\n",
                     (unsigned long)(local_sec / 3600u),
@@ -681,8 +1034,10 @@ int main(void) {
         const bool read_soil = is_first_wake || publish_requested ||
             (time_synced ? should_read_soil_moisture(epoch_sec, config.utc_offset_hours)
                          : (wake_count % (VG_SOIL_INTERVAL_MINUTES / VG_TEMP_INTERVAL_MINUTES)) == 0u);
+        bool soil_sensors_initialized = false;
         if (read_soil) {
             sensors_init(&config);
+            soil_sensors_initialized = true;
         }
         printf("[cycle] sensors temp_c=%.2f humidity=%.2f soil=%s publish_requested=%s\n",
             (double)air_temperature_c,
@@ -696,10 +1051,26 @@ int main(void) {
         uint8_t successful_soil_reads = 0;
         bool all_mqtt_published = true;
 #if VG_ENABLE_LORA_TRANSPORT
-        bool lora_cycle_warmed = false;
-        bool lora_cycle_available = true;
-        uint8_t lora_frames_sent = 0;
-        uint8_t lora_send_failures = 0;
+        if (lora_ready) {
+            service_lora_command_window(
+                &lora_transport,
+                &lora_rx_buffer,
+                &config,
+                VG_LORA_COMMAND_WINDOW_MS,
+                &lora_pending_command,
+                &lora_command_stats
+            );
+            handle_pending_lora_command(
+                &lora_transport,
+                &config,
+                &lora_pending_command,
+                air_temperature_c,
+                humidity_percent,
+                environment_valid,
+                &soil_sensors_initialized,
+                &lora_command_stats
+            );
+        }
 #endif
         for (uint8_t ch = 0; ch < VG_ADS1115_CHANNEL_COUNT; ++ch) {
             sensor_snapshot_t ch_snapshot = {0};
@@ -773,7 +1144,11 @@ int main(void) {
                 stdio_flush();
             }
 #if VG_ENABLE_LORA_TRANSPORT
-            if (lora_ready && lora_cycle_available && read_soil && ch_snapshot.soil_moisture_read) {
+            if (lora_ready &&
+                lora_cycle_available &&
+                lora_command_stats.executed_commands == 0u &&
+                read_soil &&
+                ch_snapshot.soil_moisture_read) {
                 char lora_frame[VG_LORA_MAX_FRAME_SIZE + 1u] = {0};
                 if (!lora_cycle_warmed) {
                     if (!lora_transport_send_frame(&lora_transport, "\n", 1u)) {
@@ -816,6 +1191,28 @@ int main(void) {
             }
 #endif
             service_mqtt_window(&node, 100u);
+#if VG_ENABLE_LORA_TRANSPORT
+            if (lora_ready) {
+                service_lora_command_window(
+                    &lora_transport,
+                    &lora_rx_buffer,
+                    &config,
+                    VG_LORA_COMMAND_WINDOW_MS,
+                    &lora_pending_command,
+                    &lora_command_stats
+                );
+                handle_pending_lora_command(
+                    &lora_transport,
+                    &config,
+                    &lora_pending_command,
+                    air_temperature_c,
+                    humidity_percent,
+                    environment_valid,
+                    &soil_sensors_initialized,
+                    &lora_command_stats
+                );
+            }
+#endif
         }
 
         if (read_soil && successful_soil_reads == 0) {
@@ -831,6 +1228,9 @@ int main(void) {
                 lora_cycle_available ? "true" : "false");
             stdio_flush();
         }
+#endif
+#if VG_ENABLE_LORA_TRANSPORT
+        log_lora_command_window_summary(&lora_command_stats);
 #endif
 
         if (publish_requested && all_mqtt_published) {

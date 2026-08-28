@@ -19,6 +19,8 @@ Current scope:
 - reads four ADS1115 soil channels at I2C address `0x48`
 - optionally sends compact LoRa telemetry frames through a DX-LR22 radio when
   `VG_ENABLE_LORA_TRANSPORT` is enabled
+- when LoRa is enabled, handles targeted `request_reading` commands during
+  bounded awake windows and returns a correlated compact LoRa state frame
 
 Current limitations:
 - no provisioning AP yet
@@ -28,6 +30,8 @@ Current limitations:
 - if `raw_dry` / `raw_wet` are not configured yet, `moisture_percent` uses a rough fallback range until calibration is completed
 - LoRa telemetry is best-effort and does not use telemetry ACKs; gateway health
   is monitored from the Pi/backend side
+- LoRa commands are only received while the Pico is awake; receive-while-sleeping
+  requires future LR22 air wake-up work
 
 Build prerequisites:
 - `arm-none-eabi-gcc`
@@ -121,10 +125,12 @@ The LoRa path preserves the normal firmware rhythm:
 
 1. boot/wake
 2. connect Wi-Fi and MQTT
-3. read SHT40 and ADS1115 sensors
-4. publish canonical MQTT state
-5. send best-effort compact LoRa state frames
-6. sleep until the next scheduled wake
+3. poll LoRa briefly for targeted commands during bounded awake windows
+4. read SHT40 and ADS1115 sensors
+5. publish canonical MQTT state
+6. send best-effort compact LoRa state frames unless a LoRa command response was
+   already sent in the same cycle
+7. sleep until the next scheduled wake
 
 Failure behavior:
 
@@ -134,6 +140,8 @@ Failure behavior:
 - MQTT publishing and sleep continue
 - without telemetry ACKs, the Pico cannot detect that the Pi gateway did not
   hear an otherwise successful LR22 UART send
+- a valid targeted LoRa `request_reading` command returns one compact
+  state/result frame with the original command `message_id`
 
 For the final wiring and radio settings, see:
 
