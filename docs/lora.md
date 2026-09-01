@@ -228,6 +228,12 @@ Current sensor firmware handles commands during bounded awake windows only. It
 does not receive LoRa commands while sleeping. The gateway should therefore
 retry `request_reading` commands within its bounded retry policy, and future
 low-power wake-on-demand work should add LR22 air wake-up behavior explicitly.
+After boot or interval telemetry, the Pico opens a short post-telemetry command
+window before returning to sleep so gateway commands do not have to race the
+autonomous transmit burst.
+The Pico suppresses duplicate copies of the same LoRa command while it is
+pending and after a successful response, so gateway retries do not trigger
+multiple readings for the same `message_id`/target/sequence.
 
 If a Pico sends a `request_reading` result during a wake cycle, it suppresses
 the normal autonomous LoRa telemetry for the rest of that same cycle. Wi-Fi/MQTT
@@ -389,7 +395,11 @@ Initial recommended rules:
 
 Retry behavior should be conservative. Repeated command frames consume shared
 airtime and can delay sensor-state traffic. The current gateway defaults to
-three total transmit attempts with a six-second retry delay.
+three total transmit attempts with a six-second retry delay. Retries reuse the
+same compact command frame bytes, including the original `sq`, so the Pico sees
+repeated copies of one command rather than distinct commands. The Pico keeps a
+small in-memory cache of recently completed LoRa commands and ignores exact
+duplicates after a successful response.
 
 ## First Implementation Scope
 

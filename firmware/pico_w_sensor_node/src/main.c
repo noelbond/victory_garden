@@ -38,6 +38,8 @@ static const uint32_t VG_DRAIN_LOG_INTERVAL_MS = 2000u;
 #if VG_ENABLE_LORA_TRANSPORT
 static const uint32_t VG_LORA_COMMAND_WINDOW_MS = 100u;
 static const uint32_t VG_LORA_COMMAND_INTAKE_WINDOW_MS = 7000u;
+static const uint32_t VG_LORA_POST_TELEMETRY_COMMAND_WINDOW_MS = 15000u;
+#define VG_LORA_RECENT_COMMAND_COUNT 8u
 #endif
 static const size_t VG_PROVISION_LINE_MAX = 2048u;
 // RP2040 hardware watchdog max is ~8388ms (RP2040-E1); stay comfortably under it.
@@ -58,6 +60,7 @@ typedef struct {
     uint16_t frames;
     uint16_t valid_commands;
     uint16_t queued_commands;
+    uint16_t duplicate_commands;
     uint16_t dropped_commands;
     uint16_t executed_commands;
     uint16_t command_failures;
@@ -76,6 +79,18 @@ typedef struct {
     lora_pending_command_type_t type;
     lora_command_t command;
 } lora_pending_command_t;
+
+typedef struct {
+    bool valid;
+    lora_command_t command;
+} lora_recent_command_t;
+
+typedef enum {
+    LORA_QUEUE_RESULT_QUEUED,
+    LORA_QUEUE_RESULT_DUPLICATE_PENDING,
+    LORA_QUEUE_RESULT_DUPLICATE_COMPLETED,
+    LORA_QUEUE_RESULT_DROPPED_PENDING_COMMAND,
+} lora_queue_result_t;
 
 static void lora_record_parse_result(lora_command_window_stats_t *stats, lora_command_parse_result_t result) {
     if (!stats) {
@@ -107,6 +122,7 @@ static bool lora_command_window_had_activity(const lora_command_window_stats_t *
         (stats->frames > 0u ||
          stats->valid_commands > 0u ||
          stats->queued_commands > 0u ||
+         stats->duplicate_commands > 0u ||
          stats->dropped_commands > 0u ||
          stats->executed_commands > 0u ||
          stats->command_failures > 0u ||
@@ -116,20 +132,93 @@ static bool lora_command_window_had_activity(const lora_command_window_stats_t *
          stats->ignored_frames > 0u);
 }
 
-static bool lora_queue_request_reading_command(
+static bool lora_commands_match(const lora_command_t *left, const lora_command_t *right) {
+    return left &&
+        right &&
+        left->sequence == right->sequence &&
+        strcmp(left->message_id, right->message_id) == 0 &&
+        strcmp(left->target_node_id, right->target_node_id) == 0;
+}
+
+static bool lora_recent_command_seen(
+    const lora_recent_command_t *recent_commands,
+    size_t recent_command_count,
+    const lora_command_t *command
+) {
+    if (!recent_commands || !command) {
+        return false;
+    }
+
+    for (size_t i = 0; i < recent_command_count; ++i) {
+        if (recent_commands[i].valid && lora_commands_match(&recent_commands[i].command, command)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void lora_remember_recent_command(
+    lora_recent_command_t *recent_commands,
+    size_t recent_command_count,
+    size_t *next_recent_command,
+    const lora_command_t *command
+) {
+    if (!recent_commands || recent_command_count == 0u || !next_recent_command || !command) {
+        return;
+    }
+
+    size_t slot = *next_recent_command % recent_command_count;
+    recent_commands[slot].valid = true;
+    recent_commands[slot].command = *command;
+    *next_recent_command = (slot + 1u) % recent_command_count;
+}
+
+static const char *lora_queue_result_name(lora_queue_result_t result) {
+    switch (result) {
+        case LORA_QUEUE_RESULT_QUEUED:
+            return "queued";
+        case LORA_QUEUE_RESULT_DUPLICATE_PENDING:
+            return "duplicate_pending";
+        case LORA_QUEUE_RESULT_DUPLICATE_COMPLETED:
+            return "duplicate_completed";
+        case LORA_QUEUE_RESULT_DROPPED_PENDING_COMMAND:
+            return "dropped_pending_command";
+    }
+    return "unknown";
+}
+
+static lora_queue_result_t lora_queue_request_reading_command(
     lora_pending_command_t *pending,
     const lora_command_t *command,
+    const lora_recent_command_t *recent_commands,
+    size_t recent_command_count,
     lora_command_window_stats_t *stats
 ) {
     if (!pending || !command) {
-        return false;
+        return LORA_QUEUE_RESULT_DROPPED_PENDING_COMMAND;
+    }
+
+    if (pending->type == LORA_PENDING_COMMAND_REQUEST_READING &&
+        lora_commands_match(&pending->command, command)) {
+        if (stats) {
+            stats->duplicate_commands++;
+        }
+        return LORA_QUEUE_RESULT_DUPLICATE_PENDING;
+    }
+
+    if (lora_recent_command_seen(recent_commands, recent_command_count, command)) {
+        if (stats) {
+            stats->duplicate_commands++;
+        }
+        return LORA_QUEUE_RESULT_DUPLICATE_COMPLETED;
     }
 
     if (pending->type != LORA_PENDING_COMMAND_NONE) {
         if (stats) {
             stats->dropped_commands++;
         }
-        return false;
+        return LORA_QUEUE_RESULT_DROPPED_PENDING_COMMAND;
     }
 
     pending->type = LORA_PENDING_COMMAND_REQUEST_READING;
@@ -137,24 +226,27 @@ static bool lora_queue_request_reading_command(
     if (stats) {
         stats->queued_commands++;
     }
-    return true;
+    return LORA_QUEUE_RESULT_QUEUED;
 }
 
 static void lora_queue_parsed_request_reading_command(
     const lora_command_t *command,
     lora_pending_command_t *pending,
+    const lora_recent_command_t *recent_commands,
+    size_t recent_command_count,
     lora_command_window_stats_t *stats
 ) {
     if (!command) {
         return;
     }
 
-    bool queued = lora_queue_request_reading_command(pending, command, stats);
+    lora_queue_result_t queue_result =
+        lora_queue_request_reading_command(pending, command, recent_commands, recent_command_count, stats);
     printf("[lora] command received type=request_reading target=%s mid=%s sq=%d action=%s\n",
         command->target_node_id,
         command->message_id,
         command->sequence,
-        queued ? "queued" : "dropped_pending_command");
+        lora_queue_result_name(queue_result));
     stdio_flush();
 }
 
@@ -266,6 +358,9 @@ static void handle_pending_lora_command(
     lora_transport_t *transport,
     const node_config_t *config,
     lora_pending_command_t *pending,
+    lora_recent_command_t *recent_commands,
+    size_t recent_command_count,
+    size_t *next_recent_command,
     float air_temperature_c,
     float humidity_percent,
     bool environment_valid,
@@ -301,6 +396,15 @@ static void handle_pending_lora_command(
         }
     }
 
+    if (handled) {
+        lora_remember_recent_command(
+            recent_commands,
+            recent_command_count,
+            next_recent_command,
+            &pending->command
+        );
+    }
+
     pending->type = LORA_PENDING_COMMAND_NONE;
 }
 
@@ -310,6 +414,8 @@ static void service_lora_command_window(
     const node_config_t *config,
     uint32_t timeout_ms,
     lora_pending_command_t *pending,
+    const lora_recent_command_t *recent_commands,
+    size_t recent_command_count,
     lora_command_window_stats_t *stats
 ) {
     if (!transport || !transport->initialized || !buffer || !config || timeout_ms == 0u) {
@@ -345,7 +451,13 @@ static void service_lora_command_window(
                 lora_parse_command_frame(config, frame, &command);
             lora_record_parse_result(stats, parse_result);
             if (parse_result == LORA_COMMAND_PARSE_REQUEST_READING) {
-                lora_queue_parsed_request_reading_command(&command, pending, stats);
+                lora_queue_parsed_request_reading_command(
+                    &command,
+                    pending,
+                    recent_commands,
+                    recent_command_count,
+                    stats
+                );
             }
         }
 
@@ -356,15 +468,64 @@ static void service_lora_command_window(
     }
 }
 
+static void service_lora_command_window_and_handle(
+    lora_transport_t *transport,
+    lora_frame_buffer_t *buffer,
+    const node_config_t *config,
+    uint32_t timeout_ms,
+    lora_pending_command_t *pending,
+    lora_recent_command_t *recent_commands,
+    size_t recent_command_count,
+    size_t *next_recent_command,
+    float air_temperature_c,
+    float humidity_percent,
+    bool environment_valid,
+    bool *soil_sensors_initialized,
+    lora_command_window_stats_t *stats
+) {
+    if (!transport || !transport->initialized || timeout_ms == 0u) {
+        return;
+    }
+
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        service_lora_command_window(
+            transport,
+            buffer,
+            config,
+            VG_LORA_COMMAND_WINDOW_MS,
+            pending,
+            recent_commands,
+            recent_command_count,
+            stats
+        );
+        handle_pending_lora_command(
+            transport,
+            config,
+            pending,
+            recent_commands,
+            recent_command_count,
+            next_recent_command,
+            air_temperature_c,
+            humidity_percent,
+            environment_valid,
+            soil_sensors_initialized,
+            stats
+        );
+        watchdog_update();
+    }
+}
+
 static void log_lora_command_window_summary(const lora_command_window_stats_t *stats) {
     if (!lora_command_window_had_activity(stats)) {
         return;
     }
 
-    printf("[lora] command window frames=%u valid=%u queued=%u dropped=%u executed=%u failures=%u malformed=%u wrong_target=%u oversized=%u ignored=%u\n",
+    printf("[lora] command window frames=%u valid=%u queued=%u duplicates=%u dropped=%u executed=%u failures=%u malformed=%u wrong_target=%u oversized=%u ignored=%u\n",
         (unsigned)stats->frames,
         (unsigned)stats->valid_commands,
         (unsigned)stats->queued_commands,
+        (unsigned)stats->duplicate_commands,
         (unsigned)stats->dropped_commands,
         (unsigned)stats->executed_commands,
         (unsigned)stats->command_failures,
@@ -861,6 +1022,8 @@ int main(void) {
     lora_transport_config_t lora_config = lora_transport_default_config();
     lora_frame_buffer_reset(&lora_rx_buffer);
     bool lora_ready = lora_transport_init(&lora_transport, &lora_config);
+    lora_recent_command_t lora_recent_commands[VG_LORA_RECENT_COMMAND_COUNT] = {0};
+    size_t lora_next_recent_command = 0u;
     if (lora_ready) {
         printf("[main] lora: uart=uart1 baud=%u tx=GP%u rx=GP%u aux=GP%d m0=GP%d m1=GP%d\n",
             (unsigned)lora_config.baud_rate,
@@ -975,6 +1138,8 @@ int main(void) {
                 &config,
                 VG_LORA_COMMAND_INTAKE_WINDOW_MS,
                 &lora_pending_command,
+                lora_recent_commands,
+                VG_LORA_RECENT_COMMAND_COUNT,
                 &lora_command_stats
             );
         }
@@ -1058,12 +1223,17 @@ int main(void) {
                 &config,
                 VG_LORA_COMMAND_WINDOW_MS,
                 &lora_pending_command,
+                lora_recent_commands,
+                VG_LORA_RECENT_COMMAND_COUNT,
                 &lora_command_stats
             );
             handle_pending_lora_command(
                 &lora_transport,
                 &config,
                 &lora_pending_command,
+                lora_recent_commands,
+                VG_LORA_RECENT_COMMAND_COUNT,
+                &lora_next_recent_command,
                 air_temperature_c,
                 humidity_percent,
                 environment_valid,
@@ -1199,12 +1369,17 @@ int main(void) {
                     &config,
                     VG_LORA_COMMAND_WINDOW_MS,
                     &lora_pending_command,
+                    lora_recent_commands,
+                    VG_LORA_RECENT_COMMAND_COUNT,
                     &lora_command_stats
                 );
                 handle_pending_lora_command(
                     &lora_transport,
                     &config,
                     &lora_pending_command,
+                    lora_recent_commands,
+                    VG_LORA_RECENT_COMMAND_COUNT,
+                    &lora_next_recent_command,
                     air_temperature_c,
                     humidity_percent,
                     environment_valid,
@@ -1220,6 +1395,29 @@ int main(void) {
             stdio_flush();
         }
 #if VG_ENABLE_LORA_TRANSPORT
+        if (lora_ready) {
+            printf("[lora] post-telemetry command window open for %lums\n",
+                (unsigned long)VG_LORA_POST_TELEMETRY_COMMAND_WINDOW_MS);
+            stdio_flush();
+            service_lora_command_window_and_handle(
+                &lora_transport,
+                &lora_rx_buffer,
+                &config,
+                VG_LORA_POST_TELEMETRY_COMMAND_WINDOW_MS,
+                &lora_pending_command,
+                lora_recent_commands,
+                VG_LORA_RECENT_COMMAND_COUNT,
+                &lora_next_recent_command,
+                air_temperature_c,
+                humidity_percent,
+                environment_valid,
+                &soil_sensors_initialized,
+                &lora_command_stats
+            );
+            printf("[lora] post-telemetry command window closed\n");
+            stdio_flush();
+        }
+
         if (read_soil) {
             printf("[lora] cycle summary ready=%s sent=%u failures=%u available=%s\n",
                 lora_ready ? "true" : "false",

@@ -142,6 +142,8 @@ Failure behavior:
   hear an otherwise successful LR22 UART send
 - a valid targeted LoRa `request_reading` command returns one compact
   state/result frame with the original command `message_id`
+- duplicate copies of the same LoRa command are suppressed while pending and
+  after a successful response
 
 For the final wiring and radio settings, see:
 

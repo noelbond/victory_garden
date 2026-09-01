@@ -110,6 +110,7 @@ class FakeTransmitter:
     def __init__(self, *, error=None):
         self.error = error
         self.commands = []
+        self.frames = []
 
     def transmit_command(self, command):
         if self.error is not None:
@@ -117,6 +118,13 @@ class FakeTransmitter:
 
         self.commands.append(command)
         return b'{"ok":true}'
+
+    def transmit_frame(self, frame):
+        if self.error is not None:
+            raise self.error
+
+        self.frames.append(frame)
+        return frame
 
 
 class FakeRetryTimer:
@@ -164,6 +172,45 @@ class TestLoRaCommandRouter:
         assert result.frame_size == len(b'{"ok":true}')
         assert len(transmitter.commands) == 1
         assert transmitter.commands[0].target_node_id == "sensor-zone1-ch0"
+
+    def test_routes_repeated_message_id_as_exact_same_frame(self):
+        stream = FakeSerialWriteStream()
+        router = LoRaCommandRouter(LoRaCommandTransmitter(stream, initial_sequence=42))
+        topic = "greenhouse/nodes/sensor-zone1-ch0/lora/command"
+        payload = json.dumps(lora_command_payload()).encode("utf-8")
+
+        first_result = router.route_mqtt_command(topic, payload)
+        second_result = router.route_mqtt_command(topic, payload)
+
+        assert first_result.accepted is True
+        assert second_result.accepted is True
+        assert len(stream.writes) == 2
+        assert stream.writes[0] == stream.writes[1]
+        assert json.loads(stream.writes[0].rstrip(b"\n").decode("utf-8"))["sq"] == 42
+
+    def test_rejects_reused_message_id_with_different_payload(self):
+        stream = FakeSerialWriteStream()
+        router = LoRaCommandRouter(LoRaCommandTransmitter(stream, initial_sequence=42))
+        topic = "greenhouse/nodes/sensor-zone1-ch0/lora/command"
+        payload = json.dumps(lora_command_payload()).encode("utf-8")
+        changed_payload = json.dumps(lora_command_payload(source="rails-server")).encode("utf-8")
+
+        first_result = router.route_mqtt_command(topic, payload)
+        second_result = router.route_mqtt_command(topic, changed_payload)
+
+        assert first_result.accepted is True
+        assert second_result == LoRaCommandRouteResult(
+            accepted=False,
+            reason="duplicate_message_id_payload_mismatch",
+            topic=topic,
+            target_node_id="sensor-zone1-ch0",
+            message_id="pi-20260821T153000Z-abc123",
+        )
+        assert len(stream.writes) == 1
+
+    def test_rejects_invalid_recent_command_frame_cache_size(self):
+        with pytest.raises(ValueError, match="recent_command_frames must be at least 1"):
+            LoRaCommandRouter(FakeTransmitter(), recent_command_frames=0)
 
     @pytest.mark.parametrize(
         ("topic", "payload", "reason"),
@@ -254,6 +301,26 @@ class TestLoRaCommandRouteTarget:
 
 
 class TestLoRaCommandRetryController:
+    def test_retries_exact_same_serialized_command_frame(self):
+        stream = FakeSerialWriteStream()
+        router = LoRaCommandRouter(LoRaCommandTransmitter(stream, initial_sequence=9))
+        timer_factory = FakeRetryTimerFactory()
+        topic = "greenhouse/nodes/sensor-zone1-ch0/lora/command"
+        payload = json.dumps(lora_command_payload()).encode("utf-8")
+        controller = LoRaCommandRetryController(
+            router.route_mqtt_command,
+            max_attempts=2,
+            retry_delay_seconds=5.0,
+            timer_factory=timer_factory,
+        )
+
+        controller.route_mqtt_command(topic, payload)
+        timer_factory.timers[0].fire()
+
+        assert len(stream.writes) == 2
+        assert stream.writes[0] == stream.writes[1]
+        assert json.loads(stream.writes[0].rstrip(b"\n").decode("utf-8"))["sq"] == 9
+
     def test_retries_accepted_command_until_marked_completed(self):
         route_calls = []
         retry_results = []

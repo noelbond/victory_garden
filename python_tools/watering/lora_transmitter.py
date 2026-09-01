@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import threading
 from typing import Any, Callable, Mapping, Protocol
@@ -43,10 +44,20 @@ class LoRaCommandTransmitter:
         self._writer.write_frame(frame)
         return frame
 
+    def transmit_frame(self, frame: bytes) -> bytes:
+        if len(frame) > self._max_frame_size:
+            raise ValueError("serialized LoRa command frame exceeds max_frame_size")
+
+        self._writer.write_frame(frame)
+        return frame
+
 
 class LoRaCommandSender(Protocol):
     def transmit_command(self, command: LoRaCommand | Mapping[str, Any]) -> bytes:
         """Transmit one validated or validateable LoRa command."""
+
+    def transmit_frame(self, frame: bytes) -> bytes:
+        """Retransmit a previously serialized LoRa command frame."""
 
 
 @dataclass(frozen=True)
@@ -60,13 +71,33 @@ class LoRaCommandRouteResult:
 
 
 class LoRaCommandRouter:
-    def __init__(self, transmitter: LoRaCommandSender) -> None:
+    def __init__(self, transmitter: LoRaCommandSender, *, recent_command_frames: int = 64) -> None:
+        if recent_command_frames < 1:
+            raise ValueError("recent_command_frames must be at least 1")
+
         self._transmitter = transmitter
+        self._recent_command_frames = recent_command_frames
+        self._cached_frames: OrderedDict[str, tuple[bytes, bytes]] = OrderedDict()
 
     def route_mqtt_command(self, topic: str, payload: bytes) -> LoRaCommandRouteResult:
         try:
             command = build_lora_command_from_mqtt(topic, payload)
-            frame = self._transmitter.transmit_command(command)
+            cached = self._cached_frames.get(command.message_id)
+            if cached is None:
+                frame = self._transmitter.transmit_command(command)
+                self._remember_frame(command.message_id, payload, frame)
+            else:
+                cached_payload, frame = cached
+                if payload != cached_payload:
+                    return LoRaCommandRouteResult(
+                        accepted=False,
+                        reason="duplicate_message_id_payload_mismatch",
+                        topic=topic,
+                        target_node_id=command.target_node_id,
+                        message_id=command.message_id,
+                    )
+                self._cached_frames.move_to_end(command.message_id)
+                frame = self._transmitter.transmit_frame(frame)
         except InvalidLoRaCommandMessageError as exc:
             return LoRaCommandRouteResult(
                 accepted=False,
@@ -93,6 +124,12 @@ class LoRaCommandRouter:
             message_id=command.message_id,
             frame_size=len(frame),
         )
+
+    def _remember_frame(self, message_id: str, payload: bytes, frame: bytes) -> None:
+        self._cached_frames[message_id] = (payload, frame)
+        self._cached_frames.move_to_end(message_id)
+        while len(self._cached_frames) > self._recent_command_frames:
+            self._cached_frames.popitem(last=False)
 
 
 class LoRaCommandRouteTarget:

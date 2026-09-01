@@ -20,6 +20,22 @@ module MqttClient
     )
   end
 
+  def request_lora_reading(node_id:, command_id:, source: "rails-server")
+    raise ArgumentError, "Missing node_id for LoRa reading request" if node_id.blank?
+
+    payload = {
+      schema_version: "lora-command/v1",
+      message_id: command_id,
+      timestamp: Time.current.utc.iso8601,
+      source: source,
+      target_node_id: node_id,
+      command: "request_reading",
+      args: {}
+    }
+
+    publish("greenhouse/nodes/#{node_id}/lora/command", payload, retain: false)
+  end
+
   def reboot_node(zone_id:, command_id:, node_id:)
     publish_node_command(
       zone_id: zone_id,

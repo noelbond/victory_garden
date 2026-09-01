@@ -58,6 +58,37 @@ class MqttClientTest < ActiveSupport::TestCase
     assert_equal "node-a", payload[:node_id]
   end
 
+  test "request_lora_reading publishes node-specific lora command" do
+    calls = []
+    timestamp = Time.zone.parse("2026-08-31T14:15:16Z")
+
+    travel_to timestamp do
+      with_publish_stub(->(topic, payload, retain: false) { calls << [topic, payload, retain] }) do
+        MqttClient.request_lora_reading(node_id: "sensor-zone1-ch0", command_id: "cmd-lora-1")
+      end
+    end
+
+    assert_equal 1, calls.size
+    topic, payload, retain = calls.first
+    assert_equal "greenhouse/nodes/sensor-zone1-ch0/lora/command", topic
+    assert_equal false, retain
+    assert_equal "lora-command/v1", payload[:schema_version]
+    assert_equal "cmd-lora-1", payload[:message_id]
+    assert_equal "2026-08-31T14:15:16Z", payload[:timestamp]
+    assert_equal "rails-server", payload[:source]
+    assert_equal "sensor-zone1-ch0", payload[:target_node_id]
+    assert_equal "request_reading", payload[:command]
+    assert_equal({}, payload[:args])
+  end
+
+  test "request_lora_reading requires a node id" do
+    error = assert_raises(ArgumentError) do
+      MqttClient.request_lora_reading(node_id: "", command_id: "cmd-lora-1")
+    end
+
+    assert_match "Missing node_id", error.message
+  end
+
   test "reboot_node publishes non retained targeted node command" do
     calls = []
 
