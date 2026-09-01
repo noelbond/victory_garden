@@ -23,6 +23,7 @@ add_executable(pico_w_sensor_node
     src/main.c
     src/ads1115.c
     src/i2c1_bus.c
+    src/lora_command_runtime.c
     src/lora_protocol.c
     src/lora_transport.c
     src/mqtt_node.c

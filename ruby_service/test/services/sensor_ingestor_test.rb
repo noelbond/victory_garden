@@ -76,6 +76,57 @@ class SensorIngestorTest < ActiveSupport::TestCase
     assert_equal 42, reading.raw_payload["lora_sequence"]
   end
 
+  test "marks matching request reading command acknowledged from correlated result" do
+    Node.create!(
+      node_id: "pico-w-zone1",
+      zone: @zone,
+      last_seen_at: 1.hour.ago,
+      config_status: "applied"
+    )
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "pico-w-zone1",
+      command: "request_reading",
+      command_id: "pi-001",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "publish_reason" => "request_reading",
+      "command_message_id" => "pi-001"
+    )
+
+    SensorIngestor.new(payload).call
+
+    assert_equal "acknowledged", command.reload.status
+    assert command.acknowledged_at.present?
+  end
+
+  test "does not reopen a timed out command from a delayed correlated result" do
+    Node.create!(
+      node_id: "pico-w-zone1",
+      zone: @zone,
+      last_seen_at: 1.hour.ago,
+      config_status: "applied"
+    )
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "pico-w-zone1",
+      command: "request_reading",
+      command_id: "pi-late",
+      status: "timeout",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "publish_reason" => "request_reading",
+      "command_message_id" => "pi-late"
+    )
+
+    SensorIngestor.new(payload).call
+
+    assert_equal "timeout", command.reload.status
+  end
+
   test "ingests partial payload for an assigned node without making watering decision" do
     Node.create!(
       node_id: "partial-zone1",

@@ -9,7 +9,13 @@ class RequestReadingJob < ApplicationJob
   TIMEOUT_SECONDS = 30
 
   def perform(zone_id:, command_id:, node_id: nil)
-    MqttClient.request_reading(zone_id: zone_id, command_id: command_id, node_id: node_id)
+    node = Node.find_by(node_id: node_id) if node_id.present?
+
+    if node&.lora_transport?
+      MqttClient.request_lora_reading(node_id: node.node_id, command_id: command_id)
+    else
+      MqttClient.request_reading(zone_id: zone_id, command_id: command_id, node_id: node_id)
+    end
 
     # A no-op for callers that don't track this command_id via NodeCommand
     # (e.g. the onboarding wizard's own request_reading trigger).

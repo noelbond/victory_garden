@@ -12,8 +12,18 @@ class NodeCommandTimeoutJob < ApplicationJob
       zone: command.zone,
       node_id: command.node_id,
       fault_code: "NODE_COMMAND_TIMEOUT",
-      detail: "No #{command.command} acknowledgement received within #{timeout_seconds}s (#{command_id})",
+      detail: "No #{command_completion_signal(command)} received within #{timeout_seconds}s (#{command_id})",
       recorded_at: Time.current
     )
+  end
+
+  private
+
+  def command_completion_signal(command)
+    if command.command == "request_reading"
+      "#{command.command} result"
+    else
+      "#{command.command} acknowledgement"
+    end
   end
 end

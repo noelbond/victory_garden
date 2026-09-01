@@ -54,6 +54,7 @@ class SensorIngestor
     )
 
     temperature_alert.record!(status: alert_status) if @payload["air_temperature_c"].present?
+    acknowledge_correlated_command!
 
     reading
   end
@@ -94,5 +95,16 @@ class SensorIngestor
     return if desired_offset.to_i == PublishNodeConfigJob.current_utc_offset_hours
 
     PublishNodeConfigJob.perform_later(node.id)
+  end
+
+  def acknowledge_correlated_command!
+    command_message_id = @payload["command_message_id"]
+    return if command_message_id.blank?
+
+    command = NodeCommand.find_by(command_id: command_message_id)
+    return if command.nil?
+    return if NodeCommand::TERMINAL_STATUSES.include?(command.status)
+
+    command.update!(status: "acknowledged", acknowledged_at: Time.current)
   end
 end

@@ -2,6 +2,7 @@ class Node < ApplicationRecord
   # Must match firmware VG_ADS1115_CHANNEL_COUNT (and the desktop installer's
   # EXPECTED_SENSOR_CHANNEL_COUNT) for devices that report a device_id.
   EXPECTED_CHANNELS_PER_DEVICE = 4
+  COMMUNICATION_TRANSPORTS = %w[wifi lora auto].freeze
 
   belongs_to :zone, optional: true
   belongs_to :crop_profile, optional: true
@@ -20,6 +21,7 @@ class Node < ApplicationRecord
   validates :battery_voltage, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 10 }, allow_nil: true
   validates :wifi_rssi, numericality: { greater_than_or_equal_to: -130, less_than_or_equal_to: 0 }, allow_nil: true
   validates :last_seen_at, presence: true
+  validates :communication_transport, presence: true, inclusion: { in: COMMUNICATION_TRANSPORTS }
   validates :config_status, inclusion: { in: %w[pending applied error unassigned], allow_nil: true }
   validates :moisture_raw_dry, numericality: { greater_than_or_equal_to: 0, only_integer: true }, allow_nil: true
   validates :moisture_raw_wet, numericality: { greater_than_or_equal_to: 0, only_integer: true }, allow_nil: true
@@ -110,6 +112,18 @@ class Node < ApplicationRecord
 
   def latest_sensor_reading
     SensorReading.where(node_id: node_id).order(recorded_at: :desc).first
+  end
+
+  def wifi_transport?
+    communication_transport == "wifi"
+  end
+
+  def lora_transport?
+    communication_transport == "lora"
+  end
+
+  def auto_transport?
+    communication_transport == "auto"
   end
 
   def next_expected_wake_at(reference_time: Time.current)

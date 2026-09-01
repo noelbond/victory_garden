@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_08_04_020000) do
+ActiveRecord::Schema[8.0].define(version: 2026_09_01_090000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -161,6 +161,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_08_04_020000) do
     t.string "name"
     t.bigint "crop_profile_id"
     t.integer "irrigation_line"
+    t.string "communication_transport", default: "wifi", null: false
     t.index ["crop_profile_id"], name: "index_nodes_on_crop_profile_id"
     t.index ["device_id"], name: "index_nodes_on_device_id"
     t.index ["irrigation_line"], name: "index_nodes_on_irrigation_line", unique: true, where: "(irrigation_line IS NOT NULL)"

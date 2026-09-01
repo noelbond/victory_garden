@@ -113,6 +113,30 @@ class MqttConsumerTest < ActiveSupport::TestCase
     assert_equal "combined-zone1-ch0-abc-reboot", enqueued.first["command_id"]
   end
 
+  test "lora command ack topic is normalized and routed to node command ack ingest job" do
+    consumer = MqttConsumer.new(status_path: @status_path)
+    payload = {
+      schema_version: "lora-command-ack/v1",
+      message_id: "sensor-zone1-ch0-ack-123",
+      timestamp: "2026-09-01T15:00:00Z",
+      source_node_id: "sensor-zone1-ch0",
+      target: "pi-gateway",
+      ack_for_message_id: "sensor-zone1-ch0-abc-reboot",
+      status: "acknowledged",
+      error: nil
+    }.to_json
+    enqueued = []
+    stub_singleton_method(NodeCommandAckIngestJob, :perform_later, ->(data) { enqueued << data }) do
+      consumer.send(:handle_message, "greenhouse/nodes/sensor-zone1-ch0/lora/command_ack", payload)
+    end
+
+    assert_equal 1, enqueued.length
+    assert_equal "lora-command-ack/v1", enqueued.first["schema_version"]
+    assert_equal "sensor-zone1-ch0", enqueued.first["node_id"]
+    assert_equal "sensor-zone1-ch0-abc-reboot", enqueued.first["command_id"]
+    assert_equal "acknowledged", enqueued.first["status"]
+  end
+
   test "node diagnostic event topic is routed to node diagnostic event ingest job" do
     consumer = MqttConsumer.new(status_path: @status_path)
     payload = {

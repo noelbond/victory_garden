@@ -339,6 +339,11 @@ Recommended MQTT input topic for LoRa-specific commands:
 greenhouse/nodes/{node_id}/lora/command
 ```
 
+Rails sends `request_reading` commands to this LoRa topic only for nodes whose
+`communication_transport` is explicitly set to `lora`. Existing nodes default
+to `wifi`, and `auto` currently remains on the Wi-Fi path until automatic
+transport selection is defined.
+
 Recommended MQTT output topic for LoRa-specific acks:
 
 ```text
@@ -379,19 +384,27 @@ Initial recommended rules:
   correlation
 - gateway compact command `sq` is a process-local LoRa transmit sequence used
   for debugging ordering/retry behavior; it is not a deduplication key
-- production node firmware should eventually remember a small recent set of
-  handled command `message_id`s
-- duplicates addressed to the same node should eventually produce `duplicate`
-  or be ignored; choose one behavior when node-side deduplication is added and
-  test it explicitly
+- production node firmware remembers a small in-memory set of recently handled
+  LoRa commands
+- duplicates addressed to the same node are ignored while pending and after a
+  successful response
 - commands older than 60 seconds should be rejected if the node has a valid
   clock
 - if the node does not have valid time, it may skip age rejection but should
   still deduplicate by `message_id`
-- for `request_reading`, the gateway retries a bounded number of times if no
-  correlated state/result is successfully published
-- for future non-result commands, the gateway should treat a command as timed
-  out if no correlated ack/result arrives within a configured window
+
+Command completion depends on command type:
+
+| Command type | Completion signal | Timeout meaning |
+| --- | --- | --- |
+| `request_reading` | correlated `node-state/v1` payload with matching `command_message_id` | no correlated reading reached the server before the command timeout |
+| future actuator/config commands | correlated `lora-command-ack/v1` payload with matching `ack_for_message_id` | no ACK reached the server before the command timeout |
+
+The Rails command timeout is the server-side guardrail. It should remain longer
+than the gateway retry window so the gateway can finish its bounded attempts
+before the server records the command as timed out. The current request-reading
+job uses a 30-second timeout, while the gateway default is three total transmit
+attempts with a six-second retry delay.
 
 Retry behavior should be conservative. Repeated command frames consume shared
 airtime and can delay sensor-state traffic. The current gateway defaults to

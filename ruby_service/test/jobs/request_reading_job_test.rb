@@ -18,6 +18,10 @@ class RequestReadingJobTest < ActiveSupport::TestCase
     stub_singleton_method(MqttClient, :request_reading, callable, &block)
   end
 
+  def with_lora_request_reading_stub(callable, &block)
+    stub_singleton_method(MqttClient, :request_lora_reading, callable, &block)
+  end
+
   test "publishes targeted retained request" do
     calls = []
 
@@ -26,6 +30,56 @@ class RequestReadingJobTest < ActiveSupport::TestCase
     end
 
     assert_equal [[:request_reading, { zone_id: "zone1", command_id: "cmd-1", node_id: "node-a" }]], calls
+  end
+
+  test "publishes lora request for lora transport node" do
+    zone = create(:zone, zone_id: "zone1")
+    Node.create!(
+      node_id: "sensor-zone1-ch0",
+      zone: zone,
+      last_seen_at: Time.current,
+      communication_transport: "lora"
+    )
+    calls = []
+
+    with_request_reading_stub(->(**payload) { calls << [:wifi, payload] }) do
+      with_lora_request_reading_stub(->(**payload) { calls << [:lora, payload] }) do
+        RequestReadingJob.perform_now(zone_id: "zone1", command_id: "cmd-lora-1", node_id: "sensor-zone1-ch0")
+      end
+    end
+
+    assert_equal [[:lora, { node_id: "sensor-zone1-ch0", command_id: "cmd-lora-1" }]], calls
+  end
+
+  test "auto transport remains on wifi path until auto routing is defined" do
+    zone = create(:zone, zone_id: "zone1")
+    Node.create!(
+      node_id: "sensor-zone1-auto",
+      zone: zone,
+      last_seen_at: Time.current,
+      communication_transport: "auto"
+    )
+    calls = []
+
+    with_request_reading_stub(->(**payload) { calls << [:wifi, payload] }) do
+      with_lora_request_reading_stub(->(**payload) { calls << [:lora, payload] }) do
+        RequestReadingJob.perform_now(zone_id: "zone1", command_id: "cmd-auto-1", node_id: "sensor-zone1-auto")
+      end
+    end
+
+    assert_equal [[:wifi, { zone_id: "zone1", command_id: "cmd-auto-1", node_id: "sensor-zone1-auto" }]], calls
+  end
+
+  test "missing node remains on wifi path" do
+    calls = []
+
+    with_request_reading_stub(->(**payload) { calls << [:wifi, payload] }) do
+      with_lora_request_reading_stub(->(**payload) { calls << [:lora, payload] }) do
+        RequestReadingJob.perform_now(zone_id: "zone1", command_id: "cmd-missing-node", node_id: "unknown-node")
+      end
+    end
+
+    assert_equal [[:wifi, { zone_id: "zone1", command_id: "cmd-missing-node", node_id: "unknown-node" }]], calls
   end
 
   test "marks a tracked command sent" do

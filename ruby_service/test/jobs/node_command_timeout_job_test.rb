@@ -26,6 +26,24 @@ class NodeCommandTimeoutJobTest < ActiveSupport::TestCase
     assert_includes fault.detail, command.command_id
   end
 
+  test "describes request reading timeout as missing result" do
+    zone = create(:zone)
+    command = NodeCommand.create!(
+      zone: zone,
+      node_id: "combined-zone1-ch0",
+      command: "request_reading",
+      command_id: "combined-zone1-ch0-timeout-reading",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+
+    NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+
+    fault = Fault.order(:id).last
+    assert_includes fault.detail, "request_reading result"
+    refute_includes fault.detail, "request_reading acknowledgement"
+  end
+
   test "does nothing for an already acknowledged command" do
     zone = create(:zone)
     command = NodeCommand.create!(
