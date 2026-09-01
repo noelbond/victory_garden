@@ -350,6 +350,12 @@ Recommended MQTT output topic for LoRa-specific acks:
 greenhouse/nodes/{node_id}/lora/command_ack
 ```
 
+Recommended MQTT output topic for gateway command routing status:
+
+```text
+greenhouse/lora/gateway/command_status
+```
+
 Why node-specific topics:
 
 - command targeting is explicit
@@ -365,9 +371,11 @@ Initial bridge behavior:
 4. serialize the command as compact JSON plus trailing newline
 5. stamp the compact command with a process-local LoRa sequence `sq`
 6. write the frame to the Pi-connected LR22 serial port
-7. receive a compact LoRa result frame over the same serial reader
-8. translate the compact result into canonical `node-state/v1`
-9. publish the state to `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
+7. publish a non-retained `lora-command-route-status/v1` event describing
+   whether the gateway routed or rejected the command
+8. receive a compact LoRa result frame over the same serial reader
+9. translate the compact result into canonical `node-state/v1`
+10. publish the state to `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
 
 For future commands that do not produce a result payload, the gateway should
 translate compact ack/result frames into:
@@ -405,6 +413,20 @@ than the gateway retry window so the gateway can finish its bounded attempts
 before the server records the command as timed out. The current request-reading
 job uses a 30-second timeout, while the gateway default is three total transmit
 attempts with a six-second retry delay.
+
+Gateway command route status events are diagnostic transport events. A
+`routed` status means the gateway accepted the MQTT command and wrote the
+compact frame to the LR22 serial stream. A `failed` status means the gateway
+rejected or could not route the command, with `reason` describing the failure
+such as `serial_disconnected`, invalid payload, oversized frame, or
+`retry_exhausted`. These events do not replace Pico result/ACK completion; they
+make gateway-side failures visible sooner than the server timeout.
+
+Rails subscribes to `greenhouse/lora/gateway/command_status`. Failed route
+events with a matching `message_id` move the corresponding non-terminal
+`NodeCommand` to the existing terminal failure state, `timeout`, and record a
+`LORA_COMMAND_ROUTE_FAILED` fault. Routed events are diagnostic only and do not
+complete the command; completion still requires the Pico result or ACK.
 
 Retry behavior should be conservative. Repeated command frames consume shared
 airtime and can delay sensor-state traffic. The current gateway defaults to

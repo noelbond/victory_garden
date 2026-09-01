@@ -281,6 +281,8 @@ class TestLoRaCommandRouteTarget:
 
         assert result.accepted is False
         assert result.reason == "serial_disconnected"
+        assert result.target_node_id == "sensor-zone1-ch0"
+        assert result.message_id == "pi-20260821T153000Z-abc123"
 
     def test_routes_to_current_router_and_stops_after_clear(self):
         transmitter = FakeTransmitter()
@@ -297,6 +299,8 @@ class TestLoRaCommandRouteTarget:
         assert accepted_result.accepted is True
         assert disconnected_result.accepted is False
         assert disconnected_result.reason == "serial_disconnected"
+        assert disconnected_result.target_node_id == "sensor-zone1-ch0"
+        assert disconnected_result.message_id == "pi-20260821T153000Z-abc123"
         assert len(transmitter.commands) == 1
 
 

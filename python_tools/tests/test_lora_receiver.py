@@ -891,6 +891,35 @@ class TestPahoNodeStatePublisher:
             )
         ]
 
+    def test_publishes_lora_command_route_status_as_qos1_non_retained_event(self):
+        client = FakeMqttClient()
+        publisher = PahoNodeStatePublisher(client, connected=True)
+
+        result = publisher.publish_lora_command_route_status(
+            LoRaCommandRouteResult(
+                accepted=False,
+                reason="serial_disconnected",
+                topic="greenhouse/nodes/sensor-zone1-ch0/lora/command",
+                target_node_id="sensor-zone1-ch0",
+                message_id="msg-1",
+            ),
+            timestamp="2026-09-01T12:00:00Z",
+        )
+
+        assert result == NodeStatePublishResult(accepted=True)
+        assert client.published[0][0][0] == "greenhouse/lora/gateway/command_status"
+        payload = json.loads(client.published[0][0][1].decode("utf-8"))
+        assert payload == {
+            "schema_version": "lora-command-route-status/v1",
+            "timestamp": "2026-09-01T12:00:00Z",
+            "status": "failed",
+            "reason": "serial_disconnected",
+            "topic": "greenhouse/nodes/sensor-zone1-ch0/lora/command",
+            "target_node_id": "sensor-zone1-ch0",
+            "message_id": "msg-1",
+        }
+        assert client.published[0][1] == {"qos": 1, "retain": False}
+
     def test_reports_full_paho_queue_without_raising(self):
         client = FakeMqttClient(publish_rc=lora_receiver.mqtt.MQTT_ERR_QUEUE_SIZE)
 
@@ -1052,6 +1081,9 @@ class TestMqttPublisherBuilder:
         assert routed_messages == [
             ("greenhouse/nodes/sensor-zone1-ch0/lora/command", b'{"schema_version":"lora-command/v1"}'),
         ]
+        assert clients[0].published[0][0][0] == "greenhouse/lora/gateway/command_status"
+        assert json.loads(clients[0].published[0][0][1].decode("utf-8"))["message_id"] == "msg-1"
+        assert clients[0].published[0][1] == {"qos": 1, "retain": False}
         assert route_results == [
             LoRaCommandRouteResult(
                 accepted=True,

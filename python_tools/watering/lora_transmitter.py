@@ -150,10 +150,21 @@ class LoRaCommandRouteTarget:
         with self._lock:
             router = self._router
             if router is None:
+                try:
+                    command = build_lora_command_from_mqtt(topic, payload)
+                except InvalidLoRaCommandMessageError as exc:
+                    return LoRaCommandRouteResult(
+                        accepted=False,
+                        reason=exc.reason,
+                        topic=topic,
+                    )
+
                 return LoRaCommandRouteResult(
                     accepted=False,
                     reason="serial_disconnected",
                     topic=topic,
+                    target_node_id=command.target_node_id,
+                    message_id=command.message_id,
                 )
 
             return router.route_mqtt_command(topic, payload)

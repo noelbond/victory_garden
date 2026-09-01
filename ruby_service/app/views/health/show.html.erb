@@ -112,6 +112,31 @@
   </div>
 </div>
 
+<% if @lora_receiver_status["enabled"] != false %>
+  <% lora_counters = @lora_receiver_status["counters"] || {} %>
+  <section class="card zone-section">
+    <div class="zone-section-header">
+      <h3>LoRa Gateway Details</h3>
+      <div class="muted">Runtime status from the Pi gateway receiver service.</div>
+    </div>
+
+    <div class="wizard-facts">
+      <div class="wizard-fact"><span>Status</span><strong><%= @lora_receiver_status["status"].to_s.humanize.presence || "Unknown" %></strong></div>
+      <div class="wizard-fact"><span>Serial</span><strong><%= @lora_receiver_status.key?("serial_connected") ? (@lora_receiver_status["serial_connected"] ? "Connected" : "Disconnected") : "Unknown" %></strong></div>
+      <div class="wizard-fact"><span>MQTT</span><strong><%= @lora_receiver_status.key?("mqtt_connected") ? (@lora_receiver_status["mqtt_connected"] ? "Connected" : "Disconnected") : "Unknown" %></strong></div>
+      <div class="wizard-fact"><span>Serial Port</span><strong><%= @lora_receiver_status["serial_port"].presence || "—" %></strong></div>
+      <div class="wizard-fact"><span>Updated</span><strong><%= @lora_receiver_status["updated_at"].presence || "—" %></strong></div>
+      <div class="wizard-fact"><span>Last Frame</span><strong><%= @lora_receiver_status["last_frame_published_at"].presence || "—" %></strong></div>
+      <div class="wizard-fact"><span>Last Command</span><strong><%= @lora_receiver_status["last_command_routed_at"].presence || @lora_receiver_status["last_command_received_at"].presence || "—" %></strong></div>
+      <div class="wizard-fact"><span>Last Error</span><strong><%= @lora_receiver_status["last_error"].presence || "None" %></strong></div>
+      <div class="wizard-fact"><span>Frames Published</span><strong><%= lora_counters["frames_published"] || 0 %></strong></div>
+      <div class="wizard-fact"><span>Frames Dropped</span><strong><%= lora_counters["frames_dropped"] || 0 %></strong></div>
+      <div class="wizard-fact"><span>Commands Routed</span><strong><%= lora_counters["lora_commands_routed"] || 0 %></strong></div>
+      <div class="wizard-fact"><span>Commands Dropped</span><strong><%= lora_counters["lora_commands_dropped"] || 0 %></strong></div>
+    </div>
+  </section>
+<% end %>
+
 <% active_health_tab = params[:health_tab].presence_in(%w[notifications recent-activity nodes recent-faults]) || "notifications" %>
 
 <div class="zone-show-layout health-show-layout">

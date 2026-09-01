@@ -33,6 +33,8 @@ from watering.serial_frames import SerialFrameDecodeError, SerialFrameDecoder, S
 from watering.structured_logging import log_event
 
 NODE_STATE_SCHEMA_VERSION = "node-state/v1"
+LORA_COMMAND_ROUTE_STATUS_SCHEMA_VERSION = "lora-command-route-status/v1"
+LORA_COMMAND_ROUTE_STATUS_TOPIC = "greenhouse/lora/gateway/command_status"
 MQTT_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -446,10 +448,35 @@ class PahoNodeStatePublisher:
         return self._connected
 
     def publish_node_state(self, request: NodeStatePublishRequest) -> NodeStatePublishResult:
+        return self._publish(request.topic, request.payload, retain=True)
+
+    def publish_lora_command_route_status(
+        self,
+        result: LoRaCommandRouteResult,
+        *,
+        timestamp: str | None = None,
+    ) -> NodeStatePublishResult:
+        payload = {
+            "schema_version": LORA_COMMAND_ROUTE_STATUS_SCHEMA_VERSION,
+            "timestamp": timestamp or utc_iso_now(),
+            "status": "routed" if result.accepted else "failed",
+            "reason": result.reason,
+            "topic": result.topic,
+            "target_node_id": result.target_node_id,
+            "message_id": result.message_id,
+            "frame_size": result.frame_size,
+        }
+        payload_bytes = json.dumps(
+            {key: value for key, value in payload.items() if value is not None},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return self._publish(LORA_COMMAND_ROUTE_STATUS_TOPIC, payload_bytes, retain=False)
+
+    def _publish(self, topic: str, payload: bytes, *, retain: bool) -> NodeStatePublishResult:
         if not self._connected:
             return NodeStatePublishResult(accepted=False, reason="mqtt_disconnected")
 
-        publish_info = self._client.publish(request.topic, request.payload, qos=1, retain=True)
+        publish_info = self._client.publish(topic, payload, qos=1, retain=retain)
         if publish_info.rc == mqtt.MQTT_ERR_QUEUE_SIZE:
             return NodeStatePublishResult(accepted=False, reason="mqtt_queue_full")
         if publish_info.rc != mqtt.MQTT_ERR_SUCCESS:
@@ -586,6 +613,7 @@ def build_paho_node_state_publisher(
             on_lora_command_received(message.topic)
 
         result = on_lora_command_message(message.topic, bytes(message.payload))
+        publisher.publish_lora_command_route_status(result)
         if on_lora_command_route_result is not None:
             on_lora_command_route_result(result)
 

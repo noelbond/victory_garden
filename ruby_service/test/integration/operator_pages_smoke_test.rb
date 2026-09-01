@@ -162,9 +162,16 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
           "serial_port" => "/dev/serial/by-id/usb-lora",
           "last_error" => "usb gone",
           "updated_at" => 1.minute.ago.utc.iso8601,
+          "last_frame_published_at" => "2026-09-01T16:00:53Z",
+          "last_command_received_at" => "2026-09-01T16:01:00Z",
+          "last_command_routed_at" => "2026-09-01T16:01:01Z",
           "counters" => {
             "serial_connects" => 1,
-            "serial_disconnects" => 1
+            "serial_disconnects" => 1,
+            "frames_published" => 18,
+            "frames_dropped" => 2,
+            "lora_commands_routed" => 3,
+            "lora_commands_dropped" => 1
           }
         }
       }
@@ -178,6 +185,12 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
       assert_includes response.body, "Serial is disconnected."
       assert_includes response.body, "MQTT is connected."
       assert_includes response.body, "Last error: usb gone."
+      assert_includes response.body, "LoRa Gateway Details"
+      assert_includes response.body, "/dev/serial/by-id/usb-lora"
+      assert_includes response.body, "2026-09-01T16:00:53Z"
+      assert_includes response.body, "2026-09-01T16:01:01Z"
+      assert_includes response.body, "Commands Routed"
+      assert_includes response.body, "Commands Dropped"
     end
   end
 

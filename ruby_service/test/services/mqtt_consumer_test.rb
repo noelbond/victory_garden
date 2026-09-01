@@ -137,6 +137,26 @@ class MqttConsumerTest < ActiveSupport::TestCase
     assert_equal "acknowledged", enqueued.first["status"]
   end
 
+  test "lora command route status topic is routed to lora route status ingest job" do
+    consumer = MqttConsumer.new(status_path: @status_path)
+    payload = {
+      schema_version: "lora-command-route-status/v1",
+      timestamp: "2026-09-01T15:00:00Z",
+      status: "failed",
+      reason: "serial_disconnected",
+      target_node_id: "sensor-zone1-ch0",
+      message_id: "sensor-zone1-ch0-abc-request-reading"
+    }.to_json
+    enqueued = []
+    stub_singleton_method(LoraCommandRouteStatusIngestJob, :perform_later, ->(data) { enqueued << data }) do
+      consumer.send(:handle_message, "greenhouse/lora/gateway/command_status", payload)
+    end
+
+    assert_equal 1, enqueued.length
+    assert_equal "lora-command-route-status/v1", enqueued.first["schema_version"]
+    assert_equal "sensor-zone1-ch0-abc-request-reading", enqueued.first["message_id"]
+  end
+
   test "node diagnostic event topic is routed to node diagnostic event ingest job" do
     consumer = MqttConsumer.new(status_path: @status_path)
     payload = {
