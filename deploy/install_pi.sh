@@ -21,6 +21,7 @@ RELEASE_MANIFEST="$REPO_ROOT/deploy/release_manifest.json"
 CONTROLLER_SERVICE="greenhouse.service"
 MQTT_DISCOVERY_SERVICE="victory-garden-mqtt-discovery.service"
 WEB_SERVICE="victory-garden-web.service"
+JOBS_SERVICE="victory-garden-jobs.service"
 MQTT_CONSUMER_SERVICE="victory-garden-mqtt-consumer.service"
 LORA_RECEIVER_SERVICE="victory-garden-lora-receiver.service"
 DEFAULT_LORA_SERIAL_PORT="/dev/serial/by-id/REPLACE_WITH_LORA_ADAPTER"
@@ -302,7 +303,7 @@ LORA_COMMAND_RETRY_DELAY_SECONDS=6.0
 LORA_STATUS_PATH=$RUBY_SERVICE_DIR/tmp/lora_receiver_status.json
 LORA_STATUS_HEARTBEAT_SECONDS=30.0
 LORA_STATUS_STALE_AFTER_SECONDS=120
-SOLID_QUEUE_IN_PUMA=1
+SOLID_QUEUE_IN_PUMA=false
 SECRET_KEY_BASE=$secret_key_base
 RUBY_SERVICE_DATABASE_PASSWORD=$db_password
 ADMIN_API_TOKEN=$admin_api_token
@@ -328,6 +329,13 @@ EOF
   grep -q '^LORA_STATUS_PATH=' "$ENV_FILE" || echo "LORA_STATUS_PATH=$RUBY_SERVICE_DIR/tmp/lora_receiver_status.json" >> "$ENV_FILE"
   grep -q '^LORA_STATUS_HEARTBEAT_SECONDS=' "$ENV_FILE" || echo 'LORA_STATUS_HEARTBEAT_SECONDS=30.0' >> "$ENV_FILE"
   grep -q '^LORA_STATUS_STALE_AFTER_SECONDS=' "$ENV_FILE" || echo 'LORA_STATUS_STALE_AFTER_SECONDS=120' >> "$ENV_FILE"
+  # The dedicated jobs service is the sole production Solid Queue runtime.
+  # Rewrite the legacy truthy value used by older installations.
+  if grep -q '^SOLID_QUEUE_IN_PUMA=' "$ENV_FILE"; then
+    sed -i 's/^SOLID_QUEUE_IN_PUMA=.*/SOLID_QUEUE_IN_PUMA=false/' "$ENV_FILE"
+  else
+    echo 'SOLID_QUEUE_IN_PUMA=false' >> "$ENV_FILE"
+  fi
   if [[ -d "$FIRMWARE_BUNDLE_DIR" ]]; then
     grep -q '^VG_FIRMWARE_BUNDLE_ROOT=' "$ENV_FILE" || echo "VG_FIRMWARE_BUNDLE_ROOT=$FIRMWARE_BUNDLE_DIR" >> "$ENV_FILE"
   fi
@@ -556,6 +564,30 @@ WantedBy=multi-user.target
 EOF
 }
 
+install_jobs_service() {
+  cat > "/etc/systemd/system/$JOBS_SERVICE" <<EOF
+[Unit]
+Description=Victory Garden Rails Solid Queue Jobs
+After=network-online.target mosquitto.service postgresql.service
+Wants=network-online.target mosquitto.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=$RUN_USER
+WorkingDirectory=$RUBY_SERVICE_DIR
+EnvironmentFile=$ENV_FILE
+Environment=BUNDLE_WITHOUT=development:test
+ExecStart=/usr/bin/env bash -lc 'exec bundle exec ruby bin/jobs start'
+$SYSTEMD_SERVICE_RESTART_POLICY
+$SYSTEMD_SERVICE_LOGGING
+SyslogIdentifier=victory-garden-jobs
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 install_mqtt_consumer_service() {
   cat > "/etc/systemd/system/$MQTT_CONSUMER_SERVICE" <<EOF
 [Unit]
@@ -613,7 +645,7 @@ restart_services() {
   systemctl disable --now victory-garden-actuator.service >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/victory-garden-actuator.service
   systemctl daemon-reload
-  local -a enable_services=(mosquitto postgresql "$CONTROLLER_SERVICE" "$MQTT_DISCOVERY_SERVICE" "$WEB_SERVICE" "$MQTT_CONSUMER_SERVICE")
+  local -a enable_services=(mosquitto postgresql "$CONTROLLER_SERVICE" "$MQTT_DISCOVERY_SERVICE" "$WEB_SERVICE" "$JOBS_SERVICE" "$MQTT_CONSUMER_SERVICE")
   if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
     enable_services+=("$LORA_RECEIVER_SERVICE")
   fi
@@ -623,6 +655,7 @@ restart_services() {
   systemctl restart "$CONTROLLER_SERVICE"
   systemctl restart "$MQTT_DISCOVERY_SERVICE"
   systemctl restart "$WEB_SERVICE"
+  systemctl restart "$JOBS_SERVICE"
   systemctl restart "$MQTT_CONSUMER_SERVICE"
   if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
     systemctl restart "$LORA_RECEIVER_SERVICE"
@@ -637,6 +670,7 @@ verify_services_healthy() {
     "$CONTROLLER_SERVICE"
     "$MQTT_DISCOVERY_SERVICE"
     "$WEB_SERVICE"
+    "$JOBS_SERVICE"
     "$MQTT_CONSUMER_SERVICE"
   )
   if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
@@ -667,7 +701,7 @@ verify_services_healthy() {
   for service in "${services[@]}"; do
     systemctl --no-pager --full status "$service" >&2 || true
   done
-  journalctl -u "$WEB_SERVICE" -u "$MQTT_CONSUMER_SERVICE" -n 80 --no-pager >&2 || true
+  journalctl -u "$WEB_SERVICE" -u "$JOBS_SERVICE" -u "$MQTT_CONSUMER_SERVICE" -n 80 --no-pager >&2 || true
   if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
     journalctl -u "$LORA_RECEIVER_SERVICE" -n 80 --no-pager >&2 || true
   fi
@@ -678,6 +712,7 @@ print_status() {
   systemctl --no-pager --full status "$CONTROLLER_SERVICE" || true
   systemctl --no-pager --full status "$MQTT_DISCOVERY_SERVICE" || true
   systemctl --no-pager --full status "$WEB_SERVICE" || true
+  systemctl --no-pager --full status "$JOBS_SERVICE" || true
   systemctl --no-pager --full status "$MQTT_CONSUMER_SERVICE" || true
   if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
     systemctl --no-pager --full status "$LORA_RECEIVER_SERVICE" || true
@@ -711,6 +746,7 @@ verify_rails_production_boot
 install_controller_service
 install_mqtt_discovery_service
 install_web_service
+install_jobs_service
 install_mqtt_consumer_service
 if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
   install_lora_receiver_service

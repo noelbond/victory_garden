@@ -84,7 +84,7 @@ The script will:
 - fall back to local `vendor/cache` or internet installs when needed
 - create the production PostgreSQL role and databases
 - run `db:prepare` and `db:seed`
-- install or update systemd units for `greenhouse.service`, `victory-garden-mqtt-discovery.service`, `victory-garden-web.service`, `victory-garden-mqtt-consumer.service`, and `victory-garden-lora-receiver.service`
+- install or update systemd units for `greenhouse.service`, `victory-garden-mqtt-discovery.service`, `victory-garden-web.service`, `victory-garden-jobs.service`, `victory-garden-mqtt-consumer.service`, and `victory-garden-lora-receiver.service`
 - restart the full stack
 
 For routine updates after the first install, keep the runtime tree as a Git
@@ -99,6 +99,11 @@ sudo ./deploy/install_pi.sh --skip-system-packages
 `git pull` only updates source files. The installer is still required after a
 pull because it applies environment defaults, dependencies, database
 preparation, systemd units, and service restarts.
+
+Production runs Solid Queue only through `victory-garden-jobs.service`. The
+installer sets `SOLID_QUEUE_IN_PUMA=false`, including on upgrades from older
+installations that used the Puma plugin, so Puma does not start a second queue
+supervisor.
 
 Source-checkout installs should not keep release-only packaging artifacts in
 the active runtime tree:
@@ -129,11 +134,13 @@ Verify after install:
 sudo systemctl status greenhouse.service --no-pager
 sudo systemctl status victory-garden-mqtt-discovery.service --no-pager
 sudo systemctl status victory-garden-web.service --no-pager
+sudo systemctl status victory-garden-jobs.service --no-pager
 sudo systemctl status victory-garden-mqtt-consumer.service --no-pager
 sudo systemctl status victory-garden-lora-receiver.service --no-pager
 sudo journalctl -u greenhouse.service -n 50 --no-pager
 sudo journalctl -u victory-garden-mqtt-discovery.service -n 50 --no-pager
 sudo journalctl -u victory-garden-web.service -n 50 --no-pager
+sudo journalctl -u victory-garden-jobs.service -n 50 --no-pager
 sudo journalctl -u victory-garden-mqtt-consumer.service -n 50 --no-pager
 sudo journalctl -u victory-garden-lora-receiver.service -n 50 --no-pager
 set -a

@@ -22,9 +22,9 @@ if [[ -n "${MQTT_PASSWORD:-}" ]]; then
 fi
 
 if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
-  systemctl is-active greenhouse.service victory-garden-mqtt-discovery.service victory-garden-web.service victory-garden-mqtt-consumer.service victory-garden-lora-receiver.service
+  systemctl is-active greenhouse.service victory-garden-mqtt-discovery.service victory-garden-web.service victory-garden-jobs.service victory-garden-mqtt-consumer.service victory-garden-lora-receiver.service
 else
-  systemctl is-active greenhouse.service victory-garden-mqtt-discovery.service victory-garden-web.service victory-garden-mqtt-consumer.service
+  systemctl is-active greenhouse.service victory-garden-mqtt-discovery.service victory-garden-web.service victory-garden-jobs.service victory-garden-mqtt-consumer.service
 fi
 
 printf 'LORA_ENABLED %s\n' "${LORA_ENABLED:-false}"
@@ -101,6 +101,7 @@ select 'node_registry=' || count(*) from nodes;
 
 journalctl -u greenhouse.service -n 10 --no-pager
 journalctl -u victory-garden-mqtt-discovery.service -n 10 --no-pager
+journalctl -u victory-garden-jobs.service -n 20 --no-pager
 journalctl -u victory-garden-mqtt-consumer.service -n 10 --no-pager
 if [[ "${LORA_ENABLED:-false}" == "true" ]]; then
   journalctl -u victory-garden-lora-receiver.service -n 20 --no-pager
