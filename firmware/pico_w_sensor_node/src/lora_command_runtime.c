@@ -9,6 +9,7 @@
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
 #include "sensors.h"
+#include "time_sync.h"
 
 typedef enum {
     LORA_QUEUE_RESULT_QUEUED,
@@ -197,19 +198,34 @@ static bool lora_send_request_reading_result(
     float air_temperature_c,
     float humidity_percent,
     bool environment_valid,
-    bool *soil_sensors_initialized
+    bool *soil_sensors_initialized,
+    const char **failure_error_out,
+    const char **ack_source_node_id_out
 ) {
+    if (failure_error_out) {
+        *failure_error_out = "request_reading_failed";
+    }
+    if (ack_source_node_id_out) {
+        *ack_source_node_id_out = config ? config->node_id : NULL;
+    }
+
     if (!transport || !transport->initialized || !config || !command || !soil_sensors_initialized) {
         return false;
     }
 
     uint8_t channel = 0;
     if (!lora_channel_for_target(config, command->target_node_id, &channel)) {
+        if (failure_error_out) {
+            *failure_error_out = "not_channel_node";
+        }
         printf("[lora] request_reading unsupported target=%s mid=%s reason=not_channel_node\n",
             command->target_node_id,
             command->message_id);
         stdio_flush();
         return false;
+    }
+    if (ack_source_node_id_out) {
+        *ack_source_node_id_out = config->channel_node_id[channel];
     }
 
     if (!*soil_sensors_initialized) {
@@ -225,6 +241,9 @@ static bool lora_send_request_reading_result(
 
     snapshot.soil_moisture_read = sensors_read(config, channel, &snapshot);
     if (!snapshot.soil_moisture_read) {
+        if (failure_error_out) {
+            *failure_error_out = "sensor_read_failed";
+        }
         printf("[lora] request_reading sensor read failed target=%s channel=%u mid=%s\n",
             command->target_node_id,
             (unsigned)channel,
@@ -243,6 +262,9 @@ static bool lora_send_request_reading_result(
             command->message_id,
             command->sequence,
             (uint32_t)(to_ms_since_boot(get_absolute_time()) / 1000u))) {
+        if (failure_error_out) {
+            *failure_error_out = "state_format_failed";
+        }
         printf("[lora] request_reading format failed target=%s channel=%u mid=%s\n",
             command->target_node_id,
             (unsigned)channel,
@@ -252,6 +274,9 @@ static bool lora_send_request_reading_result(
     }
 
     if (!lora_transport_send_frame(transport, "\n", 1u)) {
+        if (failure_error_out) {
+            *failure_error_out = "lora_warmup_send_failed";
+        }
         printf("[lora] request_reading warm-up send failed target=%s channel=%u mid=%s\n",
             command->target_node_id,
             (unsigned)channel,
@@ -262,6 +287,9 @@ static bool lora_send_request_reading_result(
     sleep_ms(100);
 
     if (!lora_transport_send_frame(transport, frame, strlen(frame))) {
+        if (failure_error_out) {
+            *failure_error_out = "lora_response_send_failed";
+        }
         printf("[lora] request_reading response send failed target=%s channel=%u mid=%s\n",
             command->target_node_id,
             (unsigned)channel,
@@ -274,6 +302,65 @@ static bool lora_send_request_reading_result(
         command->target_node_id,
         (unsigned)channel,
         command->message_id,
+        (unsigned)strlen(frame));
+    stdio_flush();
+    return true;
+}
+
+static bool lora_send_command_failure_ack(
+    lora_transport_t *transport,
+    const node_config_t *config,
+    const lora_command_t *command,
+    const char *source_node_id,
+    const char *error
+) {
+    if (!transport || !transport->initialized || !config || !command || !source_node_id || !error) {
+        return false;
+    }
+
+    char timestamp[32] = {0};
+    char frame[VG_LORA_MAX_FRAME_SIZE + 1u] = {0};
+    time_sync_format_iso8601(timestamp, sizeof(timestamp));
+    if (!lora_format_command_ack_frame(
+            frame,
+            sizeof(frame),
+            config,
+            source_node_id,
+            command,
+            timestamp,
+            "failed",
+            error)) {
+        printf("[lora] command failure ack format failed source=%s mid=%s error=%s\n",
+            source_node_id,
+            command->message_id,
+            error);
+        stdio_flush();
+        return false;
+    }
+
+    if (!lora_transport_send_frame(transport, "\n", 1u)) {
+        printf("[lora] command failure ack warm-up send failed source=%s mid=%s error=%s\n",
+            source_node_id,
+            command->message_id,
+            error);
+        stdio_flush();
+        return false;
+    }
+    sleep_ms(100);
+
+    if (!lora_transport_send_frame(transport, frame, strlen(frame))) {
+        printf("[lora] command failure ack send failed source=%s mid=%s error=%s\n",
+            source_node_id,
+            command->message_id,
+            error);
+        stdio_flush();
+        return false;
+    }
+
+    printf("[lora] command failure ack sent source=%s mid=%s error=%s bytes=%u\n",
+        source_node_id,
+        command->message_id,
+        error,
         (unsigned)strlen(frame));
     stdio_flush();
     return true;
@@ -297,6 +384,8 @@ void handle_pending_lora_command(
     }
 
     bool handled = false;
+    const char *failure_error = NULL;
+    const char *ack_source_node_id = NULL;
     switch (pending->type) {
         case LORA_PENDING_COMMAND_REQUEST_READING:
             handled = lora_send_request_reading_result(
@@ -306,8 +395,19 @@ void handle_pending_lora_command(
                 air_temperature_c,
                 humidity_percent,
                 environment_valid,
-                soil_sensors_initialized
+                soil_sensors_initialized,
+                &failure_error,
+                &ack_source_node_id
             );
+            if (!handled && failure_error && ack_source_node_id) {
+                (void)lora_send_command_failure_ack(
+                    transport,
+                    config,
+                    &pending->command,
+                    ack_source_node_id,
+                    failure_error
+                );
+            }
             break;
         case LORA_PENDING_COMMAND_NONE:
             break;

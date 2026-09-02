@@ -281,14 +281,22 @@ Gateway behavior:
 
 ### Explicit Command Acknowledgement
 
-Explicit acknowledgements are not used for `request_reading` because the result
-frame is already proof that the command was received and handled.
+Successful `request_reading` commands do not use explicit acknowledgements
+because the result frame is already proof that the command was received and
+handled.
 
-Ack frames remain part of the protocol for future commands that do not naturally
-return a result payload, such as configuration changes or actuator commands.
+If the Pico receives a `request_reading` command but cannot return the correlated
+state/result frame, it may send a `lora-command-ack/v1` frame with
+`status: "failed"` and a machine-readable `error`. The gateway forwards that ACK
+to MQTT, and Rails maps the matching command to its existing terminal failure
+state.
 
-The acknowledgement frame should also be compact on the LoRa wire and translated
-by the gateway into the canonical MQTT acknowledgement topic if needed.
+Ack frames also remain part of the protocol for future commands that do not
+naturally return a result payload, such as configuration changes or actuator
+commands. The current Pico firmware sends the canonical ACK JSON shape directly
+on the LoRa wire for failure ACKs because this is an uncommon error path and
+keeps gateway translation simple. A compact ACK form can still be added later if
+airtime pressure makes it worthwhile.
 
 Canonical MQTT ack schema:
 
@@ -446,13 +454,16 @@ In scope:
 - Pico filters by compact target node id
 - Pico handles `request_reading`
 - Pico emits one compact state/result frame for `request_reading`
+- Pico emits `lora-command-ack/v1` with `status: "failed"` if it received
+  `request_reading` but could not return the state/result frame
 - Pi translates compact state/result frames into canonical MQTT `node-state/v1`
 - Pi retries `request_reading` commands until the correlated state result is
   published or the bounded attempt limit is reached
 
 Out of scope:
 
-- explicit ack frames for commands that do not produce result payloads
+- explicit success ack frames for commands that produce result payloads
+- explicit ack handling for future commands that do not produce result payloads
 - wildcard/broadcast commands
 - multi-hop routing
 - durable command queues

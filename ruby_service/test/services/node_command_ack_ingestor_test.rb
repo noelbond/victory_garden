@@ -43,6 +43,72 @@ class NodeCommandAckIngestorTest < ActiveSupport::TestCase
     assert_equal "timeout", @command.reload.status
   end
 
+  test "marks a failed ack as timed out" do
+    payload = {
+      "node_id" => "combined-zone1",
+      "command_id" => @command.command_id,
+      "status" => "failed",
+      "error" => "sensor_read_failed"
+    }
+
+    result = nil
+    assert_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count }, 1 do
+      result = NodeCommandAckIngestor.new(payload).call
+    end
+
+    assert_equal @command, result
+    assert_equal "timeout", @command.reload.status
+    assert_nil @command.acknowledged_at
+    fault = Fault.order(:id).last
+    assert_equal @zone, fault.zone
+    assert_equal @command.node_id, fault.node_id
+    assert_includes fault.detail, "sensor_read_failed"
+  end
+
+  test "marks a rejected ack as timed out" do
+    payload = {
+      "node_id" => "combined-zone1",
+      "command_id" => @command.command_id,
+      "status" => "rejected",
+      "error" => "unsupported_command"
+    }
+
+    assert_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count }, 1 do
+      NodeCommandAckIngestor.new(payload).call
+    end
+
+    assert_equal "timeout", @command.reload.status
+    assert_nil @command.acknowledged_at
+  end
+
+  test "does not mark duplicate ack as successful" do
+    payload = {
+      "node_id" => "combined-zone1",
+      "command_id" => @command.command_id,
+      "status" => "duplicate",
+      "error" => "already_seen"
+    }
+
+    result = NodeCommandAckIngestor.new(payload).call
+
+    assert_equal @command, result
+    assert_equal "command_sent", @command.reload.status
+    assert_nil @command.acknowledged_at
+  end
+
+  test "does not record a failure fault for duplicate ack" do
+    payload = {
+      "node_id" => "combined-zone1",
+      "command_id" => @command.command_id,
+      "status" => "duplicate",
+      "error" => "already_seen"
+    }
+
+    assert_no_difference -> { Fault.count } do
+      NodeCommandAckIngestor.new(payload).call
+    end
+  end
+
   test "does nothing for an unknown command_id" do
     payload = { "node_id" => "combined-zone1", "command_id" => "unknown-command", "status" => "acknowledged" }
 

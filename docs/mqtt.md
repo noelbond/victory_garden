@@ -160,8 +160,12 @@ Current scope:
 
 - inbound Pico-to-Pi sensor state is implemented and bench-validated
 - outbound Pi-to-Pico `request_reading` command routing is implemented and Pi-service validated
-- `request_reading` should use the returned state/result as the acknowledgement
-- explicit command acknowledgements and durable/adaptive retry handling are documented protocol work for future non-result commands
+- successful `request_reading` uses the returned state/result as the acknowledgement
+- failed Pico-side `request_reading` execution can return `lora-command-ack/v1`
+  with `status: "failed"` so Rails can fail the command without waiting for the
+  server timeout
+- explicit success acknowledgements and durable/adaptive retry handling are
+  documented protocol work for future non-result commands
 
 ### Node Command
 

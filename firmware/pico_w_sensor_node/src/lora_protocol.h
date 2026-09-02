@@ -8,6 +8,8 @@
 
 #define VG_LORA_COMMAND_SCHEMA_VERSION "lora-command/v1"
 #define VG_LORA_COMMAND_REQUEST_READING "request_reading"
+#define VG_LORA_COMMAND_ACK_SCHEMA_VERSION "lora-command-ack/v1"
+#define VG_LORA_COMMAND_ACK_TARGET "pi-gateway"
 #define VG_LORA_COMPACT_COMMAND_TYPE "cmd"
 #define VG_LORA_COMPACT_COMMAND_REQUEST_READING "rr"
 #define VG_LORA_MAX_MESSAGE_ID_LEN 128u
@@ -66,4 +68,14 @@ bool lora_format_autonomous_channel_state_frame(
     const char *reason,
     uint32_t wake_count,
     uint32_t uptime_seconds
+);
+bool lora_format_command_ack_frame(
+    char *out,
+    size_t out_size,
+    const node_config_t *config,
+    const char *source_node_id,
+    const lora_command_t *command,
+    const char *timestamp,
+    const char *status,
+    const char *error
 );

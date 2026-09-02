@@ -573,3 +573,75 @@ bool lora_format_autonomous_channel_state_frame(
         uptime_seconds
     );
 }
+
+bool lora_format_command_ack_frame(
+    char *out,
+    size_t out_size,
+    const node_config_t *config,
+    const char *source_node_id,
+    const lora_command_t *command,
+    const char *timestamp,
+    const char *status,
+    const char *error
+) {
+    char message_id[VG_LORA_MAX_MESSAGE_ID_LEN] = {0};
+    char error_field[240] = {0};
+
+    if (!out ||
+        out_size == 0 ||
+        !config ||
+        !source_node_id ||
+        !command ||
+        !timestamp ||
+        !status ||
+        source_node_id[0] == '\0' ||
+        command->message_id[0] == '\0' ||
+        !is_mqtt_safe_identifier(source_node_id) ||
+        !is_mqtt_safe_identifier(command->message_id) ||
+        !is_mqtt_safe_identifier(status)) {
+        return false;
+    }
+
+    if (strcmp(status, "acknowledged") == 0) {
+        snprintf(error_field, sizeof(error_field), "null");
+    } else {
+        if (!error || error[0] == '\0' || !is_mqtt_safe_identifier(error)) {
+            return false;
+        }
+        snprintf(error_field, sizeof(error_field), "\"%s\"", error);
+    }
+
+    int message_id_written = snprintf(
+        message_id,
+        sizeof(message_id),
+        "%s-ack-%lu",
+        source_node_id,
+        (unsigned long)(command->sequence > 0 ? command->sequence : 0)
+    );
+    if (message_id_written < 0 || (size_t)message_id_written >= sizeof(message_id)) {
+        return false;
+    }
+
+    int written = snprintf(
+        out,
+        out_size,
+        "{\"schema_version\":\"%s\","
+        "\"message_id\":\"%s\","
+        "\"timestamp\":\"%s\","
+        "\"source_node_id\":\"%s\","
+        "\"target\":\"%s\","
+        "\"ack_for_message_id\":\"%s\","
+        "\"status\":\"%s\","
+        "\"error\":%s}\n",
+        VG_LORA_COMMAND_ACK_SCHEMA_VERSION,
+        message_id,
+        timestamp,
+        source_node_id,
+        VG_LORA_COMMAND_ACK_TARGET,
+        command->message_id,
+        status,
+        error_field
+    );
+
+    return written >= 0 && (size_t)written < out_size;
+}
