@@ -152,9 +152,11 @@ Outbound command bridge:
 - `victory-garden-lora-receiver.service` subscribes to `greenhouse/nodes/+/lora/command`
 - command payloads must validate as `lora-command/v1`
 - the `{node_id}` topic segment must match `target_node_id`
-- accepted commands are serialized as compact JSON plus trailing newline and written to the Pi-connected LR22 serial stream
+- accepted commands are serialized as compact JSON plus trailing newline and written to the Pi-connected LR22 serial stream; this MQTT command publish is non-retained
 - if the LR22 serial connection is down, commands are dropped and logged with reason `serial_disconnected`
-- `request_reading` commands are retried by the gateway until the correlated state result is published or the bounded attempt limit is reached
+- `request_reading` commands use at most three gateway attempts, six seconds apart; retries reuse the exact serialized frame and preserve `message_id` and `sq`
+- gateway retry state is process-local, so a gateway restart does not replay an outstanding non-retained command
+- a correlated result before the Rails deadline acknowledges the command; a late result may be ingested but cannot reverse a terminal timeout
 
 Current scope:
 

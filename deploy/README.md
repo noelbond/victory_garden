@@ -268,14 +268,17 @@ If the serial adapter is disconnected, the command is dropped and logged with re
 
 Notes:
 
-- Manual LoRa command tests use retained MQTT messages so a sleeping or
-  restarting gateway can see them. Clear a test command after a successful run
-  so it does not replay on the next receiver restart:
-
-```bash
-mosquitto_pub -h 127.0.0.1 -p 1883 -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" -q 1 -r -n \
-  -t 'greenhouse/nodes/sensor-zone1-ch0/lora/command'
-```
+- Production LoRa command publishes are non-retained. The receiver retries a
+  routed `request_reading` at most three times, six seconds apart, using the
+  same serialized frame. Its retry state is process-local: restarting
+  `victory-garden-lora-receiver.service` drops pending retries and does not
+  replay outstanding commands. Rails' scheduled timeout remains the durable
+  fallback when no correlated result arrives.
+- A normal successful command and an explicit Pico failure-ACK path have been
+  physically validated end-to-end. Restart, packet-loss, duplicate, and
+  delayed-message behavior is covered by deterministic software/process/session
+  fault injection; it was not physically reproduced in this validation run
+  because authenticated Pi/Pico access was unavailable.
 
 - The install script expects a Ruby version compatible with Rails 8. If the distro Ruby is too old, the script stops with a clear error.
 - Release tarballs also pin the exact Ruby and Python versions used to build the packaged artifacts.

@@ -143,7 +143,19 @@ Failure behavior:
 - a valid targeted LoRa `request_reading` command returns one compact
   state/result frame with the original command `message_id`
 - duplicate copies of the same LoRa command are suppressed while pending and
-  after a successful response
+  while retained in the eight-entry completed-command cache during the current
+  Pico boot/session; the cache is in memory, does not survive reboot, can evict
+  older completions, and does not replay a prior result when it suppresses a
+  duplicate
+- the compact command has no timestamp/age field and firmware has no
+  stale-command age rejection, so a delayed `request_reading` may execute after
+  the server-side command timeout; this is acceptable only because it is
+  observational and repeat-safe
+
+LoRa `request_reading` is not an actuator-command reliability mechanism. A
+future side-effecting LoRa command needs durable cross-reboot idempotency,
+completion correlation, a freshness policy, and fail-safe handling of
+ambiguous retries before it can use this path.
 
 For the final wiring and radio settings, see:
 

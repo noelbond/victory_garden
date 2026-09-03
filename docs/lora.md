@@ -39,7 +39,7 @@ Implemented and bench-validated:
 Not implemented yet:
 
 - explicit acknowledgements for commands that do not return result payloads
-- durable retry/timeout handling across gateway restarts
+- durable gateway retry handling across gateway restarts
 - sensor-side detection that the gateway actually heard autonomous telemetry
 - receive-while-sleeping / LR22 air wake-up behavior
 - message authentication
@@ -171,8 +171,8 @@ Required fields:
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `schema_version` | string | Must be `lora-command/v1` |
-| `message_id` | string | Unique command id for deduplication, ack correlation, and retry handling |
-| `timestamp` | string | UTC ISO 8601 time when the gateway created the command |
+| `message_id` | string | Logical command/correlation identity used for retry handling and result correlation |
+| `timestamp` | string | UTC ISO 8601 gateway metadata; it is not carried in the current compact LoRa command |
 | `source` | string | Gateway identity, initially `pi-gateway` |
 | `target_node_id` | string | Node that should act on the command |
 | `command` | string | Command name |
@@ -233,7 +233,10 @@ window before returning to sleep so gateway commands do not have to race the
 autonomous transmit burst.
 The Pico suppresses duplicate copies of the same LoRa command while it is
 pending and after a successful response, so gateway retries do not trigger
-multiple readings for the same `message_id`/target/sequence.
+multiple readings for the same `message_id`/target/sequence while the
+completion remains in its eight-entry cache. This cache is in memory only. It
+can evict older entries, is cleared by a Pico restart, and does not replay a
+prior result when it suppresses a completed command.
 
 If a Pico sends a `request_reading` result during a wake cycle, it suppresses
 the normal autonomous LoRa telemetry for the rest of that same cycle. Wi-Fi/MQTT
@@ -392,22 +395,90 @@ translate compact ack/result frames into:
 greenhouse/nodes/{node_id}/lora/command_ack
 ```
 
-## Freshness, Deduplication, and Retry Rules
+## Request-reading Reliability and Recovery Contract
 
-Initial recommended rules:
+This section describes the implemented `request_reading` behavior. It is not a
+general-purpose actuation command protocol.
 
-- `message_id` must be MQTT-safe and unique enough for practical command
-  correlation
-- gateway compact command `sq` is a process-local LoRa transmit sequence used
-  for debugging ordering/retry behavior; it is not a deduplication key
-- production node firmware remembers a small in-memory set of recently handled
-  LoRa commands
-- duplicates addressed to the same node are ignored while pending and after a
-  successful response
-- commands older than 60 seconds should be rejected if the node has a valid
-  clock
-- if the node does not have valid time, it may skip age rejection but should
-  still deduplicate by `message_id`
+### Gateway retry and restart
+
+- The gateway sends at most three total transmit attempts, with retries six
+  seconds apart.
+- Each retry writes the exact same serialized compact frame bytes. The logical
+  `message_id` and gateway-assigned `sq` therefore remain unchanged.
+- Retry state and the serialized-frame cache are process-local. A gateway
+  restart cancels and loses outstanding retries; no stale callback from that
+  process may send afterward.
+- The MQTT LoRa command publish is non-retained. A newly started gateway does
+  not automatically replay an outstanding command.
+- `retry_exhausted` is gateway telemetry only. It does not itself perform a
+  durable Rails command transition. Rails' independently scheduled command
+  timeout is the durable fallback when no correlated result arrives.
+- A correlated result received by a restarted gateway is still translated and
+  can be correlated by Rails before the Rails deadline; otherwise Rails times
+  out safely.
+
+An initial gateway route failure, such as `serial_disconnected`, is distinct
+from retry exhaustion: it is published as a failed route-status event and is
+handled by Rails as that separate route failure.
+
+### Pico duplicate handling and restart
+
+- The Pico's completed-command cache is an eight-entry in-memory cache scoped
+  to the current boot/session. Identical delivery is at-most-once only while a
+  command is pending or its completion remains in that cache; eviction or a
+  reboot permits execution again.
+- Its completed-command match currently uses the tuple
+  (`message_id`, `target_node_id`, `sequence`). `message_id` remains the
+  logical command/correlation identity; `sequence` participates only in this
+  firmware cache match and is preserved because retries reuse the same frame.
+- Within one boot/session, identical retries of a recently completed
+  `request_reading` are suppressed while its cache entry remains. Suppression
+  does not replay the prior result from the completion cache.
+- If the Pico restarts before execution, a later identical retry may execute
+  once in the new session. If it restarts after execution, the cleared cache
+  allows the same `request_reading` to execute again in the new session.
+
+Repetition after cache eviction or reboot is acceptable for the current
+observational, repeat-safe `request_reading` command. The implementation must
+not be described as an unlimited session-wide or cross-reboot at-most-once
+guarantee.
+
+### Results, timeouts, and sensor-reading identity
+
+For `request_reading`, a correlated `node-state/v1` result received before the
+Rails deadline marks the `NodeCommand` `acknowledged`. A result received after
+the command has reached terminal `timeout` may still be ingested as a sensor
+reading, but it does not reverse the terminal command state. Repeated timeout
+processing is idempotent and creates exactly one `NODE_COMMAND_TIMEOUT` fault
+for that timed-out command.
+
+`command_message_id` is command correlation identity, not a universal
+sensor-observation uniqueness key. The gateway suppresses an exact repeated
+LoRa frame while it remains in its process-local recent-frame cache. Rails
+also serializes ingest per node and deduplicates canonical readings with the
+same node and recorded time. Those caches do not create durable frame identity
+across gateway restart. Two legitimate readings from separate Pico boots can
+share a `command_message_id` and both persist when they are distinct
+observations.
+
+### Delayed commands
+
+The current compact LoRa command carries no timestamp or age field, and the
+firmware has no stale-command age rejection. A valid delayed
+`request_reading` may therefore arrive after Rails has timed out and still
+execute; its late result may be ingested while the `NodeCommand` remains
+terminal `timeout`. This is acceptable only because `request_reading` is
+observational and repeat-safe.
+
+### Future side-effecting commands
+
+Watering and actuator commands must not simply reuse this
+`request_reading` retry/deduplication contract. Before a side-effecting LoRa
+command can retry safely, the architecture needs at minimum durable
+cross-reboot idempotency and command identity handling, durable (or
+equivalent) completion correlation, an explicit freshness/stale-command
+policy, and fail-safe behavior for ambiguous restart and retry cases.
 
 Command completion depends on command type:
 
@@ -422,27 +493,23 @@ before the server records the command as timed out. The current request-reading
 job uses a 30-second timeout, while the gateway default is three total transmit
 attempts with a six-second retry delay.
 
-Gateway command route status events are diagnostic transport events. A
+Gateway command route-status events describe initial routing outcomes. A
 `routed` status means the gateway accepted the MQTT command and wrote the
 compact frame to the LR22 serial stream. A `failed` status means the gateway
-rejected or could not route the command, with `reason` describing the failure
-such as `serial_disconnected`, invalid payload, oversized frame, or
-`retry_exhausted`. These events do not replace Pico result/ACK completion; they
-make gateway-side failures visible sooner than the server timeout.
+rejected or could not route that initial attempt, with a reason such as
+`serial_disconnected`, invalid payload, or oversized frame. These events do not
+replace Pico result/ACK completion. `retry_exhausted` is not a route-status
+event; it is gateway telemetry, as described above.
 
-Rails subscribes to `greenhouse/lora/gateway/command_status`. Failed route
-events with a matching `message_id` move the corresponding non-terminal
-`NodeCommand` to the existing terminal failure state, `timeout`, and record a
-`LORA_COMMAND_ROUTE_FAILED` fault. Routed events are diagnostic only and do not
-complete the command; completion still requires the Pico result or ACK.
+Rails subscribes to `greenhouse/lora/gateway/command_status`. A failed initial
+route event with a matching `message_id` moves a non-terminal `NodeCommand` to
+`timeout` and records a `LORA_COMMAND_ROUTE_FAILED` fault. Routed events are
+diagnostic only and do not complete the command; completion still requires the
+Pico result or ACK.
 
-Retry behavior should be conservative. Repeated command frames consume shared
-airtime and can delay sensor-state traffic. The current gateway defaults to
-three total transmit attempts with a six-second retry delay. Retries reuse the
-same compact command frame bytes, including the original `sq`, so the Pico sees
-repeated copies of one command rather than distinct commands. The Pico keeps a
-small in-memory cache of recently completed LoRa commands and ignores exact
-duplicates after a successful response.
+Retry behavior is conservative because repeated command frames consume shared
+airtime and can delay sensor-state traffic. The exact implemented limits and
+deduplication boundaries are defined above.
 
 ## First Implementation Scope
 
