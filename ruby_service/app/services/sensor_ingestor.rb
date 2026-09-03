@@ -16,44 +16,48 @@ class SensorIngestor
       return node
     end
 
-    existing_reading = SensorReading.find_by(
-      node_id: @payload.fetch("node_id"),
-      recorded_at: @payload.fetch("recorded_at")
-    )
-    return existing_reading if existing_reading
+    reading = node.with_lock do
+      existing_reading = SensorReading.find_by(
+        node_id: @payload.fetch("node_id"),
+        recorded_at: @payload.fetch("recorded_at")
+      )
+      next existing_reading if existing_reading
 
-    temperature_alert = GreenhouseTemperatureAlert.new(
-      zone: zone,
-      temperature_c: @payload["air_temperature_c"],
-      recorded_at: @payload.fetch("recorded_at")
-    )
-    alert_status = temperature_alert.status
+      temperature_alert = GreenhouseTemperatureAlert.new(
+        zone: zone,
+        temperature_c: @payload["air_temperature_c"],
+        recorded_at: @payload.fetch("recorded_at")
+      )
+      alert_status = temperature_alert.status
 
-    reading = SensorReading.create!(
-      zone: zone,
-      node_id: @payload.fetch("node_id"),
-      recorded_at: @payload.fetch("recorded_at"),
-      schema_version: @payload["schema_version"],
-      moisture_raw: @payload["moisture_raw"],
-      moisture_percent: @payload["moisture_percent"],
-      air_temperature_c: @payload["air_temperature_c"],
-      humidity_percent: @payload["humidity_percent"],
-      soil_moisture_read: @payload["soil_moisture_read"] == true,
-      greenhouse_alert_status: alert_status,
-      soil_temp_c: @payload["soil_temp_c"],
-      battery_voltage: @payload["battery_voltage"],
-      battery_percent: @payload["battery_percent"],
-      wifi_rssi: @payload["wifi_rssi"],
-      uptime_seconds: @payload["uptime_seconds"],
-      wake_count: @payload["wake_count"],
-      ip_address: @payload["ip"],
-      health: @payload["health"],
-      last_error: @payload["last_error"],
-      publish_reason: @payload["publish_reason"],
-      raw_payload: @payload
-    )
+      created_reading = SensorReading.create!(
+        zone: zone,
+        node_id: @payload.fetch("node_id"),
+        recorded_at: @payload.fetch("recorded_at"),
+        schema_version: @payload["schema_version"],
+        moisture_raw: @payload["moisture_raw"],
+        moisture_percent: @payload["moisture_percent"],
+        air_temperature_c: @payload["air_temperature_c"],
+        humidity_percent: @payload["humidity_percent"],
+        soil_moisture_read: @payload["soil_moisture_read"] == true,
+        greenhouse_alert_status: alert_status,
+        soil_temp_c: @payload["soil_temp_c"],
+        battery_voltage: @payload["battery_voltage"],
+        battery_percent: @payload["battery_percent"],
+        wifi_rssi: @payload["wifi_rssi"],
+        uptime_seconds: @payload["uptime_seconds"],
+        wake_count: @payload["wake_count"],
+        ip_address: @payload["ip"],
+        health: @payload["health"],
+        last_error: @payload["last_error"],
+        publish_reason: @payload["publish_reason"],
+        raw_payload: @payload
+      )
 
-    temperature_alert.record!(status: alert_status) if @payload["air_temperature_c"].present?
+      temperature_alert.record!(status: alert_status) if @payload["air_temperature_c"].present?
+      created_reading
+    end
+
     acknowledge_correlated_command!
 
     reading
@@ -100,11 +104,17 @@ class SensorIngestor
   def acknowledge_correlated_command!
     command_message_id = @payload["command_message_id"]
     return if command_message_id.blank?
+    return unless @payload["publish_reason"] == "request_reading"
 
     command = NodeCommand.find_by(command_id: command_message_id)
     return if command.nil?
-    return if NodeCommand::TERMINAL_STATUSES.include?(command.status)
+    return unless command.command == "request_reading"
+    return unless command.node_id == @payload.fetch("node_id")
 
-    command.update!(status: "acknowledged", acknowledged_at: Time.current)
+    command.with_lock do
+      next if NodeCommand::TERMINAL_STATUSES.include?(command.status)
+
+      command.update!(status: "acknowledged", acknowledged_at: Time.current)
+    end
   end
 end

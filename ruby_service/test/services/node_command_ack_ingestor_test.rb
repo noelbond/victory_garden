@@ -65,6 +65,22 @@ class NodeCommandAckIngestorTest < ActiveSupport::TestCase
     assert_includes fault.detail, "sensor_read_failed"
   end
 
+  test "duplicate failed ack creates only one timeout fault" do
+    payload = {
+      "node_id" => "combined-zone1",
+      "command_id" => @command.command_id,
+      "status" => "failed",
+      "error" => "sensor_read_failed"
+    }
+
+    assert_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count }, 1 do
+      NodeCommandAckIngestor.new(payload).call
+      NodeCommandAckIngestor.new(payload).call
+    end
+
+    assert_equal "timeout", @command.reload.status
+  end
+
   test "marks a rejected ack as timed out" do
     payload = {
       "node_id" => "combined-zone1",

@@ -102,6 +102,70 @@ class SensorIngestorTest < ActiveSupport::TestCase
     assert command.acknowledged_at.present?
   end
 
+  test "does not acknowledge a command from another node's correlated result" do
+    Node.create!(node_id: "other-node", zone: @zone, last_seen_at: 1.hour.ago)
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "expected-node",
+      command: "request_reading",
+      command_id: "wrong-node-correlation",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => "other-node",
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id
+    )
+
+    SensorIngestor.new(payload).call
+
+    assert_equal "command_sent", command.reload.status
+  end
+
+  test "does not acknowledge a non-reading command from sensor correlation metadata" do
+    Node.create!(node_id: "pico-w-zone1", zone: @zone, last_seen_at: 1.hour.ago)
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "pico-w-zone1",
+      command: "reboot",
+      command_id: "wrong-command-correlation",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id
+    )
+
+    SensorIngestor.new(payload).call
+
+    assert_equal "command_sent", command.reload.status
+  end
+
+  test "an existing duplicate reading can still complete its correlated command" do
+    Node.create!(node_id: "pico-w-zone1", zone: @zone, last_seen_at: 1.hour.ago)
+    payload = load_fixture("node-state-v1.json").merge(
+      "publish_reason" => "request_reading",
+      "command_message_id" => "retry-after-partial-ingest"
+    )
+    SensorIngestor.new(payload).call
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "pico-w-zone1",
+      command: "request_reading",
+      command_id: payload.fetch("command_message_id"),
+      status: "command_sent",
+      issued_at: Time.current
+    )
+
+    assert_no_difference -> { SensorReading.count } do
+      SensorIngestor.new(payload).call
+    end
+
+    assert_equal "acknowledged", command.reload.status
+  end
+
   test "does not reopen a timed out command from a delayed correlated result" do
     Node.create!(
       node_id: "pico-w-zone1",
@@ -123,6 +187,212 @@ class SensorIngestorTest < ActiveSupport::TestCase
     )
 
     SensorIngestor.new(payload).call
+
+    assert_equal "timeout", command.reload.status
+  end
+
+  test "acknowledges one correlated result without a duplicate reading or timeout fault" do
+    Node.create!(
+      node_id: "sensor-zone1-ch0",
+      zone: @zone,
+      last_seen_at: 1.hour.ago,
+      config_status: "applied"
+    )
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "packet-loss-command-a",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => "sensor-zone1-ch0",
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id
+    )
+
+    assert_difference -> { SensorReading.where(node_id: command.node_id).count }, 1 do
+      SensorIngestor.new(payload).call
+      SensorIngestor.new(payload).call
+    end
+    assert_no_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count } do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "acknowledged", command.reload.status
+  end
+
+  test "accepts a correlated result after gateway restart before the timeout" do
+    Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, last_seen_at: 1.hour.ago)
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "gateway-restart-result-before-timeout",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => command.node_id,
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id
+    )
+
+    assert_difference -> { SensorReading.where(node_id: command.node_id).count }, 1 do
+      SensorIngestor.new(payload).call
+      SensorIngestor.new(payload).call
+    end
+    assert_no_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count } do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "acknowledged", command.reload.status
+  end
+
+  test "persists a late gateway result without reopening timeout or duplicating faults" do
+    Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, last_seen_at: 1.hour.ago)
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "gateway-restart-result-after-timeout",
+      status: "timeout",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => command.node_id,
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id
+    )
+
+    assert_difference -> { SensorReading.where(node_id: command.node_id).count }, 1 do
+      SensorIngestor.new(payload).call
+      SensorIngestor.new(payload).call
+    end
+    assert_no_difference -> { Fault.count } do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "timeout", command.reload.status
+  end
+
+  test "acknowledges once but persists distinct results from two Pico boot sessions" do
+    Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, last_seen_at: 1.hour.ago)
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "pico-restart-after-execution",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+    first_payload = load_fixture("node-state-v1.json").merge(
+      "timestamp" => "2026-09-03T15:00:00.100000Z",
+      "node_id" => command.node_id,
+      "moisture_raw" => 2345,
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id,
+      "lora_sequence" => 17,
+      "uptime_seconds" => 123
+    )
+    second_payload = first_payload.merge(
+      "timestamp" => "2026-09-03T15:00:00.200000Z",
+      "moisture_raw" => 2346,
+      "uptime_seconds" => 4
+    )
+
+    assert_difference -> { SensorReading.where(node_id: command.node_id).count }, 2 do
+      SensorIngestor.new(first_payload).call
+      SensorIngestor.new(second_payload).call
+    end
+    assert_no_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count } do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    readings = SensorReading.where(node_id: command.node_id).order(:recorded_at)
+    assert_equal [ 2345, 2346 ], readings.pluck(:moisture_raw)
+    assert_equal "acknowledged", command.reload.status
+  end
+
+  test "acknowledges a delayed correlated result before timeout without duplicate persistence" do
+    Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, last_seen_at: 1.hour.ago)
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "delayed-result-before-timeout",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => command.node_id,
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id
+    )
+
+    assert_difference -> { SensorReading.where(node_id: command.node_id).count }, 1 do
+      SensorIngestor.new(payload).call
+      SensorIngestor.new(payload).call
+    end
+    assert_no_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count } do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "acknowledged", command.reload.status
+  end
+
+  test "persists delayed result after timeout without reversing terminal state or duplicating fault" do
+    Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, last_seen_at: 1.hour.ago)
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "delayed-result-after-timeout",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => command.node_id,
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id
+    )
+
+    assert_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count }, 1 do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+    assert_difference -> { SensorReading.where(node_id: command.node_id).count }, 1 do
+      SensorIngestor.new(payload).call
+      SensorIngestor.new(payload).call
+    end
+
+    assert_equal "timeout", command.reload.status
+  end
+
+  test "persists a result from a command delayed until after server timeout" do
+    Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, last_seen_at: 1.hour.ago)
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "delayed-command-after-timeout",
+      status: "timeout",
+      issued_at: Time.current
+    )
+    payload = load_fixture("node-state-v1.json").merge(
+      "node_id" => command.node_id,
+      "publish_reason" => "request_reading",
+      "command_message_id" => command.command_id
+    )
+
+    assert_difference -> { SensorReading.where(node_id: command.node_id).count }, 1 do
+      SensorIngestor.new(payload).call
+      SensorIngestor.new(payload).call
+    end
+    assert_no_difference -> { Fault.count } do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
 
     assert_equal "timeout", command.reload.status
   end

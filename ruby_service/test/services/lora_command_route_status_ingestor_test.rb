@@ -35,6 +35,44 @@ class LoraCommandRouteStatusIngestorTest < ActiveSupport::TestCase
     assert_includes fault.detail, "serial_disconnected"
   end
 
+  test "duplicate failed route event creates only one fault" do
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: @node.node_id,
+      command: "request_reading",
+      command_id: "cmd-duplicate-failure",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+
+    assert_difference -> { Fault.where(fault_code: "LORA_COMMAND_ROUTE_FAILED").count }, 1 do
+      2.times do
+        LoraCommandRouteStatusIngestor.new(failed_payload(message_id: command.command_id)).call
+      end
+    end
+
+    assert_equal "timeout", command.reload.status
+  end
+
+  test "failed route event for another target does not transition matching command" do
+    command = NodeCommand.create!(
+      zone: @zone,
+      node_id: @node.node_id,
+      command: "request_reading",
+      command_id: "cmd-wrong-target",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+
+    assert_no_difference -> { Fault.count } do
+      LoraCommandRouteStatusIngestor.new(
+        failed_payload(message_id: command.command_id, target_node_id: "another-node")
+      ).call
+    end
+
+    assert_equal "command_sent", command.reload.status
+  end
+
   test "routed event does not change command or create fault" do
     command = NodeCommand.create!(
       zone: @zone,

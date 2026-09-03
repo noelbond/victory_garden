@@ -9,14 +9,17 @@ class NodeCommandAckIngestor
   def call
     command = NodeCommand.includes(:zone).find_by(command_id: @payload["command_id"])
     return if command.nil?
-    return command if NodeCommand::TERMINAL_STATUSES.include?(command.status)
 
-    case @payload["status"]
-    when "acknowledged"
-      command.update!(status: "acknowledged", acknowledged_at: ack_time)
-    when "failed", "rejected"
-      command.update!(status: "timeout")
-      record_failure_fault(command)
+    command.with_lock do
+      next if NodeCommand::TERMINAL_STATUSES.include?(command.status)
+
+      case @payload["status"]
+      when "acknowledged"
+        command.update!(status: "acknowledged", acknowledged_at: ack_time)
+      when "failed", "rejected"
+        command.update!(status: "timeout")
+        record_failure_fault(command)
+      end
     end
 
     command

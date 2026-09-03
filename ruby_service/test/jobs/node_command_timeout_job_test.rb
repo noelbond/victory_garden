@@ -63,6 +63,62 @@ class NodeCommandTimeoutJobTest < ActiveSupport::TestCase
     assert_equal "acknowledged", command.reload.status
   end
 
+  test "is idempotent when the timeout job is delivered twice after dropped results" do
+    zone = create(:zone)
+    command = NodeCommand.create!(
+      zone: zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "packet-loss-command-b",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+
+    assert_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count }, 1 do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "timeout", command.reload.status
+  end
+
+  test "records one terminal timeout fault when every LoRa attempt is dropped" do
+    zone = create(:zone)
+    command = NodeCommand.create!(
+      zone: zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "packet-loss-command-a-all-dropped",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+
+    assert_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count }, 1 do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "timeout", command.reload.status
+  end
+
+  test "is idempotent after a gateway restart loses the outstanding retry" do
+    zone = create(:zone)
+    command = NodeCommand.create!(
+      zone: zone,
+      node_id: "sensor-zone1-ch0",
+      command: "request_reading",
+      command_id: "gateway-restart-no-result",
+      status: "command_sent",
+      issued_at: Time.current
+    )
+
+    assert_difference -> { Fault.where(fault_code: "NODE_COMMAND_TIMEOUT").count }, 1 do
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+      NodeCommandTimeoutJob.perform_now(command_id: command.command_id, timeout_seconds: 30)
+    end
+
+    assert_equal "timeout", command.reload.status
+  end
+
   test "does nothing when the command cannot be found" do
     assert_no_difference -> { Fault.count } do
       NodeCommandTimeoutJob.perform_now(command_id: "missing-command", timeout_seconds: 30)

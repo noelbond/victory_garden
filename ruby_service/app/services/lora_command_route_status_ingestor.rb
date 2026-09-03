@@ -11,17 +11,15 @@ class LoraCommandRouteStatusIngestor
     return unless @payload.fetch("status") == "failed"
 
     command = NodeCommand.includes(:zone).find_by(command_id: @payload.fetch("message_id"))
-    return if command&.status == "acknowledged"
+    return record_failure_fault(nil) if command.nil?
+    return if command.node_id != target_node_id
 
-    command&.update!(status: "timeout") unless command.nil? || command.status == "timeout"
+    command.with_lock do
+      next if NodeCommand::TERMINAL_STATUSES.include?(command.status)
 
-    Fault.create!(
-      zone: command&.zone || node&.zone,
-      node_id: target_node_id,
-      fault_code: FAILURE_FAULT_CODE,
-      detail: failure_detail(command),
-      recorded_at: event_time
-    )
+      command.update!(status: "timeout")
+      record_failure_fault(command)
+    end
   end
 
   private
@@ -53,5 +51,15 @@ class LoraCommandRouteStatusIngestor
   def failure_detail(command)
     command_label = command&.command || "unknown"
     "LoRa gateway failed to route #{command_label} command #{@payload.fetch('message_id')}: #{@payload.fetch('reason')}"
+  end
+
+  def record_failure_fault(command)
+    Fault.create!(
+      zone: command&.zone || node&.zone,
+      node_id: target_node_id,
+      fault_code: FAILURE_FAULT_CODE,
+      detail: failure_detail(command),
+      recorded_at: event_time
+    )
   end
 end
