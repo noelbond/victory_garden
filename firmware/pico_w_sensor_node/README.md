@@ -59,6 +59,63 @@ The build produces:
 - `firmware/pico_w_sensor_node/build/pico_w_sensor_node.uf2`
 - `firmware/pico_w_sensor_node/build/pico_w_sensor_node.elf`
 
+## LoRa-primary low-power wake feasibility target
+
+`pico_w_sensor_node_lora_low_power` is a deliberately narrow, RP2040/Pico W
+bench target for the approved battery-powered LoRa-primary architecture. It is
+not the production sensor firmware and is excluded from the normal build. It:
+
+- links no CYW43, lwIP, MQTT, NTP, or Wi-Fi sources;
+- performs one ADS1115 channel-0 read and one bounded LoRa transmit attempt per
+  cycle, then deinitializes the UART and restores the LR22 control-safe state;
+- uses a hardware-timer IRQ to wake from ROSC-clocked `WFI` sleep every five
+  seconds; and
+- includes USB/GP0 phase diagnostics for bench observation only.
+
+RP2040 RTC alarms do not have a dormant-wake route, so an RTC alarm cannot
+wake `xosc_dormant()`. This proof switches `clk_ref` and `clk_sys` to ROSC,
+stops XOSC, and waits for an internal hardware-timer IRQ. It restores XOSC,
+the PLL-backed system clock, and USB clock before reporting the wake. ROSC
+timing is not accurate enough to establish the production wake schedule.
+
+The isolated target physically completed 20 consecutive wake/read/format/
+transmit/sleep cycles, with the Pi raw listener receiving 20 valid compact
+frames. This validates the feasibility path only; it does not validate a
+production schedule, power budget, final hardware, or USB CDC reliability.
+
+GP0 / physical pin 1 is a diagnostic phase marker. It emits 100 ms pulses with
+a 300 ms gap after each group: one pulse for a timer wake, two for a successful
+ADS1115 read, three for LR22/UART initialization, four immediately before the
+frame is passed to the transmit function, five when that function returns
+success, and six after the peripherals are inactive and the cycle is complete.
+The initial boot cycle begins at phase two; use the first one-pulse group as the
+start of a complete post-wake diagnostic cycle. Observe GP0 against GND with a
+logic analyzer. GP8 / physical pin 11 independently shows the 9600-baud UART
+bytes between the four- and five-pulse groups.
+
+Build it explicitly for a Pico W:
+
+```bash
+cmake -S firmware/pico_w_sensor_node -B firmware/pico_w_sensor_node/build-low-power -G Ninja -DPICO_BOARD=pico_w
+cmake --build firmware/pico_w_sensor_node/build-low-power --target pico_w_sensor_node_lora_low_power
+```
+
+Expected USB CDC lines repeat as follows:
+
+```text
+[low-power] cycle=1 state=awake lr22=controls-safe
+[low-power] cycle=1 state=rosc-sleep-armed wake_in=5s
+[low-power] cycle=1 phase=1 wake=timer-success
+[low-power] cycle=1 state=woke timer_alarm=true
+```
+
+The three-second USB re-enumeration delay, USB logging, GP0 phase pulses, and
+the five-second interval are feasibility diagnostics. They must not be copied
+into the production scheduler or used for battery-life claims. USB CDC may
+drop across repeated clock transitions and is not a production requirement.
+
+The normal `pico_w_sensor_node` target remains the known-good Wi-Fi/MQTT path.
+
 Runtime logging:
 - `pico_w_sensor_node` is configured for USB CDC logging
 - use:
@@ -118,8 +175,12 @@ Bench-validated LoRa pin defaults:
 | `GP10` / physical pin 14 | `AUX` |
 | `GP4` / physical pin 6 | `M0` |
 | `GP3` / physical pin 5 | `M1` |
-| `VBUS` / physical pin 40 | `VCC` |
+| `VBUS` / physical pin 40 (USB-powered bench only) | `VCC` |
 | `GND` / physical pin 38 | `GND` |
+
+`VBUS` is not the production radio-power interface. The approved production
+architecture supplies the LR22 from the still-to-be-finalized local battery
+power system.
 
 The LoRa path preserves the normal firmware rhythm:
 
@@ -157,9 +218,10 @@ future side-effecting LoRa command needs durable cross-reboot idempotency,
 completion correlation, a freshness policy, and fail-safe handling of
 ambiguous retries before it can use this path.
 
-For the final wiring and radio settings, see:
+For the current bench wiring and non-frozen hardware interface baseline, see:
 
 - [`../../docs/wiring.md`](../../docs/wiring.md#lora-sensor-node-and-gateway-wiring)
+- [`../../docs/sensor_node_hardware.md`](../../docs/sensor_node_hardware.md)
 
 For the compact LoRa frame contract, see:
 
