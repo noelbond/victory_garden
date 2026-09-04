@@ -10,6 +10,11 @@ It is intentionally conservative:
 
 ## Pico W Sensor Wiring
 
+The range-independent Rev A interface baseline is maintained in the
+**NON-FROZEN** [`sensor-node hardware interface specification`](sensor_node_hardware.md).
+This wiring guide remains the reference for current bench wiring and firmware
+defaults.
+
 Current Pico defaults live in:
 
 - [`../firmware/pico_w_sensor_node/src/config.h`](../firmware/pico_w_sensor_node/src/config.h)
@@ -124,7 +129,7 @@ The bench-verified sensor Pico W wiring is:
 | GND | 38 | Ground | GND |
 | VBUS / 5 V | 40 | Power | VCC |
 
-Optional mode/status wiring used by the current LoRa test firmware:
+LR22 control wiring used by the current firmware:
 
 | Pico | Physical pin | Direction | DX-LR22 |
 | --- | ---: | --- | --- |
@@ -159,7 +164,11 @@ The Pi-connected radio uses the DX-LR22 USB serial adapter. The adapter maps the
 
 Use a stable Linux device path from `/dev/serial/by-id/` for the receiver service. Do not use `/dev/ttyUSB0` as the saved service configuration because it can change across reboots or USB reconnects.
 
-### Verified LR22 radio settings
+### Bench-verified LR22 radio settings
+
+This is a bench-verified shared profile, not a final field radio configuration.
+Final radio settings, transmit power, antenna integration, and any
+RF-performance-driven supply/noise changes wait for the outdoor range test.
 
 Both DX-LR22-900T22D modules were verified with this shared profile:
 
