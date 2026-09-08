@@ -27,6 +27,7 @@ from watering.lora_transmitter import (
     LoRaCommandRouter,
     LoRaCommandTransmitter,
 )
+from watering.lora_messages import LORA_COMMAND_ACK_SCHEMA_VERSION
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,6 +112,8 @@ def command_message_id_from_publish_request(request: NodeStatePublishRequest) ->
         return None
 
     command_message_id = payload.get("command_message_id")
+    if payload.get("schema_version") == LORA_COMMAND_ACK_SCHEMA_VERSION:
+        command_message_id = payload.get("ack_for_message_id")
     return command_message_id if isinstance(command_message_id, str) and command_message_id else None
 
 

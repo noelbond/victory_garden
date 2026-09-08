@@ -65,6 +65,22 @@ class NodeCommandAckIngestorTest < ActiveSupport::TestCase
     assert_includes fault.detail, "sensor_read_failed"
   end
 
+  test "uses server time for an unsynchronized failure ack timestamp" do
+    payload = {
+      "node_id" => "combined-zone1",
+      "command_id" => @command.command_id,
+      "status" => "failed",
+      "error" => "sensor_read_failed",
+      "timestamp" => "1970-01-01T00:05:32Z"
+    }
+
+    travel_to Time.utc(2026, 9, 8, 12, 0, 0) do
+      NodeCommandAckIngestor.new(payload).call
+
+      assert_equal Time.current, Fault.order(:id).last.recorded_at
+    end
+  end
+
   test "duplicate failed ack creates only one timeout fault" do
     payload = {
       "node_id" => "combined-zone1",

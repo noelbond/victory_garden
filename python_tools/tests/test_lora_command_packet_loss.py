@@ -171,6 +171,34 @@ def test_all_dropped_commands_exhaust_retries_without_pico_execution():
     assert retry_results[-1].message_id == message_id
 
 
+def test_published_failure_ack_stops_gateway_retries():
+    message_id = "failed-reading-stops-retries"
+    stream, timers, controller = build_gateway([])
+    controller.route_mqtt_command(COMMAND_TOPIC, command_payload(message_id))
+    failure_ack = json.dumps(
+        {
+            "schema_version": "lora-command-ack/v1",
+            "message_id": "sensor-zone1-ch0-ack-17",
+            "timestamp": "1970-01-01T00:00:00Z",
+            "source_node_id": "sensor-zone1-ch0",
+            "target": "pi-gateway",
+            "ack_for_message_id": message_id,
+            "status": "failed",
+            "error": "sensor_read_failed",
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    publish_request = build_lora_frame_publish_request(failure_ack)
+    completed_id = command_message_id_from_publish_request(publish_request)
+    assert completed_id == message_id
+    controller.mark_command_completed(completed_id)
+
+    assert timers.timers[0].cancelled is True
+    timers.timers[0].fire()
+    assert len(stream.writes) == 1
+
+
 def test_dropped_results_do_not_repeat_pico_execution_within_session():
     message_id = "packet-loss-command-b"
     retry_results = []

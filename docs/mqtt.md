@@ -155,6 +155,8 @@ Outbound command bridge:
 - accepted commands are serialized as compact JSON plus trailing newline and written to the Pi-connected LR22 serial stream; this MQTT command publish is non-retained
 - if the LR22 serial connection is down, commands are dropped and logged with reason `serial_disconnected`
 - `request_reading` commands use at most three gateway attempts, six seconds apart; retries reuse the exact serialized frame and preserve `message_id` and `sq`
+- a successfully published correlated reading result or failed
+  `lora-command-ack/v1` cancels the gateway's process-local retry timer
 - gateway retry state is process-local, so a gateway restart does not replay an outstanding non-retained command
 - a correlated result before the Rails deadline acknowledges the command; a late result may be ingested but cannot reverse a terminal timeout
 

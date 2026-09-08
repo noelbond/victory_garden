@@ -11,9 +11,10 @@ Design rule:
 - The Pi gateway translates compact LoRa frames into canonical MQTT payloads.
 - MQTT topics and payloads remain the stable integration contract for the rest
   of the Victory Garden system.
-- For `request_reading`, the returned sensor-state result is the acknowledgement
-  of the command.
-- Explicit acknowledgement frames are reserved for commands that do not
+- For a successful `request_reading`, the returned sensor-state result is the
+  acknowledgement of the command. If no result can be produced, the sensor
+  returns an explicit failed acknowledgement instead.
+- Explicit acknowledgement frames are also reserved for commands that do not
   naturally return a result payload.
 
 ## Current Status
@@ -33,8 +34,7 @@ Implemented and bench-validated:
   LoRa is enabled
 - basic sensor-side LoRa transmit failure handling is bounded and visible in
   USB serial logs
-- sensor-firmware runtime receive/dispatch for Pi -> Pico LoRa commands
-- end-to-end Pi -> Pico `request_reading` command handling over LoRa
+- Wi-Fi/MQTT sensor runtime receive/dispatch for Pi -> Pico LoRa commands
 
 Not implemented yet:
 
@@ -43,6 +43,10 @@ Not implemented yet:
 - sensor-side detection that the gateway actually heard autonomous telemetry
 - receive-while-sleeping / LR22 air wake-up behavior
 - message authentication
+
+The LoRa-primary low-power runtime has a compiled bounded receive/dispatch
+path for `request_reading`, but its RF receive behavior has not been physically
+validated.
 
 ## Transport Framing
 
@@ -213,24 +217,31 @@ Fields:
 Node behavior:
 
 - if compact `t` is not `cmd`, ignore the frame
-- if compact `n` does not match the node's configured `node_id`, ignore the frame
+- if compact `n` matches neither the physical configured device id nor a
+  configured channel-node id, ignore the frame
 - if `command` is unsupported, send a compact rejected acknowledgement once
   explicit ack frames are implemented
 - for `request_reading`, take a fresh reading for the targeted channel, send a
   compact state/result frame over LoRa, and include the original `mid` as the
   correlation id
+- a physical configured device id is recognized for routing diagnostics but is
+  not a channel target: `request_reading` returns the existing failed command
+  acknowledgement (`not_channel_node`) and never expands into an all-channel
+  request
 - if compact `sq` is present, echo it in the compact state/result frame
 
 Ignored non-target commands should not be acknowledged. That avoids an ack storm
 when multiple nodes hear the same shared-air LoRa transmission.
 
 Current sensor firmware handles commands during bounded awake windows only. It
-does not receive LoRa commands while sleeping. The gateway should therefore
-retry `request_reading` commands within its bounded retry policy, and future
-low-power wake-on-demand work should add LR22 air wake-up behavior explicitly.
-After boot or interval telemetry, the Pico opens a short post-telemetry command
-window before returning to sleep so gateway commands do not have to race the
-autonomous transmit burst.
+does not receive LoRa commands while sleeping. The LoRa-primary runtime opens a
+seven-second receive window after each scheduled sensing/telemetry phase,
+including when no telemetry frame was sent; it returns to its normal scheduled
+sleep afterward. Seven seconds permits one gateway retry opportunity (retries
+are six seconds apart), but does not guarantee that one of the gateway's three
+attempts overlaps a wake. Future low-power wake-on-demand work should add LR22
+air wake-up behavior explicitly. The Wi-Fi/MQTT runtime retains its existing
+post-telemetry command window.
 The Pico suppresses duplicate copies of the same LoRa command while it is
 pending and after a successful response, so gateway retries do not trigger
 multiple readings for the same `message_id`/target/sequence while the
@@ -388,8 +399,8 @@ Initial bridge behavior:
 9. translate the compact result into canonical `node-state/v1`
 10. publish the state to `greenhouse/zones/{zone_id}/nodes/{node_id}/state`
 
-For future commands that do not produce a result payload, the gateway should
-translate compact ack/result frames into:
+The gateway translates validated acknowledgement frames, including a failed
+`request_reading` acknowledgement, into:
 
 ```text
 greenhouse/nodes/{node_id}/lora/command_ack
@@ -404,6 +415,8 @@ general-purpose actuation command protocol.
 
 - The gateway sends at most three total transmit attempts, with retries six
   seconds apart.
+- A successfully published correlated state result or failed acknowledgement
+  cancels the process-local retry timer for that command.
 - Each retry writes the exact same serialized compact frame bytes. The logical
   `message_id` and gateway-assigned `sq` therefore remain unchanged.
 - Retry state and the serialized-frame cache are process-local. A gateway
@@ -484,7 +497,7 @@ Command completion depends on command type:
 
 | Command type | Completion signal | Timeout meaning |
 | --- | --- | --- |
-| `request_reading` | correlated `node-state/v1` payload with matching `command_message_id` | no correlated reading reached the server before the command timeout |
+| `request_reading` | success: correlated `node-state/v1` with matching `command_message_id`; failure: correlated `lora-command-ack/v1` with matching `ack_for_message_id` | no correlated result or failure reached the server before the command timeout |
 | future actuator/config commands | correlated `lora-command-ack/v1` payload with matching `ack_for_message_id` | no ACK reached the server before the command timeout |
 
 The Rails command timeout is the server-side guardrail. It should remain longer
@@ -524,8 +537,8 @@ In scope:
 - Pico emits `lora-command-ack/v1` with `status: "failed"` if it received
   `request_reading` but could not return the state/result frame
 - Pi translates compact state/result frames into canonical MQTT `node-state/v1`
-- Pi retries `request_reading` commands until the correlated state result is
-  published or the bounded attempt limit is reached
+- Pi retries `request_reading` commands until a correlated state result or
+  failed acknowledgement is published, or the bounded attempt limit is reached
 
 Out of scope:
 
@@ -538,6 +551,11 @@ Out of scope:
 - encryption/signatures
 - radio-level addressing
 - durable or adaptive retry policy
+
+LoRa-primary follow-up work intentionally remains separate: gateway time
+synchronization, sleeping-node command queueing, `request_all_readings`, LR22
+air wake, environmental-only telemetry, and physical RF/power validation are
+not part of this software baseline.
 
 ## Design Notes
 

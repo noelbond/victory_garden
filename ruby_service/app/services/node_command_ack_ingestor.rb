@@ -42,6 +42,12 @@ class NodeCommandAckIngestor
   end
 
   def ack_time
-    @payload["timestamp"].presence || Time.current
+    timestamp = @payload["timestamp"].presence
+    return Time.current if timestamp.nil?
+
+    parsed = Time.iso8601(timestamp.to_s)
+    # Firmware without synchronized wall time uses the established 1970
+    # sentinel. Record when the backend received the ACK instead.
+    parsed.year <= 1971 ? Time.current : parsed
   end
 end

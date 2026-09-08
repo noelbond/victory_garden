@@ -347,6 +347,15 @@ def test_extracts_command_message_id_from_publish_request():
     assert cli.command_message_id_from_publish_request(request) == "pi-001"
 
 
+def test_extracts_completed_command_id_from_failure_ack_publish_request():
+    request = cli.build_lora_frame_publish_request(command_ack_frame(
+        status="failed",
+        error="sensor_read_failed",
+    ))
+
+    assert cli.command_message_id_from_publish_request(request) == "pi-20260821T153000Z-abc123"
+
+
 def test_runtime_closes_publisher_when_reader_factory_fails():
     logger_events = []
     telemetry = LoRaReceiverTelemetry(logger=lambda *args, **kwargs: logger_events.append((args, kwargs)))
