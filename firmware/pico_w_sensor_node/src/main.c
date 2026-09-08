@@ -36,9 +36,6 @@ static const uint32_t VG_MQTT_LOG_INTERVAL_MS = 5000u;
 static const uint32_t VG_CANARY_LOG_INTERVAL_MS = 2000u;
 static const uint32_t VG_RETAINED_LOG_INTERVAL_MS = 2000u;
 static const uint32_t VG_DRAIN_LOG_INTERVAL_MS = 2000u;
-#if VG_ENABLE_LORA_TRANSPORT
-#define VG_LORA_RECENT_COMMAND_COUNT 8u
-#endif
 static const size_t VG_PROVISION_LINE_MAX = 2048u;
 // RP2040 hardware watchdog max is ~8388ms (RP2040-E1); stay comfortably under it.
 static const uint32_t VG_WATCHDOG_TIMEOUT_MS = 8000u;
@@ -753,6 +750,7 @@ int main(void) {
                 air_temperature_c,
                 humidity_percent,
                 environment_valid,
+                time_sync_format_iso8601,
                 &soil_sensors_initialized,
                 &lora_command_stats
             );
@@ -899,6 +897,7 @@ int main(void) {
                     air_temperature_c,
                     humidity_percent,
                     environment_valid,
+                    time_sync_format_iso8601,
                     &soil_sensors_initialized,
                     &lora_command_stats
                 );
@@ -927,6 +926,7 @@ int main(void) {
                 air_temperature_c,
                 humidity_percent,
                 environment_valid,
+                time_sync_format_iso8601,
                 &soil_sensors_initialized,
                 &lora_command_stats
             );

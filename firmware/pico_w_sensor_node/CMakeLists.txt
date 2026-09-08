@@ -72,18 +72,22 @@ pico_enable_stdio_usb(pico_w_sensor_node 1)
 
 pico_add_extra_outputs(pico_w_sensor_node)
 
-# This deliberately small, RP2040-only feasibility target proves an internal
-# ROSC-timed low-power wake foundation for the future LoRa-primary runtime. It
-# is excluded from normal builds and shares no CYW43, lwIP, MQTT, or Wi-Fi
-# runtime sources with the established Wi-Fi/MQTT firmware above.
+# This RP2040-only LoRa-primary software baseline is excluded from normal
+# builds and shares no CYW43, lwIP, MQTT, or Wi-Fi runtime sources with the
+# established Wi-Fi/MQTT firmware above.
 add_executable(pico_w_sensor_node_lora_low_power EXCLUDE_FROM_ALL
     src/lora_low_power_main.c
+    src/lora_low_power_platform.c
+    src/lora_scheduler.c
+    src/lora_scheduled_acquisition.c
+    src/lora_command_runtime.c
     src/ads1115.c
     src/i2c1_bus.c
     src/lora_protocol.c
     src/lora_transport.c
     src/node_config.c
     src/sensors.c
+    src/sht40.c
     ${CMAKE_CURRENT_LIST_DIR}/../shared/json_lite.c
 )
 
@@ -98,14 +102,15 @@ target_link_libraries(pico_w_sensor_node_lora_low_power
     hardware_gpio
     hardware_i2c
     hardware_uart
+    hardware_watchdog
     hardware_flash
-    hardware_xosc
 )
 
-# The feasibility proof logs across low-power clock transitions. Do not discard those
+# The low-power diagnostics log across clock transitions. Do not discard those
 # logs merely because an automated USB CDC reader cannot assert DTR.
 target_compile_definitions(pico_w_sensor_node_lora_low_power PRIVATE
     PICO_STDIO_USB_CONNECTION_WITHOUT_DTR=1
+    VG_ENABLE_LORA_TRANSPORT=true
 )
 
 pico_enable_stdio_uart(pico_w_sensor_node_lora_low_power 0)

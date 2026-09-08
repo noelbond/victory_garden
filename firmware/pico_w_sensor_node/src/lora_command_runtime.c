@@ -9,7 +9,6 @@
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
 #include "sensors.h"
-#include "time_sync.h"
 
 typedef enum {
     LORA_QUEUE_RESULT_QUEUED,
@@ -17,6 +16,17 @@ typedef enum {
     LORA_QUEUE_RESULT_DUPLICATE_COMPLETED,
     LORA_QUEUE_RESULT_DROPPED_PENDING_COMMAND,
 } lora_queue_result_t;
+
+static void lora_format_unsynchronized_timestamp(char *out, size_t out_size) {
+    if (!out || out_size == 0u) {
+        return;
+    }
+
+    const uint32_t seconds = to_ms_since_boot(get_absolute_time()) / 1000u;
+    snprintf(out, out_size, "1970-01-01T00:%02u:%02uZ",
+        (unsigned)((seconds / 60u) % 60u),
+        (unsigned)(seconds % 60u));
+}
 
 static void lora_record_parse_result(lora_command_window_stats_t *stats, lora_command_parse_result_t result) {
     if (!stats) {
@@ -312,7 +322,8 @@ static bool lora_send_command_failure_ack(
     const node_config_t *config,
     const lora_command_t *command,
     const char *source_node_id,
-    const char *error
+    const char *error,
+    lora_command_timestamp_formatter_t timestamp_formatter
 ) {
     if (!transport || !transport->initialized || !config || !command || !source_node_id || !error) {
         return false;
@@ -320,7 +331,11 @@ static bool lora_send_command_failure_ack(
 
     char timestamp[32] = {0};
     char frame[VG_LORA_MAX_FRAME_SIZE + 1u] = {0};
-    time_sync_format_iso8601(timestamp, sizeof(timestamp));
+    if (timestamp_formatter) {
+        timestamp_formatter(timestamp, sizeof(timestamp));
+    } else {
+        lora_format_unsynchronized_timestamp(timestamp, sizeof(timestamp));
+    }
     if (!lora_format_command_ack_frame(
             frame,
             sizeof(frame),
@@ -376,6 +391,7 @@ void handle_pending_lora_command(
     float air_temperature_c,
     float humidity_percent,
     bool environment_valid,
+    lora_command_timestamp_formatter_t timestamp_formatter,
     bool *soil_sensors_initialized,
     lora_command_window_stats_t *stats
 ) {
@@ -405,7 +421,8 @@ void handle_pending_lora_command(
                     config,
                     &pending->command,
                     ack_source_node_id,
-                    failure_error
+                    failure_error,
+                    timestamp_formatter
                 );
             }
             break;
@@ -450,7 +467,10 @@ void service_lora_command_window(
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
     while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
         bool read_any = false;
-        while (uart_is_readable(transport->config.uart)) {
+        // A continuously readable UART (including malformed traffic) must not
+        // keep the caller awake beyond its bounded command window.
+        while (uart_is_readable(transport->config.uart) &&
+               absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
             read_any = true;
             char byte = (char)uart_getc(transport->config.uart);
             const char *frame = NULL;
@@ -505,6 +525,7 @@ void service_lora_command_window_and_handle(
     float air_temperature_c,
     float humidity_percent,
     bool environment_valid,
+    lora_command_timestamp_formatter_t timestamp_formatter,
     bool *soil_sensors_initialized,
     lora_command_window_stats_t *stats
 ) {
@@ -534,6 +555,7 @@ void service_lora_command_window_and_handle(
             air_temperature_c,
             humidity_percent,
             environment_valid,
+            timestamp_formatter,
             soil_sensors_initialized,
             stats
         );

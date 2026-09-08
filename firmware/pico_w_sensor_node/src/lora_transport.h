@@ -40,6 +40,7 @@ lora_transport_config_t lora_transport_default_config(void);
 bool lora_transport_init(lora_transport_t *transport, const lora_transport_config_t *config);
 bool lora_transport_wait_idle(const lora_transport_t *transport, uint32_t timeout_ms);
 bool lora_transport_send_frame(lora_transport_t *transport, const char *frame, size_t length);
+bool lora_transport_drain(lora_transport_t *transport);
 void lora_frame_buffer_reset(lora_frame_buffer_t *buffer);
 lora_transport_frame_result_t lora_frame_buffer_feed(
     lora_frame_buffer_t *buffer,

@@ -20,7 +20,8 @@ static bool config_valid(const lora_transport_config_t *config) {
         gpio_number_valid((int)config->rx_gpio) &&
         optional_gpio_valid(config->aux_gpio) &&
         optional_gpio_valid(config->m0_gpio) &&
-        optional_gpio_valid(config->m1_gpio);
+        optional_gpio_valid(config->m1_gpio) &&
+        config->idle_timeout_ms > 0u;
 }
 
 lora_transport_config_t lora_transport_default_config(void) {
@@ -99,7 +100,31 @@ bool lora_transport_send_frame(lora_transport_t *transport, const char *frame, s
         return false;
     }
 
-    uart_write_blocking(transport->config.uart, (const uint8_t *)frame, length);
+    absolute_time_t deadline = make_timeout_time_ms(transport->config.idle_timeout_ms);
+    for (size_t index = 0; index < length; ++index) {
+        while (!uart_is_writable(transport->config.uart)) {
+            if (time_reached(deadline)) {
+                return false;
+            }
+            sleep_ms(1);
+        }
+        uart_putc_raw(transport->config.uart, frame[index]);
+    }
+    return true;
+}
+
+bool lora_transport_drain(lora_transport_t *transport) {
+    if (!transport || !transport->initialized) {
+        return false;
+    }
+
+    absolute_time_t deadline = make_timeout_time_ms(transport->config.idle_timeout_ms);
+    while (uart_get_hw(transport->config.uart)->fr & UART_UARTFR_BUSY_BITS) {
+        if (time_reached(deadline)) {
+            return false;
+        }
+        sleep_ms(1);
+    }
     return true;
 }
 

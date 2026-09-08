@@ -14,6 +14,12 @@
 static const uint32_t VG_LORA_COMMAND_WINDOW_MS = 100u;
 static const uint32_t VG_LORA_COMMAND_INTAKE_WINDOW_MS = 7000u;
 static const uint32_t VG_LORA_POST_TELEMETRY_COMMAND_WINDOW_MS = 15000u;
+#define VG_LORA_RECENT_COMMAND_COUNT 8u
+
+// Failure ACK timestamps are supplied by the owning runtime. The LoRa-primary
+// runtime deliberately has no wall-clock provider and uses the handler's
+// bounded unsynchronized fallback instead.
+typedef void (*lora_command_timestamp_formatter_t)(char *out, size_t out_size);
 
 typedef struct {
     uint16_t frames;
@@ -65,6 +71,7 @@ void handle_pending_lora_command(
     float air_temperature_c,
     float humidity_percent,
     bool environment_valid,
+    lora_command_timestamp_formatter_t timestamp_formatter,
     bool *soil_sensors_initialized,
     lora_command_window_stats_t *stats
 );
@@ -81,6 +88,7 @@ void service_lora_command_window_and_handle(
     float air_temperature_c,
     float humidity_percent,
     bool environment_valid,
+    lora_command_timestamp_formatter_t timestamp_formatter,
     bool *soil_sensors_initialized,
     lora_command_window_stats_t *stats
 );

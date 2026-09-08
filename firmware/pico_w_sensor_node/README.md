@@ -2,7 +2,11 @@
 
 Native Raspberry Pi Pico W firmware for the Victory Garden sensor node.
 
-The sensor is active from 06:00 through 19:59 local time. It publishes SHT40 air temperature and humidity every 15 minutes, samples all four ADS1115 soil channels at minute 0 each hour, and sleeps from 20:00 until 06:00. A manual reading request forces a fresh soil sample on the next active wake. Without synchronized time it retries at a battery-friendly 15-minute interval.
+The normal Wi-Fi/MQTT target is active from 06:00 through 19:59 local time. It
+publishes SHT40 air temperature and humidity every 15 minutes, samples all four
+ADS1115 soil channels at minute 0 each hour, and sleeps from 20:00 until 06:00.
+A manual reading request forces a fresh soil sample on the next active wake.
+Without synchronized time it retries at a battery-friendly 15-minute interval.
 
 Current scope:
 - boot and serial logging
@@ -59,35 +63,58 @@ The build produces:
 - `firmware/pico_w_sensor_node/build/pico_w_sensor_node.uf2`
 - `firmware/pico_w_sensor_node/build/pico_w_sensor_node.elf`
 
-## LoRa-primary low-power wake feasibility target
+## LoRa-primary low-power software baseline
 
-`pico_w_sensor_node_lora_low_power` is a deliberately narrow, RP2040/Pico W
-bench target for the approved battery-powered LoRa-primary architecture. It is
-not the production sensor firmware and is excluded from the normal build. It:
+`pico_w_sensor_node_lora_low_power` is an RP2040/Pico W LoRa-primary
+wake-cycle software baseline for the approved battery-powered architecture.
+It is excluded from the normal build; physical sleep, RF, and battery behavior
+remain unvalidated. It:
 
 - links no CYW43, lwIP, MQTT, NTP, or Wi-Fi sources;
-- performs one ADS1115 channel-0 read and one bounded LoRa transmit attempt per
-  cycle, then deinitializes the UART and restores the LR22 control-safe state;
-- uses a hardware-timer IRQ to wake from ROSC-clocked `WFI` sleep every five
-  seconds; and
-- includes USB/GP0 phase diagnostics for bench observation only.
+- uses an explicit 15-minute combined sensing cadence, plus an intended
+  06:00-20:00 wall-clock active window;
+- treats wall clock as invalid after boot and follows the relative schedule
+  until a future gateway time-sync provider is added;
+- performs one bounded SHT40 read and one bounded ADS1115 read for each
+  configured channel in every scheduled combined cycle;
+- emits compact LoRa state only for fresh successful soil reads, attaching
+  SHT40 fields only when acquired successfully in that same cycle; then
+  deinitializes the UART and restores the LR22 control-safe state; and
+- opens one seven-second bounded `request_reading` receive window on each
+  normal wake after scheduled work (including when no state telemetry is due), preserving the
+  existing channel-targeted parser, result correlation, and session dedupe;
+  physical-device targets are rejected rather than treated as all-channel
+  requests; and
+- retains USB/GP0 phase diagnostics for bench observation only.
+
+The receive window is intentionally shorter than a sensing interval and is not
+an air-wake guarantee. It accommodates an individual gateway retry opportunity
+(the gateway retries at most three times, six seconds apart), but a command
+sent while the node sleeps can still miss all three attempts. No physical RF
+receive behavior has been validated.
 
 RP2040 RTC alarms do not have a dormant-wake route, so an RTC alarm cannot
-wake `xosc_dormant()`. This proof switches `clk_ref` and `clk_sys` to ROSC,
-stops XOSC, and waits for an internal hardware-timer IRQ. It restores XOSC,
-the PLL-backed system clock, and USB clock before reporting the wake. ROSC
-timing is not accurate enough to establish the production wake schedule.
+wake `xosc_dormant()`. This runtime switches `clk_ref` and `clk_sys` to ROSC
+and waits for an internal hardware-timer IRQ. XOSC remains enabled during that
+wait so the RP2040 watchdog provides an independent reset escape if the timer
+IRQ does not arrive. It restores the PLL-backed system clock and USB clock
+after waking. This is not an XOSC-dormant or battery-life claim; ROSC timing is
+not accurate enough to establish the production wake schedule. Clock,
+scheduler, or alarm-setup failures also restore the LR22 control-safe state and
+request a deterministic watchdog reset rather than spinning awake indefinitely.
 
 The isolated target physically completed 20 consecutive wake/read/format/
-transmit/sleep cycles, with the Pi raw listener receiving 20 valid compact
-frames. This validates the feasibility path only; it does not validate a
-production schedule, power budget, final hardware, or USB CDC reliability.
+transmit/sleep cycles before the scheduler skeleton was added, with the Pi raw
+listener receiving 20 valid compact frames. That validates the earlier
+feasibility path only; it does not validate this scheduler, power budget, final
+hardware, or USB CDC reliability.
 
 GP0 / physical pin 1 is a diagnostic phase marker. It emits 100 ms pulses with
 a 300 ms gap after each group: one pulse for a timer wake, two for a successful
 ADS1115 read, three for LR22/UART initialization, four immediately before the
 frame is passed to the transmit function, five when that function returns
-success, and six after the peripherals are inactive and the cycle is complete.
+success, and six after the radio UART/control state is inactive and the cycle
+is complete.
 The initial boot cycle begins at phase two; use the first one-pulse group as the
 start of a complete post-wake diagnostic cycle. Observe GP0 against GND with a
 logic analyzer. GP8 / physical pin 11 independently shows the 9600-baud UART
@@ -100,19 +127,28 @@ cmake -S firmware/pico_w_sensor_node -B firmware/pico_w_sensor_node/build-low-po
 cmake --build firmware/pico_w_sensor_node/build-low-power --target pico_w_sensor_node_lora_low_power
 ```
 
-Expected USB CDC lines repeat as follows:
+The scheduler policy and compact LoRa protocol have Pico-SDK-free host tests:
 
-```text
-[low-power] cycle=1 state=awake lr22=controls-safe
-[low-power] cycle=1 state=rosc-sleep-armed wake_in=5s
-[low-power] cycle=1 phase=1 wake=timer-success
-[low-power] cycle=1 state=woke timer_alarm=true
+```bash
+cmake -S firmware/pico_w_sensor_node/tests -B firmware/pico_w_sensor_node/build-host-tests
+cmake --build firmware/pico_w_sensor_node/build-host-tests
+ctest --test-dir firmware/pico_w_sensor_node/build-host-tests --output-on-failure
 ```
 
-The three-second USB re-enumeration delay, USB logging, GP0 phase pulses, and
-the five-second interval are feasibility diagnostics. They must not be copied
-into the production scheduler or used for battery-life claims. USB CDC may
-drop across repeated clock transitions and is not a production requirement.
+Typical USB CDC lines at cold boot show the degraded relative schedule:
+
+```text
+[low-power] cycle=1 state=awake wall_clock_valid=false active=true combined_due=true
+[low-power] cycle=1 environment attempted=true success=true
+[low-power] cycle=1 soil channel=0 attempted=true success=true
+[low-power] cycle=1 command-window=open duration_ms=7000
+[low-power] cycle=1 state=rosc-sleep-armed wake_in_ms=900000
+```
+
+The three-second USB startup delay, USB logging, and GP0 phase pulses are
+feasibility diagnostics. They are not production requirements and must not be
+used for battery-life claims. USB CDC may drop across repeated clock
+transitions.
 
 The normal `pico_w_sensor_node` target remains the known-good Wi-Fi/MQTT path.
 
@@ -195,7 +231,8 @@ The LoRa path preserves the normal firmware rhythm:
 
 Failure behavior:
 
-- local LoRa sends use a bounded AUX wait
+- all local LoRa sends use bounded AUX and UART-write waits; the LoRa-primary
+  runtime also uses a bounded UART-drain wait before radio teardown
 - after one local LoRa send failure, the node skips remaining LoRa sends for
   that wake cycle
 - MQTT publishing and sleep continue
