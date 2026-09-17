@@ -2,9 +2,6 @@
   <div>
     <h1 class="page-title">Garden Dashboard</h1>
     <div class="muted">Zone overview for readings, watering state, and open issues.</div>
-    <% if @unassigned_node_count.to_i > 0 %>
-      <div class="muted"><%= @unassigned_node_count %> unassigned node<%= "s" unless @unassigned_node_count == 1 %> discovered.</div>
-    <% end %>
   </div>
   <div class="dashboard-actions">
     <%= link_to "Health", health_path, class: "btn light" %>
@@ -66,17 +63,6 @@
       </div>
 
       <div class="zone-dashboard-grid">
-        <div>
-          <div class="zone-metric-label">Crop</div>
-          <div><strong><%= zone.crop_profile.crop_name %></strong></div>
-          <div class="muted">dry threshold <%= zone.crop_profile.dry_threshold %>%</div>
-        </div>
-
-        <div>
-          <div class="zone-metric-label">Water Zone</div>
-          <div><strong><%= zone.irrigation_line || "—" %></strong></div>
-        </div>
-
         <div>
           <div class="zone-metric-label">Nodes</div>
           <% if zone.nodes.any? %>
@@ -141,7 +127,6 @@
           <details>
             <summary>⋯</summary>
             <div class="menu">
-              <%= button_to "Stop", stop_watering_zone_path(zone), method: :post, class: "menu-btn" %>
               <%= button_to(zone.active ? "Disable" : "Enable", toggle_active_zone_path(zone), method: :post, class: "menu-btn") %>
             </div>
           </details>

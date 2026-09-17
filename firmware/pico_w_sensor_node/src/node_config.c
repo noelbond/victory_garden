@@ -161,6 +161,17 @@ static bool apply_channels_json(node_config_t *config, const char *payload, bool
         }
     }
 
+    // Do not silently truncate a fifth channel (or accept any other trailing
+    // array content). Provisioning maps the four ADC positions by array order,
+    // so exactly four objects are required.
+    while (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t') {
+        ++cursor;
+    }
+    if (*cursor != ']') {
+        set_error(error, error_size, "channels array must contain exactly four entries");
+        return false;
+    }
+
     return true;
 }
 
@@ -324,12 +335,20 @@ bool node_config_apply_provision_json(node_config_t *config, const char *payload
         updated.utc_offset_hours = (int8_t)utc_offset_hours;
     }
 
-    if (has_channels_json(payload)) {
-        if (!apply_channels_json(&updated, payload, true, error, error_size)) {
+    if (!has_channels_json(payload)) {
+        set_error(error, error_size, "provisioning channels are required");
+        return false;
+    }
+    if (!apply_channels_json(&updated, payload, true, error, error_size)) {
+        return false;
+    }
+    for (uint8_t channel = 0; channel < VG_ADS1115_CHANNEL_COUNT; ++channel) {
+        char expected_node_id[VG_MAX_NODE_ID_LEN] = {0};
+        snprintf(expected_node_id, sizeof(expected_node_id), "%s-ch%u", updated.node_id, (unsigned)channel);
+        if (strcmp(updated.channel_node_id[channel], expected_node_id) != 0) {
+            set_error(error, error_size, "channel node_id does not match package identity");
             return false;
         }
-    } else {
-        generate_channel_node_ids(&updated);
     }
 
     *config = updated;

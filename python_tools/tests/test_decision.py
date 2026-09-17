@@ -34,6 +34,7 @@ class TestBasicDecisions:
         assert cmd.zone_id == "zone3"
         assert cmd.runtime_seconds == 45
         assert cmd.reason == "below_dry_threshold"
+        assert cmd.issued_at == now
         assert new_state.runtime_seconds_today == 45
         assert new_state.last_watered_at == now
         assert new_state.last_moisture_percent == 25.0

@@ -3,8 +3,8 @@ require "test_helper"
 class WateringEventsTest < ActionDispatch::IntegrationTest
   setup do
     crop = create(:crop_profile, crop_name: "Tomato")
-    @zone1 = create(:zone, zone_id: "zone1", name: "Greenhouse Zone 1", crop_profile: crop)
-    @zone2 = create(:zone, zone_id: "zone2", name: "Greenhouse Zone 2", crop_profile: crop)
+    @zone1 = create(:zone, zone_id: "zone1", name: "Greenhouse Zone 1")
+    @zone2 = create(:zone, zone_id: "zone2", name: "Greenhouse Zone 2")
   end
 
   test "watering events page renders presets filters and export controls" do

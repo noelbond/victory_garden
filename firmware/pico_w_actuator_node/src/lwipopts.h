@@ -44,9 +44,9 @@
 #define LWIP_CHKSUM_ALGORITHM           3
 #define LWIP_TIMEVAL_PRIVATE            0
 // Diagnosed live on the combined node (also applies here: this board's own
-// subscribe_assigned_zone_topics had the identical redundant-resubscribe
-// bug, up to VG_MAX_IRRIGATION_LINES=12 times, fixed separately in
-// mqtt_node.c): mqtt_publish()/mqtt_subscribe() grab a slot from
+// The greenhouse command subscription is deliberately one wildcard topic,
+// rather than one subscription per topology assignment: mqtt_publish()/
+// mqtt_subscribe() grab a slot from
 // client->req_list[MQTT_REQ_MAX_IN_FLIGHT] *before* touching the output
 // ring buffer, and fail immediately with ERR_MEM if none is free -- the
 // ring buffer's byte capacity was never actually the constraint.

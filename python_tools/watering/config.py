@@ -17,7 +17,6 @@ class CropsConfig(BaseModel):
 class ZoneConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     zone_id: str = Field(min_length=1, examples=["zone1"])
-    crop_id: str = Field(min_length=1, examples=["tomato"])
     node_id: str = Field(min_length=1, examples=["sensor-gh1-zone1"])
 
 
@@ -35,11 +34,9 @@ class AllowedHoursConfig(BaseModel):
 class SystemZoneConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     zone_id: str = Field(min_length=1, examples=["zone1"])
-    crop_id: str = Field(min_length=1, examples=["tomato"])
     node_ids: List[str] = Field(default_factory=list)
     active: bool = True
     allowed_hours: AllowedHoursConfig | None = None
-    irrigation_line: int | None = Field(default=None, ge=1)
     watering_mode: str | None = None
 
 
@@ -58,6 +55,7 @@ class SystemConfigPayload(BaseModel):
     crops: List[CropProfile]
     zones: List[SystemZoneConfig]
     nodes: List[SystemNodeConfig] = Field(default_factory=list)
+    irrigation_line_count: int | None = Field(default=None, ge=0)
     watering_mode: str = "zone_average"
 
 
@@ -85,26 +83,11 @@ def load_zones(path: Path) -> Dict[str, ZoneConfig]:
     return {zone.zone_id: zone for zone in config.zones}
 
 
-def validate_zone_crop_refs(
-    crops: Dict[str, CropProfile],
-    zones: Dict[str, ZoneConfig],
-) -> None:
-    missing = sorted({zone.crop_id for zone in zones.values()} - set(crops.keys()))
-    if missing:
-        missing_str = ", ".join(missing)
-        raise ValueError(f"zones.yaml references unknown crop_id(s): {missing_str}")
-
-
-def load_system_config_payload(payload: dict) -> tuple[Dict[str, CropProfile], Dict[str, SystemZoneConfig], Dict[str, SystemNodeConfig]]:
+def load_system_config_payload(payload: dict) -> tuple[Dict[str, CropProfile], Dict[str, SystemZoneConfig], Dict[str, SystemNodeConfig], int | None]:
     config = SystemConfigPayload.model_validate(payload)
     crops = {crop.crop_id: crop for crop in config.crops}
     zones = {zone.zone_id: zone for zone in config.zones}
     nodes = {node.node_id: node for node in config.nodes if node.active}
-
-    missing = sorted({zone.crop_id for zone in zones.values()} - set(crops.keys()))
-    if missing:
-        missing_str = ", ".join(missing)
-        raise ValueError(f"system config references unknown crop_id(s): {missing_str}")
 
     missing_node_crops = sorted({node.crop_id for node in nodes.values()} - set(crops.keys()))
     if missing_node_crops:
@@ -116,4 +99,4 @@ def load_system_config_payload(payload: dict) -> tuple[Dict[str, CropProfile], D
         missing_str = ", ".join(missing_node_zones)
         raise ValueError(f"system config nodes reference unknown zone_id(s): {missing_str}")
 
-    return crops, zones, nodes
+    return crops, zones, nodes, config.irrigation_line_count

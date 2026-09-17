@@ -3,14 +3,16 @@ require "test_helper"
 class NodeConfigAckIngestorTest < ActiveSupport::TestCase
   setup do
     @zone = create(:zone, zone_id: "zone1")
+    @crop = create(:crop_profile)
     @node = Node.create!(
       node_id: "pico-zone1",
       zone: @zone,
+      crop_profile: @crop,
       last_seen_at: Time.current,
       desired_config: {
         "assigned" => true,
         "zone_id" => "zone1",
-        "crop_id" => @zone.crop_profile.crop_id
+        "crop_id" => @crop.crop_id
       },
       config_status: "pending"
     )

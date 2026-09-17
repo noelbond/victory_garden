@@ -34,8 +34,8 @@
         <%= f.password_field :mqtt_password, placeholder: "Broker password" %>
       </div>
       <div class="field">
-        <%= f.label :irrigation_line_count, "Installed Water Zones" %>
-        <%= f.number_field :irrigation_line_count, min: 1, placeholder: "1" %>
+        <%= f.label :irrigation_line_count, "Installed Actuator Outputs" %>
+        <%= f.number_field :irrigation_line_count, min: 0, placeholder: "0" %>
       </div>
       <div class="field">
         <%= f.label :readings_topic, "Readings Topic" %>
@@ -70,8 +70,8 @@
       Save stores these connection settings in the app database. It does not push anything to MQTT devices on its own.
     </p>
     <p class="muted" style="margin-top: 12px;">
-      Installed water zones define how many valve-controlled outputs exist on the watering system.
-      Each active zone is assigned to one matching water zone number.
+      Installed actuator outputs define the physical capacity of the one greenhouse actuator controller.
+      Nodes keep their own logical irrigation-line assignments; assignments above this capacity stay saved but cannot water until supported.
     </p>
   <% end %>
 

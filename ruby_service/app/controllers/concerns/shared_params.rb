@@ -34,9 +34,7 @@ module SharedParams
   def permitted_zone_params(source = params)
     source.require(:zone).permit(
       :name,
-      :crop_profile_id,
       :active,
-      :irrigation_line,
       :publish_interval_ms
     )
   end

@@ -47,8 +47,6 @@ class SetupApiController < ApplicationController
   def upsert_zone
     zone = Zone.order(:created_at, :id).first || Zone.new(active: true)
     zone.assign_attributes(zone_params)
-    zone.crop_profile ||= CropProfile.order(:crop_name).first
-
     if zone.save
       render json: {
         status: setup_status_payload,
@@ -57,6 +55,22 @@ class SetupApiController < ApplicationController
     else
       render json: { errors: zone.errors.full_messages }, status: :unprocessable_entity
     end
+  end
+
+  def provision_zone
+    zone = params[:zone_id].present? ? Zone.find_by(id: params[:zone_id]) || Zone.find_by(zone_id: params[:zone_id]) : Zone.order(:created_at, :id).first
+    if zone.blank?
+      render json: { errors: ["Create a zone before provisioning a sensor package."] }, status: :unprocessable_entity
+      return
+    end
+
+    sensor_device_id = params[:sensor_device_id].to_s
+    provisioned_zone = SensorZoneProvisioner.call(zone: zone, sensor_device_id: sensor_device_id)
+    issued_node_ids = SensorZoneProvisioner::CHANNELS.map { |channel| "#{sensor_device_id}-ch#{channel}" }
+    nodes = provisioned_zone.nodes.where(node_id: issued_node_ids).order(:node_id)
+    render json: { zone: zone_payload(provisioned_zone), nodes: nodes.map { |node| node_payload(node) } }, status: :created
+  rescue SensorZoneProvisioner::ProvisioningError => error
+    render json: { errors: [error.message] }, status: :unprocessable_entity
   end
 
   def node_status
@@ -84,7 +98,7 @@ class SetupApiController < ApplicationController
       return
     end
 
-    node.update!(zone: zone)
+    SensorPackageZoneAssignment.call(node: node, zone: zone)
 
     render json: {
       assigned: true,
@@ -92,6 +106,8 @@ class SetupApiController < ApplicationController
       first_zone: zone_payload(zone),
       status: setup_status_payload
     }
+  rescue SensorPackageZoneAssignment::AssignmentError => e
+    render json: { errors: [e.message] }, status: :unprocessable_entity
   end
 
   def update_node
@@ -182,33 +198,46 @@ class SetupApiController < ApplicationController
 
   def start_watering
     node = setup_node_from_params
-    zone = node&.zone || assignable_zone
+    zone = requested_watering_zone
 
     if zone.blank?
       render json: { errors: ["Create a zone before testing watering."] }, status: :unprocessable_entity
       return
     end
 
-    if node.present? && !node.watering_configured?
+    if node.blank?
+      render json: { errors: ["Choose a configured plant node before testing watering."] }, status: :unprocessable_entity
+      return
+    end
+
+    if node.zone != zone
+      render json: { errors: ["Choose a plant node assigned to the selected zone before testing watering."] }, status: :unprocessable_entity
+      return
+    end
+
+    unless node.watering_configured?
       render json: { errors: ["Assign a crop profile and pump output before testing watering for #{node.display_name}."] }, status: :unprocessable_entity
       return
     end
 
-    active_scope = zone.watering_events.blocking_start_commands
-    active_scope = active_scope.where(node_id: node.node_id) if node.present?
-    if active_scope.exists?
+    unless node.irrigation_line_supported?
+      render json: { errors: ["Pump output #{node.irrigation_line} is not supported by the installed actuator capacity."] }, status: :unprocessable_entity
+      return
+    end
+
+    if zone.watering_events.blocking_start_commands.where(node_id: node.node_id).exists?
       render json: { errors: ["Watering is already active for this target."] }, status: :unprocessable_entity
       return
     end
 
-    result = node.present? ? WateringCommand.start_node(node) : WateringCommand.start(zone)
+    result = WateringCommand.start_node(node)
 
     render json: {
       queued: true,
       idempotency_key: result.payload[:idempotency_key],
-      issued_at: result.payload[:issued_at].utc.iso8601,
+      issued_at: result.event.issued_at.utc.iso8601,
       zone: zone_payload(zone),
-      node: node.present? ? node_payload(node) : nil
+      node: node_payload(node)
     }
   end
 
@@ -308,9 +337,7 @@ class SetupApiController < ApplicationController
       id: zone.id,
       zone_id: zone.zone_id,
       name: zone.name,
-      crop_profile_id: zone.crop_profile_id,
-      crop_profile_name: zone.crop_profile&.crop_name,
-      irrigation_line: zone.irrigation_line,
+      sensor_device_id: zone.sensor_device_id,
       publish_interval_ms: zone.publish_interval_ms,
       active: zone.active
     }
@@ -334,9 +361,8 @@ class SetupApiController < ApplicationController
       calibration_configured: node.calibration_configured?,
       crop_profile_id: node.crop_profile_id,
       crop_profile_name: node.crop_profile&.crop_name,
-      effective_crop_profile_id: node.effective_crop_profile&.id,
-      effective_crop_profile_name: node.effective_crop_profile&.crop_name,
       irrigation_line: node.irrigation_line,
+      irrigation_line_supported: node.irrigation_line_supported?,
       watering_configured: node.watering_configured?
     }
   end
@@ -416,6 +442,12 @@ class SetupApiController < ApplicationController
     else
       Zone.order(:created_at, :id).first
     end
+  end
+
+  def requested_watering_zone
+    return Zone.order(:created_at, :id).first if params[:zone_id].blank?
+
+    Zone.find_by(id: params[:zone_id]) || Zone.find_by(zone_id: params[:zone_id])
   end
 
   def setup_node_from_params

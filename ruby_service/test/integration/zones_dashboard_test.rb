@@ -3,10 +3,10 @@ require "test_helper"
 class ZonesDashboardTest < ActionDispatch::IntegrationTest
   test "root dashboard shows zone overview metrics and cards" do
     ConnectionSetting.create!(mqtt_host: "broker.local", mqtt_port: 1883, mqtt_username: "victory_garden", mqtt_password: "secret123", irrigation_line_count: 2)
-    zone = create(:zone, name: "Greenhouse Zone 1", active: true, irrigation_line: 1)
-    Node.create!(
-      node_id: "pico-w-zone1",
-      zone: zone,
+    zone = create(:zone, name: "Greenhouse Zone 1", active: true)
+    SensorZoneProvisioner.call(zone: zone, sensor_device_id: "sensor-#{zone.zone_id}")
+    node = zone.nodes.find_by!(node_id: "sensor-#{zone.zone_id}-ch0")
+    node.update!(
       reported_zone_id: zone.zone_id,
       last_seen_at: 2.minutes.ago,
       provisioned: true,
@@ -16,7 +16,7 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
     )
     SensorReading.create!(
       zone: zone,
-      node_id: "pico-w-zone1",
+      node_id: node.node_id,
       recorded_at: 2.minutes.ago,
       moisture_raw: 615,
       moisture_percent: 85.0,
@@ -60,17 +60,17 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "85.0%"
     assert_includes response.body, "RUNNING"
     assert_includes response.body, "1 fault"
+    refute_includes response.body, stop_watering_zone_path(zone)
   end
 
   test "root dashboard shows zone aggregate moisture and sensor coverage" do
     ConnectionSetting.create!(mqtt_host: "broker.local", mqtt_port: 1883, mqtt_username: "victory_garden", mqtt_password: "secret123", irrigation_line_count: 2)
-    crop = create(:crop_profile, dry_threshold: 35.0)
-    zone = create(:zone, name: "Aggregated Zone", crop_profile: crop, irrigation_line: 1)
+    zone = create(:zone, name: "Aggregated Zone")
 
-    %w[sensor-a sensor-b sensor-c sensor-d].each do |node_id|
-      Node.create!(
-        node_id: node_id,
-        zone: zone,
+    SensorZoneProvisioner.call(zone: zone, sensor_device_id: "sensor-#{zone.zone_id}")
+    nodes = zone.nodes.order(:node_id).to_a
+    nodes.each do |node|
+      node.update!(
         reported_zone_id: zone.zone_id,
         last_seen_at: 2.minutes.ago,
         provisioned: true
@@ -79,7 +79,7 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
 
     SensorReading.create!(
       zone: zone,
-      node_id: "sensor-a",
+      node_id: nodes[0].node_id,
       recorded_at: 2.minutes.ago,
       moisture_raw: 500,
       moisture_percent: 20.0,
@@ -87,7 +87,7 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
     )
     SensorReading.create!(
       zone: zone,
-      node_id: "sensor-b",
+      node_id: nodes[1].node_id,
       recorded_at: 1.minute.ago,
       moisture_raw: 540,
       moisture_percent: 40.0,
@@ -95,7 +95,7 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
     )
     SensorReading.create!(
       zone: zone,
-      node_id: "sensor-c",
+      node_id: nodes[2].node_id,
       recorded_at: 20.minutes.ago,
       moisture_raw: 900,
       moisture_percent: 90.0,

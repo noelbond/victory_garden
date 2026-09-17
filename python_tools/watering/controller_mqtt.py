@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from typing import Any
 
@@ -16,7 +16,6 @@ from watering.controller_runtime import (
     store_latest_reading,
     update_controller_health,
 )
-from watering.profiles import CropProfile
 from watering.schemas import SensorReading
 from watering.structured_logging import log_event
 
@@ -47,16 +46,6 @@ def effective_zone_configs(
         zones = {zone_id: zone for zone_id, zone in zones.items() if zone_id in zone_filter}
 
     return zones
-
-
-def profile_for_zone(
-    zone: ZoneConfig | SystemZoneConfig,
-    fallback_crops: dict[str, CropProfile],
-) -> CropProfile:
-    live_crops, _live_zones, _live_nodes = live_config_snapshot()
-    if isinstance(zone, SystemZoneConfig) and zone.crop_id in live_crops:
-        return live_crops[zone.crop_id]
-    return fallback_crops[zone.crop_id]
 
 
 def set_subscriber_context(
@@ -152,7 +141,7 @@ def update_system_config(topic: str, payload_bytes: bytes) -> bool:
             )
             return False
 
-        crops, zones, nodes = load_system_config_payload(payload)
+        crops, zones, nodes, installed_irrigation_line_count = load_system_config_payload(payload)
     except Exception as exc:
         log_event(
             "controller",
@@ -170,6 +159,7 @@ def update_system_config(topic: str, payload_bytes: bytes) -> bool:
         CONTROLLER_RUNTIME.live_zones.update(zones)
         CONTROLLER_RUNTIME.live_nodes.clear()
         CONTROLLER_RUNTIME.live_nodes.update(nodes)
+        CONTROLLER_RUNTIME.installed_irrigation_line_count = installed_irrigation_line_count
 
     added_topics, removed_topics = sync_zone_state_subscriptions()
 
@@ -179,6 +169,7 @@ def update_system_config(topic: str, payload_bytes: bytes) -> bool:
         crop_count=len(crops),
         zone_count=len(zones),
         node_count=len(nodes),
+        installed_irrigation_line_count=installed_irrigation_line_count,
         subscribed_topics=added_topics,
         unsubscribed_topics=removed_topics,
         topic=topic,
@@ -266,14 +257,19 @@ def publish_actuator_command(
     runtime_seconds: int,
     reason: str,
     idempotency_key: str,
+    issued_at: datetime,
     node_id: str | None = None,
 ) -> None:
+    if issued_at.tzinfo is None or issued_at.utcoffset() is None:
+        raise ValueError("issued_at must be timezone-aware")
+    canonical_issued_at = issued_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload = {
         "command": "start_watering",
         "zone_id": zone_id,
         "node_id": node_id,
         "runtime_seconds": runtime_seconds,
         "reason": reason,
+        "issued_at": canonical_issued_at,
         "idempotency_key": idempotency_key,
     }
     client.publish(

@@ -4,13 +4,13 @@ Rails is the UI, configuration authority, persistence layer, and manual-operatio
 
 ## Responsibilities
 
-- manage crop profiles and zones
-- register provisioned nodes discovered from MQTT state payloads
-- allow assigning many nodes to a zone through the UI
+- manage crop profiles, Zone grouping, and Node configuration
+- provision a Zone/package with four backend-created Node identities before telemetry
+- reconcile known Node telemetry without letting reported device metadata rewrite topology
 - consume node state, including optional telemetry fields when present
 - record watering events, actuator status, and faults
 - publish manual actuator commands plus node configuration
-- publish retained system crop/zone config for the Python controller
+- publish retained Node crop and Zone schedule config for the Python controller
 - ingest Python controller events so automatic watering is persisted in the database
 - schedule delayed reread requests 5 minutes after completed watering
 
@@ -79,7 +79,9 @@ Node detail pages also expose `View Node Readings`, which is the node-scoped ver
 - `Fault`
 - `ConnectionSetting`
 
-Crop profiles are user-managed from the Rails UI. Operators can create custom Crop Profiles during the setup checklist, while creating/editing zones, or from an assigned node's detail page.
+Crop profiles are user-managed from the Rails UI and assigned to individual
+Nodes. A Zone may contain Nodes with different crops; crop-less Nodes are valid
+during setup but cannot use crop-derived watering.
 
 ## MQTT Defaults
 
@@ -96,7 +98,7 @@ Crop profiles are user-managed from the Rails UI. Operators can create custom Cr
 
 ## Source Of Truth
 
-- PostgreSQL is authoritative for crop profiles, zones, node assignments, watering history, faults, and node config sync status.
+- PostgreSQL is authoritative for crop profiles, Zones, Node assignments, logical irrigation lines, watering history, faults, and node config sync status.
 - MQTT retained node state is the live transport layer for sleeping devices and the Python controller's working input.
 - `nodes.zone_id` is authoritative for routing. `reported_zone_id` from node payloads is stored for visibility only.
 - Actuation is external to this Rails app. Rails publishes zone-topic actuator commands with `node_id` for plant-level watering and consumes actuator status messages that include both `zone_id` and `node_id` when available.
@@ -167,7 +169,8 @@ Node config ack:
 When an actuator status of `COMPLETED` arrives:
 
 1. Rails updates the watering event
-2. Rails checks whether the zone already hit `daily_max_runtime_sec`
+2. Rails resolves the reported Node and its CropProfile, then checks that
+   Node's completed runtime against that crop's `daily_max_runtime_sec`
 3. If not, Rails schedules a `RequestReadingJob` for 5 minutes later
 4. That job publishes a retained `request_reading` command to `greenhouse/zones/{zone_id}/command`
 
@@ -190,11 +193,15 @@ Published crop config includes:
 - `climate_preference`
 - `time_to_harvest_days`
 
-Assigning or unassigning a node also publishes a node-specific config payload to `greenhouse/nodes/{node_id}/config`. Rails tracks the desired config, the last Config Acknowledged payload, and the config sync status on each node record.
+Changing a Node's crop, calibration, or logical irrigation line publishes its
+node-specific config payload to `greenhouse/nodes/{node_id}/config`. Production
+Nodes belong to a Zone and are not normally unassigned; legacy reconciliation is
+not a normal setup workflow. Rails tracks the desired config, the last Config
+Acknowledged payload, and the config sync status on each Node record.
 
-Changing a zone's assigned Crop Profile or editing a Crop Profile that is already assigned also republishes node config for the affected assigned nodes.
+Changing a Node's CropProfile or editing a CropProfile republishes node config for its directly associated Nodes.
 
-In `Settings`, `Save` writes connection settings to PostgreSQL. `Publish Config` broadcasts the current saved crop/zone topology over MQTT so the Python controller and nodes can pick up the latest policy immediately.
+In `Settings`, `Save` writes connection settings to PostgreSQL. `Publish Config` broadcasts the current saved Node crop, Zone schedule, and supported actuator topology so the Python controller and nodes can pick up the latest policy immediately.
 
 ## MQTT Consumer
 
@@ -210,12 +217,19 @@ When broker auth is enabled, Rails uses `mqtt_username` and `mqtt_password` from
 
 Empty retained clears are ignored cleanly.
 
-If a node publishes state before a matching zone exists, Rails still registers the node by `node_id` and exposes it on the Nodes UI for assignment.
-
-Once a node is assigned, Rails routes future readings by the assigned `node_id` mapping first. The node's reported `zone_id` is still stored for visibility, but it no longer overrides the assignment.
-
-Unassigned nodes are registered and updated, but they do not persist readings.
+Production provisioning creates a Zone and its four Nodes before telemetry.
+Known Nodes reconcile state by `node_id`; their database Zone, crop, logical
+line, and custom name remain authoritative. Unknown telemetry is logged and
+ignored rather than creating an unassigned production Node.
 Automatic watering decisions are made by the Python controller, not by Rails.
+
+The setup API and browser onboarding use `SensorZoneProvisioner` as the sole
+production topology authority. A sensor package identity produces exactly
+`{package}-ch0` through `{package}-ch3`; the Pico receives those backend-issued
+IDs over USB and must acknowledge the exact applied set. Identity values are not
+sanitized or truncated: firmware-visible Zone and Node IDs are limited to 31
+bytes, package IDs to 27 bytes, and identities use only ASCII letters, digits,
+hyphen, and underscore.
 
 Operator pages:
 

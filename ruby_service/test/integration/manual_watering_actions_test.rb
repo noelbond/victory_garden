@@ -8,7 +8,7 @@ class ManualWateringActionsTest < ActionDispatch::IntegrationTest
     clear_enqueued_jobs
     clear_performed_jobs
     @crop = create(:crop_profile, max_pulse_runtime_sec: 45)
-    @zone = create(:zone, zone_id: "zone1", crop_profile: @crop)
+    @zone = create(:zone, zone_id: "zone1")
   end
 
   teardown do
@@ -16,18 +16,13 @@ class ManualWateringActionsTest < ActionDispatch::IntegrationTest
     clear_performed_jobs
   end
 
-  test "stop watering queues a manual stop event and publish job" do
-    assert_enqueued_jobs 1, only: CommandPublishJob do
+  test "zone-only stop fails closed without publishing or creating an event" do
+    assert_no_enqueued_jobs only: CommandPublishJob do
       post stop_watering_zone_path(@zone)
     end
 
     assert_redirected_to zone_path(@zone)
-    event = WateringEvent.order(:id).last
-    assert_equal @zone, event.zone
-    assert_equal "stop_watering", event.command
-    assert_nil event.runtime_seconds
-    assert_equal "manual_stop", event.reason
-    assert_equal "queued", event.status
-    assert event.idempotency_key.present?
+    assert_equal "Zone-level stopping is unavailable until the explicit stop-all operation is implemented.", flash[:alert]
+    assert_equal 0, WateringEvent.count
   end
 end

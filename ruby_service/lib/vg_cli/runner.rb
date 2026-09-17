@@ -56,19 +56,18 @@ module VgCli
       case args.first
       when "list", nil
         rows = Zone.order(:zone_id).map do |z|
-          [z.zone_id, z.name.presence || "—", z.nodes.count, z.crop_profile&.crop_name || "—"]
+          [z.zone_id, z.name.presence || "—", z.nodes.count]
         end
-        Table.print(%w[zone_id name node_count crop_profile], rows)
+        Table.print(%w[zone_id name node_count], rows)
       when "show"
         zone = find_zone!(args[1])
         return unless zone
 
         puts "zone_id:           #{zone.zone_id}"
         puts "name:              #{zone.name || "—"}"
-        puts "crop_profile:      #{zone.crop_profile&.crop_name || "—"}"
+        puts "crop_profiles:     configured per Node"
         puts "publish_interval:  #{zone.reading_frequency_hours}h"
         puts "allowed_hours:     #{zone.allowed_hours.inspect}"
-        puts "irrigation_line:   #{zone.irrigation_line || "—"}"
         puts "nodes:             #{zone.nodes.count}"
       else
         puts "Usage: vg zones list | vg zones show <zone_id>"

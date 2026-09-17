@@ -12,9 +12,7 @@ from watering.config import (
     SystemNodeConfig,
     SystemZoneConfig,
     ZoneConfig,
-    load_crops,
     load_zones,
-    validate_zone_crop_refs,
 )
 from watering.controller_cli import build_parser
 from watering.controller_mqtt import (
@@ -24,7 +22,6 @@ from watering.controller_mqtt import (
     mqtt_reason_code_value,
     on_message,
     parse_sensor_message,
-    profile_for_zone,
     publish_actuator_command,
     publish_event,
     publish_skip,
@@ -42,6 +39,7 @@ from watering.controller_runtime import (
     controller_health_snapshot,
     have_latest_state_for_any,
     iso_now,
+    installed_irrigation_line_count,
     latest_readings_for_zone,
     live_config_snapshot,
     load_controller_runtime,
@@ -126,14 +124,59 @@ def effective_node_targets(
     if not live_nodes:
         return {}
 
+    installed_capacity = installed_irrigation_line_count()
+    if installed_capacity is None or installed_capacity <= 0:
+        return {}
+
     targets = {
         node_id: node
         for node_id, node in live_nodes.items()
-        if node.active and node.zone_id in zones and node.irrigation_line is not None
+        if node.active and node.zone_id in zones and node.irrigation_line is not None and node.irrigation_line <= installed_capacity
     }
     if zone_filter is not None:
         targets = {node_id: node for node_id, node in targets.items() if node.zone_id in zone_filter}
     return targets
+
+
+def no_eligible_node_target_reason(zone_id: str) -> str:
+    """Return the fail-closed reason for a zone without a watering target."""
+    _live_crops, _live_zones, live_nodes = live_config_snapshot()
+    configured_nodes = [
+        node for node in live_nodes.values()
+        if node.active and node.zone_id == zone_id
+    ]
+    installed_capacity = installed_irrigation_line_count()
+    if installed_capacity is None or installed_capacity <= 0:
+        return "installed_irrigation_capacity_unavailable"
+    if any(node.irrigation_line is None for node in configured_nodes):
+        return "missing_irrigation_line"
+    if any(node.irrigation_line > installed_capacity for node in configured_nodes if node.irrigation_line is not None):
+        return "unsupported_irrigation_line"
+    return "no_eligible_node_targets"
+
+
+def skip_zones_without_eligible_node_targets(
+    zones: dict[str, ZoneConfig | SystemZoneConfig],
+    runtime_data: dict[str, dict[str, Any]],
+    controller: mqtt.Client,
+    now: datetime,
+) -> None:
+    """Record one fail-closed skip per zone instead of zone-level watering."""
+    target_zone_ids = {
+        target.zone_id for target in effective_node_targets(zones).values()
+    }
+    for zone_id, zone in zones.items():
+        if zone_id in target_zone_ids:
+            continue
+        zone_runtime = runtime_data.setdefault(zone_id, new_zone_runtime())
+        maybe_publish_skip(
+            zone_runtime,
+            zone,
+            {"zone_id": zone_id, "node_target": None},
+            no_eligible_node_target_reason(zone_id),
+            controller,
+            now,
+        )
 
 
 def allowed_now(
@@ -386,6 +429,7 @@ def process_node_tick(
             cmd.runtime_seconds,
             cmd.reason,
             cmd.idempotency_key,
+            cmd.issued_at,
             node_id=target.node_id,
         )
         log_event(
@@ -528,7 +572,7 @@ def process_zone_tick(
             return zone_runtime, states
 
     clear_skip_memory(zone_runtime)
-    cmd, state = decide_watering(reading, profile, state, now=now)
+    cmd, candidate_state = decide_watering(reading, profile, state, now=now)
 
     if cmd is None:
         log_event(
@@ -541,7 +585,7 @@ def process_zone_tick(
             valid_node_ids=snapshot.valid_node_ids,
             action="none",
             runtime_seconds=0,
-            runtime_seconds_today=state.runtime_seconds_today,
+            runtime_seconds_today=candidate_state.runtime_seconds_today,
         )
         publish_event(
             controller,
@@ -550,7 +594,7 @@ def process_zone_tick(
             moisture,
             "none",
             0,
-            state.runtime_seconds_today,
+            candidate_state.runtime_seconds_today,
             valid_sensor_count=snapshot.valid_sensor_count,
             expected_sensor_count=snapshot.expected_sensor_count,
             valid_node_ids=snapshot.valid_node_ids,
@@ -562,50 +606,23 @@ def process_zone_tick(
             last_error=None,
         )
     else:
-        publish_actuator_command(
+        # A zone-average decision has no concrete plant Node and therefore no
+        # authoritative irrigation-line mapping. It may be useful telemetry,
+        # but it must never select or start an actuator output.
+        maybe_publish_skip(
+            zone_runtime,
+            zone,
+            signature,
+            "no_eligible_node_targets",
             controller,
-            zone.zone_id,
-            cmd.runtime_seconds,
-            cmd.reason,
-            cmd.idempotency_key,
-        )
-        log_event(
-            "controller",
-            "decision_evaluated",
-            zone_id=zone.zone_id,
+            now,
             moisture_percent=moisture,
             valid_sensor_count=snapshot.valid_sensor_count,
             expected_sensor_count=snapshot.expected_sensor_count,
             valid_node_ids=snapshot.valid_node_ids,
-            action="water",
-            runtime_seconds=cmd.runtime_seconds,
-            runtime_seconds_today=state.runtime_seconds_today,
-            idempotency_key=cmd.idempotency_key,
-        )
-        publish_event(
-            controller,
-            zone.zone_id,
-            now,
-            moisture,
-            "water",
-            cmd.runtime_seconds,
-            state.runtime_seconds_today,
-            idempotency_key=cmd.idempotency_key,
-            reason=cmd.reason,
-            valid_sensor_count=snapshot.valid_sensor_count,
-            expected_sensor_count=snapshot.expected_sensor_count,
-            valid_node_ids=snapshot.valid_node_ids,
-        )
-        zone_runtime["last_watering_signature"] = signature
-        zone_runtime["last_watering_at"] = now.isoformat().replace("+00:00", "Z")
-        update_controller_health(
-            last_decision_at=iso_now(),
-            last_decision_zone_id=zone.zone_id,
-            last_decision_action="water",
-            last_error=None,
         )
 
-    states[zone.zone_id] = state
+    states[zone.zone_id] = candidate_state if cmd is None else state
     zone_runtime["last_processed_signature"] = signature
     return zone_runtime, states
 
@@ -616,9 +633,7 @@ class ControllerApp:
         self.runtime = runtime or CONTROLLER_RUNTIME
         self.root = Path(__file__).resolve().parents[1]
 
-        self.fallback_crops = load_crops(self.root / "config" / "crops.yaml")
         self.fallback_zones = load_zones(self.root / "config" / "zones.yaml")
-        validate_zone_crop_refs(self.fallback_crops, self.fallback_zones)
 
         self.zone_filter = self._resolve_zone_filter()
         self.state_path = self.root / "state.json"
@@ -845,6 +860,12 @@ class ControllerApp:
                 self.controller_runtime_data.setdefault(f"node:{node_id}", new_zone_runtime())
 
             assert self.publisher_client is not None
+            skip_zones_without_eligible_node_targets(
+                active_zones,
+                self.controller_runtime_data,
+                self.publisher_client,
+                now,
+            )
             if active_nodes:
                 live_crops, _live_zones, _live_nodes = live_config_snapshot()
                 for node_id, target in active_nodes.items():
@@ -861,22 +882,6 @@ class ControllerApp:
                         self.publisher_client,
                     )
                     self.controller_runtime_data[runtime_key] = updated_runtime
-            else:
-                for zone_id, zone in active_zones.items():
-                    profile = profile_for_zone(zone, self.fallback_crops)
-                    zone_runtime = self.controller_runtime_data.setdefault(zone_id, new_zone_runtime())
-
-                    updated_runtime, self.states = process_zone_tick(
-                        zone,
-                        profile,
-                        zone_runtime,
-                        self.states,
-                        now,
-                        self.args,
-                        self.publisher_client,
-                    )
-                    self.controller_runtime_data[zone_id] = updated_runtime
-
             self._persist_runtime_files()
             health = controller_health_snapshot()
             update_controller_health(

@@ -14,12 +14,14 @@ class ConnectionSettingTest < ActiveSupport::TestCase
     clear_performed_jobs
   end
 
-  test "rejects irrigation line count below existing assignments" do
-    create(:zone, irrigation_line: 3)
-    setting = ConnectionSetting.new(irrigation_line_count: 2)
+  test "allows reducing installed capacity below existing logical node assignments" do
+    zone = create(:zone)
+    [1, 2, 4].each do |line|
+      Node.create!(node_id: "sensor-zone1-ch#{line}", zone: zone, irrigation_line: line, last_seen_at: Time.current)
+    end
+    setting = ConnectionSetting.new(irrigation_line_count: 3)
 
-    assert_not setting.valid?
-    assert_includes setting.errors[:irrigation_line_count], "must be at least 3 to keep existing legacy zone assignments"
+    assert setting.valid?
   end
 
   test "enqueues config publish when irrigation line count changes" do
@@ -30,10 +32,9 @@ class ConnectionSettingTest < ActiveSupport::TestCase
     end
   end
 
-  test "rejects irrigation line count of zero" do
+  test "accepts irrigation line count of zero to represent no installed outputs" do
     setting = ConnectionSetting.new(irrigation_line_count: 0)
-    assert_not setting.valid?
-    assert_includes setting.errors[:irrigation_line_count], "must be greater than 0"
+    assert setting.valid?
   end
 
   test "rejects mqtt_port above the valid tcp range" do
@@ -59,9 +60,12 @@ class ConnectionSettingTest < ActiveSupport::TestCase
     assert ConnectionSetting.new(irrigation_line_count: nil).valid?
   end
 
-  test "accepts irrigation line count exactly matching the highest assigned zone line" do
-    create(:zone, irrigation_line: 3)
-    setting = ConnectionSetting.new(irrigation_line_count: 3)
+  test "preserves logical assignments across a capacity reduction" do
+    zone = create(:zone)
+    Node.create!(node_id: "sensor-zone1-ch1", zone: zone, irrigation_line: 1, last_seen_at: Time.current)
+    Node.create!(node_id: "sensor-zone1-ch3", zone: zone, irrigation_line: 3, last_seen_at: Time.current)
+    setting = ConnectionSetting.new(irrigation_line_count: 1)
+
     assert setting.valid?
   end
 

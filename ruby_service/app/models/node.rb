@@ -4,12 +4,11 @@ class Node < ApplicationRecord
   EXPECTED_CHANNELS_PER_DEVICE = 4
   COMMUNICATION_TRANSPORTS = %w[wifi lora auto].freeze
 
-  belongs_to :zone, optional: true
+  belongs_to :zone
   belongs_to :crop_profile, optional: true
 
+  before_destroy :prevent_bound_package_node_destruction
   after_commit :enqueue_config_publish_if_zone_changed, on: :update
-  after_commit :cascade_zone_to_device_siblings, on: :update
-  after_commit :sync_default_name_if_zone_changed, on: :update
   after_commit :enqueue_config_publish_if_watering_assignment_changed, on: :update
   after_commit :enqueue_node_config_publish_if_calibration_changed, on: :update
   after_commit :enqueue_config_publish_if_destroyed_assigned, on: :destroy
@@ -20,49 +19,24 @@ class Node < ApplicationRecord
   validates :irrigation_line, uniqueness: true, allow_nil: true
   validates :battery_voltage, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 10 }, allow_nil: true
   validates :wifi_rssi, numericality: { greater_than_or_equal_to: -130, less_than_or_equal_to: 0 }, allow_nil: true
-  validates :last_seen_at, presence: true
+  validates :active, inclusion: { in: [true, false] }
   validates :communication_transport, presence: true, inclusion: { in: COMMUNICATION_TRANSPORTS }
   validates :config_status, inclusion: { in: %w[pending applied error unassigned], allow_nil: true }
   validates :moisture_raw_dry, numericality: { greater_than_or_equal_to: 0, only_integer: true }, allow_nil: true
   validates :moisture_raw_wet, numericality: { greater_than_or_equal_to: 0, only_integer: true }, allow_nil: true
   validate :moisture_calibration_is_valid
-  validate :irrigation_line_is_available
+  validate :firmware_visible_identities_are_valid
+  validate :device_package_zone_is_consistent
+  validate :bound_package_topology_is_not_mutated_directly
 
-  scope :unassigned, -> { where(zone_id: nil) }
-  scope :assigned, -> { where.not(zone_id: nil) }
-
-  def self.sync_default_names_for_zone!(zone)
-    return if zone.blank?
-
-    label_base = zone.name.presence || zone.zone_id
-    grouped = group_by_device(zone.nodes.order(:device_id, :node_id))
-    timestamp = Time.current
-
-    grouped.each_value do |device_nodes|
-      sorted_nodes = device_nodes.sort_by { |node| [node.channel_index || 999, node.node_id] }
-      has_channel_indexes = sorted_nodes.any? { |node| node.channel_index.present? }
-
-      sorted_nodes.each_with_index do |node, index|
-        if node.channel_index.nil? && has_channel_indexes
-          # A node without a parseable channel index sharing a device_id with
-          # real ADS1115 channels is a data anomaly (e.g. a stray/legacy row) -
-          # don't fold it into the numbered sequence with a made-up position.
-          node.update_columns(name: nil, updated_at: timestamp) if node.name.present?
-          next
-        end
-
-        channel_number = (node.channel_index || index) + 1
-        default_name = "#{label_base}_Ch#{channel_number}"
-        next if node.name == default_name
-        next if node.name.present? && !node.auto_generated_name?
-
-        node.update_columns(name: default_name, updated_at: timestamp)
-      end
-    end
-  end
+  scope :assigned, -> { all }
 
   def self.group_by_device(nodes)
     nodes.to_a.group_by { |node| node.device_id.presence || "node:#{node.id}" }
+  end
+
+  def self.canonical_package_node_ids(package_id)
+    EXPECTED_CHANNELS_PER_DEVICE.times.map { |channel| "#{package_id}-ch#{channel}" }
   end
 
   def device_siblings
@@ -76,11 +50,12 @@ class Node < ApplicationRecord
   end
 
   def display_name
-    name.presence || node_id
-  end
+    return name if name.present?
 
-  def auto_generated_name?
-    name.to_s.match?(/(?:_Ch\d+| node \d+)\z/)
+    channel = channel_index
+    return node_id unless zone.present? && channel&.between?(0, EXPECTED_CHANNELS_PER_DEVICE - 1)
+
+    "#{zone.name.presence || zone.zone_id} Node #{channel + 1}"
   end
 
   def channel_index
@@ -94,12 +69,12 @@ class Node < ApplicationRecord
     moisture_raw_dry.present? && moisture_raw_wet.present?
   end
 
-  def effective_crop_profile
-    crop_profile || zone&.crop_profile
+  def watering_configured?
+    active? && zone&.active? && crop_profile.present? && irrigation_line.present?
   end
 
-  def watering_configured?
-    zone.present? && effective_crop_profile.present? && irrigation_line.present?
+  def irrigation_line_supported?(installed_capacity: ConnectionSetting.first&.irrigation_line_count)
+    irrigation_line.present? && installed_capacity.to_i.positive? && irrigation_line <= installed_capacity
   end
 
   def expected_publish_interval_seconds
@@ -133,29 +108,6 @@ class Node < ApplicationRecord
 
   private
 
-  def cascade_zone_to_device_siblings
-    return unless saved_change_to_zone_id?
-    return if device_id.blank?
-
-    updates = {
-      zone_id: zone_id,
-      updated_at: Time.current
-    }
-    updates[:name] = nil if zone_id.blank?
-
-    device_siblings.where.not(id: id).update_all(updates)
-  end
-
-  def sync_default_name_if_zone_changed
-    return unless saved_change_to_zone_id?
-
-    if zone.present?
-      self.class.sync_default_names_for_zone!(zone)
-    elsif name.present?
-      update_columns(name: nil, updated_at: Time.current)
-    end
-  end
-
   def enqueue_config_publish_if_zone_changed
     return unless saved_change_to_zone_id?
 
@@ -176,9 +128,10 @@ class Node < ApplicationRecord
   end
 
   def enqueue_config_publish_if_watering_assignment_changed
-    return unless saved_change_to_crop_profile_id? || saved_change_to_irrigation_line? || saved_change_to_name?
+    return unless saved_change_to_crop_profile_id? || saved_change_to_irrigation_line?
 
     ConfigPublishJob.perform_later
+    PublishNodeConfigJob.perform_later(id) if assigned? && (saved_change_to_crop_profile_id? || saved_change_to_irrigation_line?)
   end
 
   def moisture_calibration_is_valid
@@ -194,13 +147,60 @@ class Node < ApplicationRecord
     errors.add(:base, "moisture calibration dry and wet raw values cannot be the same")
   end
 
-  def irrigation_line_is_available
-    return if irrigation_line.blank?
+  def firmware_visible_identities_are_valid
+    validate_firmware_identity(:node_id) do
+      SensorIdentityContract.validate_node_id!(node_id)
+    end if node_id.present?
 
-    setting = ConnectionSetting.first
-    return if setting.blank? || setting.irrigation_line_count.blank?
-    return if irrigation_line <= setting.irrigation_line_count
-
-    errors.add(:irrigation_line, "must be between 1 and #{setting.irrigation_line_count}")
+    validate_firmware_identity(:device_id) do
+      SensorIdentityContract.validate_package_id!(device_id)
+    end if device_id.present?
   end
+
+  def validate_firmware_identity(attribute)
+    yield
+  rescue SensorIdentityContract::InvalidIdentity => error
+    errors.add(attribute, error.message)
+  end
+
+  def device_package_zone_is_consistent
+    return if device_id.blank? || zone_id.blank?
+
+    sibling_zone_ids = self.class.where(device_id: device_id).where.not(id: id).distinct.pluck(:zone_id)
+    if sibling_zone_ids.any? { |sibling_zone_id| sibling_zone_id != zone_id }
+      errors.add(:zone, "must match every channel in sensor package #{device_id}")
+    end
+
+    other_package_node = self.class.where(zone_id: zone_id).where.not(id: id).where.not(device_id: [nil, device_id]).first
+    if other_package_node
+      errors.add(:zone, "already owns sensor package #{other_package_node.device_id}")
+    end
+
+    zone_binding = bound_sensor_package_id
+    return if zone_binding.blank? || zone_binding == device_id
+
+    errors.add(:zone, "is bound to sensor package #{zone_binding}")
+  end
+
+  def bound_package_topology_is_not_mutated_directly
+    bound_package = bound_sensor_package_id
+    return if bound_package.blank? || Zone.sensor_package_mutation?
+    return unless new_record? || will_save_change_to_zone_id? || will_save_change_to_node_id? || will_save_change_to_device_id?
+
+    errors.add(:base, "canonical Nodes in a bound sensor package can only be changed by package provisioning")
+  end
+
+  def prevent_bound_package_node_destruction
+    return unless bound_sensor_package_id.present?
+    return if Zone.sensor_package_mutation?
+
+    raise ActiveRecord::RecordNotDestroyed.new("cannot delete a Node from a bound sensor package", self)
+  end
+
+  def bound_sensor_package_id
+    return if zone_id.blank?
+
+    Zone.where(id: zone_id).pick(:sensor_device_id)
+  end
+
 end

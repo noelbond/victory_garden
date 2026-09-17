@@ -1,8 +1,6 @@
 <%
   zone_from_return_to = params[:return_to].to_s[%r{\A/zones/(\d+)\z}, 1]
-  zone = Zone.find_by(id: params[:zone_id]) ||
-         Zone.find_by(id: zone_from_return_to) ||
-         Zone.where(crop_profile_id: @crop_profile.id).order(:id).first
+  zone = Zone.find_by(id: params[:zone_id]) || Zone.find_by(id: zone_from_return_to)
 %>
 
 <%= turbo_frame_tag "zone_workspace", class: "card zone-workspace-page", data: { zone_workspace_target: "crop-profile" } do %>

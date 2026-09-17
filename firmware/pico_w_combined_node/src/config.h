@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "hardware/flash.h"
+#include "actuator_persistent_flash_layout.h"
 
 #ifndef __has_include
 #define __has_include(x) 0
@@ -172,7 +172,7 @@
 #define VG_DEFAULT_IRRIGATION_LINE_RELAY_GPIOS {16u, 17u, 18u, 19u}
 #endif
 
-#define VG_FLASH_CONFIG_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
+#define VG_FLASH_CONFIG_OFFSET VG_ACTUATOR_PERSISTENT_CONFIG_OFFSET
 
 typedef struct {
     uint32_t magic;

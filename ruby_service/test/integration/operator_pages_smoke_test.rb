@@ -32,10 +32,10 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
   end
 
   test "root onboarding and health pages render" do
-    zone = create(:zone, name: "Greenhouse Zone 1", irrigation_line: 1)
-    Node.create!(
-      node_id: "pico-w-zone1",
-      zone: zone,
+    zone = create(:zone, name: "Greenhouse Zone 1")
+    SensorZoneProvisioner.call(zone: zone, sensor_device_id: "sensor-#{zone.zone_id}")
+    node = zone.nodes.find_by!(node_id: "sensor-#{zone.zone_id}-ch0")
+    node.update!(
       reported_zone_id: zone.zone_id,
       last_seen_at: 2.minutes.ago,
       provisioned: true,
@@ -47,7 +47,7 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
     )
     SensorReading.create!(
       zone: zone,
-      node_id: "pico-w-zone1",
+      node_id: node.node_id,
       recorded_at: 2.minutes.ago,
       moisture_raw: 615,
       moisture_percent: 85.0,
@@ -251,7 +251,7 @@ class OperatorPagesSmokeTest < ActionDispatch::IntegrationTest
     get nodes_path
 
     assert_response :success
-    assert_includes response.body, "No Nodes Discovered Yet"
+    assert_includes response.body, "No Nodes Provisioned Yet"
     assert_includes response.body, "Open Settings"
     assert_includes response.body, "Open Health"
   end

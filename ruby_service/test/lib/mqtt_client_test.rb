@@ -41,6 +41,24 @@ class MqttClientTest < ActiveSupport::TestCase
     assert_equal "greenhouse/system/actuator/config/current", MqttClient.actuator_config_topic
   end
 
+  test "serializes the firmware-safe identity topology fixture without JSON escaping ambiguity" do
+    fixture = JSON.parse(File.read(Rails.root.join("..", "contracts", "examples", "actuator-config-firmware-safe-identity-v1.json")))
+    calls = []
+    client = Object.new
+    client.define_singleton_method(:publish) { |topic, payload, retain| calls << [topic, payload, retain] }
+
+    stub_singleton_method(MQTT::Client, :connect, ->(_options, &block) { block.call(client) }) do
+      MqttClient.publish_actuator_config(fixture)
+    end
+
+    topic, payload, retain = calls.fetch(0)
+    assert_equal "greenhouse/system/actuator/config/current", topic
+    assert_equal true, retain
+    assert_equal fixture, JSON.parse(payload)
+    assert_equal "Az09-_-ch0", JSON.parse(payload).dig("nodes", 0, "node_id")
+    assert_equal "Zz09-_", JSON.parse(payload).dig("nodes", 0, "zone_id")
+  end
+
   test "request_reading publishes targeted retained node command" do
     calls = []
 

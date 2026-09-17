@@ -6,6 +6,7 @@ class ZoneShowStatusTest < ActionDispatch::IntegrationTest
     Node.create!(
       node_id: "pico-w-zone1",
       zone: zone,
+      irrigation_line: 2,
       reported_zone_id: zone.zone_id,
       last_seen_at: 2.hours.ago,
       provisioned: true,
@@ -70,11 +71,13 @@ class ZoneShowStatusTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Watering Runtime"
     assert_includes response.body, "Moisture Trend"
     assert_includes response.body, "Water Usage"
+    assert_includes response.body, "logical irrigation line: 2"
+    refute_includes response.body, stop_watering_zone_path(zone)
   end
 
   test "zone page shows aggregate moisture and sensor coverage details" do
     crop = create(:crop_profile, dry_threshold: 35.0)
-    zone = create(:zone, name: "Aggregate Detail Zone", crop_profile: crop)
+    zone = create(:zone, name: "Aggregate Detail Zone")
 
     %w[sensor-a sensor-b sensor-c sensor-d].each do |node_id|
       Node.create!(

@@ -15,6 +15,7 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
     node = Node.create!(
       node_id: "pico-zone1",
       zone: zone,
+      crop_profile: create(:crop_profile),
       last_seen_at: Time.current,
       moisture_raw_dry: 552,
       moisture_raw_wet: 943
@@ -35,7 +36,7 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
     assert_equal zone.zone_id, payload.dig(:zone, :zone_id)
     assert_equal zone.allowed_hours, payload.dig(:zone, :allowed_hours)
     assert_equal zone.publish_interval_ms, payload.dig(:zone, :publish_interval_ms)
-    assert_equal zone.crop_profile.crop_id, payload.dig(:crop, :crop_id)
+    assert_equal node.crop_profile.crop_id, payload.dig(:crop, :crop_id)
     assert_equal 552, payload.dig(:sensor, :moisture_raw_dry)
     assert_equal 943, payload.dig(:sensor, :moisture_raw_wet)
     assert_equal "pending", node.config_status
@@ -45,8 +46,8 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
     assert_nil node.config_error
   end
 
-  test "publishes unassigned node config and marks node unassigned" do
-    node = Node.create!(node_id: "pico-unassigned", last_seen_at: Time.current)
+  test "publishes a zone-owned crop-less node config" do
+    node = Node.create!(node_id: "pico-crop-less", zone: create(:zone), last_seen_at: Time.current)
     published = []
 
     with_publish_node_config_stub(->(node_id:, payload:) { published << [node_id, payload] }) do
@@ -55,11 +56,11 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
 
     node.reload
     _topic_node_id, payload = published.fetch(0)
-    assert_equal false, payload[:assigned]
+    assert_equal true, payload[:assigned]
     assert_equal Time.now.getlocal.utc_offset / 3600, payload[:utc_offset_hours]
-    assert_nil payload[:zone]
+    assert_equal node.zone.zone_id, payload.dig(:zone, :zone_id)
     assert_nil payload[:crop]
-    assert_equal "unassigned", node.config_status
+    assert_equal "pending", node.config_status
   end
 
   test "publishes one device config with every channel calibration" do
@@ -93,7 +94,7 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
   end
 
   test "marks node config status error when publish fails" do
-    node = Node.create!(node_id: "pico-error", last_seen_at: Time.current)
+    node = Node.create!(node_id: "pico-error", zone: create(:zone), last_seen_at: Time.current)
 
     assert_nothing_raised do
       with_publish_node_config_stub(->(**) { raise StandardError, "broker unavailable" }) do
@@ -109,7 +110,7 @@ class PublishNodeConfigJobTest < ActiveSupport::TestCase
     # MQTT::Exception (e.g. MQTT::NotConnectedException, a real failure mode
     # for this call) is not a StandardError subclass -- a bare
     # `rescue StandardError` would silently miss it entirely.
-    node = Node.create!(node_id: "pico-error-mqtt", last_seen_at: Time.current)
+    node = Node.create!(node_id: "pico-error-mqtt", zone: create(:zone), last_seen_at: Time.current)
 
     assert_nothing_raised do
       with_publish_node_config_stub(->(**) { raise MQTT::NotConnectedException }) do

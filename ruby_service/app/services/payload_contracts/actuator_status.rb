@@ -7,6 +7,7 @@ module PayloadContracts
     OPTIONAL_KEYS = %w[
       node_id
       idempotency_key
+      affected_run_idempotency_key
       actual_runtime_seconds
       flow_ml
       fault_code
@@ -41,6 +42,7 @@ module PayloadContracts
       validate_integer!(normalized, "flow_ml", min: 0, max: 10_000_000)
       validate_length!(normalized, "node_id", max: 100)
       validate_length!(normalized, "idempotency_key", max: 300)
+      validate_length!(normalized, "affected_run_idempotency_key", max: 300)
       validate_length!(normalized, "fault_code", max: 50)
       validate_length!(normalized, "fault_detail", max: 300)
       normalized

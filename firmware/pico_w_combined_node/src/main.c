@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "combined_actuator_journal_boot.h"
 #include "hardware/watchdog.h"
 #include "mqtt_node.h"
 #include "pico/cyw43_arch.h"
@@ -27,6 +28,20 @@ static const uint32_t VG_WATCHDOG_TIMEOUT_MS = 8000u;
 // radio. Bound it: after this long of unbroken failure, force a reboot.
 static const uint32_t VG_WIFI_RETRY_REBOOT_MS = 5u * 60u * 1000u;
 #define VG_SKIP_REVIEW_ONCE_MAGIC 0x56475201u
+
+static vg_combined_actuator_journal_boot_t g_durable_journal;
+
+static bool mqtt_node_outputs_active(void *context) {
+    return mqtt_node_any_actuator_output_active((const mqtt_node_t *)context);
+}
+
+static const char *journal_action_name(vg_combined_actuator_journal_maintenance_action_t action) {
+    switch (action) {
+        case VG_COMBINED_ACTUATOR_JOURNAL_MAINTENANCE_INITIALIZE_BLANK: return "initialize_blank";
+        case VG_COMBINED_ACTUATOR_JOURNAL_MAINTENANCE_CLEANUP_INACTIVE: return "cleanup_inactive";
+        default: return "none";
+    }
+}
 
 static void print_json_string(const char *value) {
     putchar('"');
@@ -321,6 +336,10 @@ int main(void) {
     char wifi_error[128] = {0};
 
     node_config_load(&config);
+    // Establish a safe electrical state before a potentially interactive
+    // provisioning wait. A later provisioning change is followed by the same
+    // safe-off sequence before actuator runtime and journal maintenance.
+    actuator_relays_init_safe(&config);
     wait_for_usb_provisioning(&config);
 
     // Arm the watchdog now that the interactive USB provisioning wait is
@@ -332,6 +351,33 @@ int main(void) {
     // so a relay is never left floating while the board is offline —
     // including the time it takes to reconnect after any reboot.
     actuator_relays_init_safe(&config);
+
+    // Initialize all run slots before journal mutation policy consults the
+    // authoritative active-output predicate. This starts no network activity.
+    mqtt_node_init(&node, &config);
+
+    // Read-only scan first; maintenance performs at most one blank-header
+    // initialization or inactive-bank cleanup through the shared manager.
+    vg_combined_actuator_journal_boot_load(&g_durable_journal);
+    vg_combined_actuator_journal_boot_maintain(
+        &g_durable_journal, mqtt_node_outputs_active, &node
+    );
+    mqtt_node_set_durable_start_journal(&node, &g_durable_journal);
+    const vg_combined_actuator_journal_runtime_state_t *journal_runtime =
+        &g_durable_journal.runtime;
+    printf("[journal] maintenance=%s attempted=%d result=%d policy_denied=%d\n",
+           journal_action_name(g_durable_journal.maintenance.action),
+           (int)g_durable_journal.maintenance.mutation_attempted,
+           (int)g_durable_journal.maintenance.storage_result,
+           (int)g_durable_journal.maintenance_policy_denied);
+    printf("[journal] health=%s authority=%s records=%u high_water=%llu cleanup_required=%d\n",
+           vg_combined_actuator_journal_health_name(journal_runtime->health),
+           journal_runtime->authoritative_bank < VG_ACTUATOR_START_JOURNAL_STORAGE_BANK_COUNT
+               ? (journal_runtime->authoritative_bank == 0u ? "A" : "B") : "none",
+           (unsigned)journal_runtime->record_count,
+           (unsigned long long)journal_runtime->sequence_high_water,
+           (int)journal_runtime->cleanup_required);
+    stdio_flush();
 
     printf("[main] config: node=%s zone=%s broker=%s:%d utc_offset_hours=%d\n",
         config.node_id, config.zone_id, config.mqtt_host, config.mqtt_port, (int)config.utc_offset_hours);
@@ -355,7 +401,6 @@ int main(void) {
 
     wifi_connect_with_retry(&config, wifi_error, sizeof(wifi_error));
     time_sync_init();
-    mqtt_node_init(&node, &config);
 
     absolute_time_t wifi_reconnect_allowed_at = make_timeout_time_ms(VG_WIFI_STABILIZE_MS);
     absolute_time_t wifi_ip_wait_started_at = get_absolute_time();

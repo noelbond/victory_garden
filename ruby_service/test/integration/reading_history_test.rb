@@ -3,8 +3,8 @@ require "test_helper"
 class ReadingHistoryTest < ActionDispatch::IntegrationTest
   setup do
     @crop = create(:crop_profile, crop_name: "Tomato")
-    @zone1 = create(:zone, zone_id: "zone1", name: "Greenhouse Zone 1", crop_profile: @crop)
-    @zone2 = create(:zone, zone_id: "zone2", name: "Greenhouse Zone 2", crop_profile: @crop)
+    @zone1 = create(:zone, zone_id: "zone1", name: "Greenhouse Zone 1")
+    @zone2 = create(:zone, zone_id: "zone2", name: "Greenhouse Zone 2")
     @node1 = Node.create!(node_id: "pico-w-zone1-a", zone: @zone1, last_seen_at: Time.current)
     @node2 = Node.create!(node_id: "pico-w-zone1-b", zone: @zone1, last_seen_at: Time.current)
     @node3 = Node.create!(node_id: "pico-w-zone2-a", zone: @zone2, last_seen_at: Time.current)

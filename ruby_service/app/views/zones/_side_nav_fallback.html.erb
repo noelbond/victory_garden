@@ -5,8 +5,6 @@
       "edit-zone"
     when ["zones", "nodes"]
       "nodes"
-    when ["crop_profiles", "show"], ["crop_profiles", "edit"], ["crop_profiles", "new"]
-      "crop-profile"
     else
       nil
     end
@@ -25,7 +23,6 @@
     <%= link_to "Zone History", zone_path(zone, zone_tab: "zone-history"), class: zone_side_nav_class.call(nil) %>
     <%= link_to "Recent Faults", zone_path(zone, zone_tab: "recent-faults"), class: zone_side_nav_class.call(nil) %>
     <%= link_to "Edit Zone", edit_zone_path(zone), class: zone_side_nav_class.call("edit-zone") %>
-    <%= link_to "Crop Profile", crop_profile_path(zone.crop_profile, return_to: zone_path(zone), zone_id: zone.id), class: zone_side_nav_class.call("crop-profile") %>
     <%= link_to "Nodes", zone_nodes_path(zone), class: zone_side_nav_class.call("nodes") %>
   </nav>
 </aside>

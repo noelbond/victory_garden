@@ -127,7 +127,7 @@ Typical values to set before flashing:
 - MQTT host/port/credentials
 - NTP server
 - node ID
-- zone ID
+- Zone/package identity used with the backend-issued channel Node IDs
 - ADS1115 SDA/SCL pins
 - ADS1115 I2C address
 - per-channel node IDs and dry/wet calibration bounds once measured
@@ -174,17 +174,19 @@ Typical values to set before flashing:
 - MQTT host/port/credentials
 - NTP server
 - node ID
-- zone ID
+- legacy provisioning/diagnostic zone ID (not dedicated-controller routing authority)
 - relay GPIO
 - relay polarity
 
 Rails publishes retained shared actuator topology on `greenhouse/system/actuator/config/current`,
-including `irrigation_line_count` and the zone-to-line assignments. If the Pi broker IP changes later,
-the actuator Pico uses the same UDP discovery fallback and persists the new `mqtt_host` before reconnecting.
-
-The retained actuator topology is also what drives exact MQTT command subscriptions on the actuator Pico.
-Today the Pico uses the `zone_id` to `irrigation_line` assignment from that payload directly; the `active`
-field is published for shared topology visibility but is not yet enforced as a device-side command gate.
+including `irrigation_line_count` and supported Node-to-line assignments. The
+dedicated actuator Pico is greenhouse-wide: it subscribes to Zone command
+topics with a wildcard, then validates the command Zone and Node against that
+global topology. A Node's logical line may remain assigned above installed
+capacity, but Rails omits that unsupported mapping from actuator topology and
+watering fails closed until capacity is available. If the Pi broker IP changes
+later, the actuator Pico uses the same UDP discovery fallback and persists the
+new `mqtt_host` before reconnecting.
 
 ## Shared MQTT Contract Fixtures
 

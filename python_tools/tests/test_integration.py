@@ -245,47 +245,23 @@ class TestConfigIntegration:
         finally:
             config_file.unlink()
 
-    def test_load_and_use_zone_config(self):
-        crops_yaml = """crops:
-  - crop_id: tomato
-    crop_name: Tomato
-    dry_threshold: 30.0
-    runtime_seconds: 45
-    max_daily_runtime_seconds: 300
-  - crop_id: basil
-    crop_name: Basil
-    dry_threshold: 35.0
-    runtime_seconds: 30
-    max_daily_runtime_seconds: 240
-"""
+    def test_load_zone_config_without_crop_ownership(self):
         zones_yaml = """zones:
   - zone_id: zone1
-    crop_id: tomato
     node_id: sensor-gh1-zone1
   - zone_id: zone2
-    crop_id: basil
     node_id: sensor-gh1-zone2
 """
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(crops_yaml)
-            crops_file = Path(f.name)
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(zones_yaml)
             zones_file = Path(f.name)
 
         try:
-            crops = load_crops(crops_file)
             zones = load_zones(zones_file)
 
-            assert zones["zone1"].crop_id == "tomato"
-            assert zones["zone2"].crop_id == "basil"
-
-            zone1_crop = crops[zones["zone1"].crop_id]
-            assert zone1_crop.crop_name == "Tomato"
-            assert zone1_crop.runtime_seconds == 45
+            assert zones["zone1"].node_id == "sensor-gh1-zone1"
+            assert zones["zone2"].node_id == "sensor-gh1-zone2"
         finally:
-            crops_file.unlink()
             zones_file.unlink()
 
 

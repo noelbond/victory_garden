@@ -1,6 +1,9 @@
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from watering.controller import (
     CONTROLLER_HEALTH,
@@ -11,6 +14,7 @@ from watering.controller import (
     update_controller_health,
     validate_controller_args,
 )
+from watering.controller_mqtt import publish_actuator_command
 
 
 def test_mqtt_reason_code_value_handles_numeric_value_objects():
@@ -27,6 +31,47 @@ def test_mqtt_reason_code_value_falls_back_to_string_for_non_numeric_values():
             return "Success"
 
     assert mqtt_reason_code_value(FakeReasonCode()) == "Success"
+
+
+def test_automatic_start_publish_uses_command_issued_at_in_canonical_utc_seconds():
+    client = MagicMock()
+    issued_at = datetime(2026, 9, 14, 12, 52, 12, 987654, tzinfo=timezone(timedelta(hours=-4)))
+
+    publish_actuator_command(
+        client,
+        "zone1",
+        45,
+        "below_dry_threshold",
+        "zone1-20260914T165212Z-12345678",
+        issued_at,
+        node_id="sensor-zone1-ch0",
+    )
+
+    topic, payload = client.publish.call_args.args
+    command = json.loads(payload)
+    assert topic == "greenhouse/zones/zone1/actuator/command"
+    assert command == {
+        "command": "start_watering",
+        "zone_id": "zone1",
+        "node_id": "sensor-zone1-ch0",
+        "runtime_seconds": 45,
+        "reason": "below_dry_threshold",
+        "issued_at": "2026-09-14T16:52:12Z",
+        "idempotency_key": "zone1-20260914T165212Z-12345678",
+    }
+
+
+def test_automatic_start_publish_rejects_ambiguous_issued_at():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        publish_actuator_command(
+            MagicMock(),
+            "zone1",
+            45,
+            "below_dry_threshold",
+            "zone1-20260914T165212Z-12345678",
+            datetime(2026, 9, 14, 16, 52, 12),
+            node_id="sensor-zone1-ch0",
+        )
 
 
 def test_controller_health_defaults_and_updates():

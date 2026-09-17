@@ -13,7 +13,7 @@ class ApplicationController < ActionController::Base
     @onboarding_step_state = {
       connection: system_connection_complete?(setting),
       zone: onboarding_zone_complete?,
-      detected_node: Node.exists?,
+      detected_node: provisioned_node_with_telemetry_exists?,
       assigned_node: Node.assigned.exists?,
       reading: onboarding_reading_complete?,
       watering: onboarding_watering_complete?
@@ -22,31 +22,31 @@ class ApplicationController < ActionController::Base
     @onboarding_steps = [
       {
         key: :connection,
-        title: "MQTT & Water Zones",
+        title: "MQTT & Actuator Outputs",
         done: onboarding_step_state(:connection),
         path: settings_path,
-        description: "Set the MQTT broker, auth, and installed water zone count."
+        description: "Set the MQTT broker, auth, and installed greenhouse actuator output count."
       },
       {
         key: :zone,
         title: "Create First Zone",
         done: onboarding_step_state(:zone),
         path: new_zone_path,
-        description: "Create at least one zone and attach a crop profile."
+        description: "Create at least one Zone. Crop profiles are assigned to individual Nodes."
       },
       {
         key: :detected_node,
-        title: "Detect A Sensor Node",
+        title: "Confirm Sensor Telemetry",
         done: onboarding_step_state(:detected_node),
         path: nodes_path,
-        description: "Flash a sensor Pico and wait for the node to appear in the app."
+        description: "Flash a provisioned sensor Pico and confirm telemetry for its backend-created Nodes."
       },
       {
         key: :assigned_node,
-        title: "Assign A Sensor Node",
+        title: "Review Provisioned Node",
         done: onboarding_step_state(:assigned_node),
         path: nodes_path,
-        description: "Assign the discovered sensor node to a zone so readings can be persisted and used."
+        description: "Review a provisioned Node. Its Zone ownership is established before telemetry arrives."
       },
       {
         key: :reading,
@@ -167,7 +167,13 @@ class ApplicationController < ActionController::Base
   end
 
   def onboarding_zone_complete?
-    Zone.exists?
+    Zone.where.not(sensor_device_id: nil).any?(&:canonical_sensor_package_nodes?)
+  end
+
+  def provisioned_node_with_telemetry_exists?
+    Node.includes(:zone).where.not(last_seen_at: nil).any? do |node|
+      node.zone&.canonical_sensor_package_nodes?
+    end
   end
 
   def onboarding_reading_complete?

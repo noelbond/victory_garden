@@ -5,7 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "actuator_command_freshness.h"
+#include "actuator_command_guard.h"
+#include "actuator_start_runtime_guard.h"
+#include "combined_actuator_journal_admission.h"
+#include "actuator_flash_mutation_policy.h"
 #include "hardware/gpio.h"
+#include "hardware/sync.h"
 #include "lwip/ip.h"
 #include "lwip/apps/mqtt.h"
 #include "lwip/ip4_addr.h"
@@ -489,28 +495,18 @@ void actuator_relays_init_safe(const node_config_t *config) {
     stdio_flush();
 }
 
-static actuator_zone_assignment_t *assignment_for_zone(mqtt_node_t *node, const char *zone_id) {
-    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
-        if (node->assignments[i].assigned &&
-            node->assignments[i].node_id[0] == '\0' &&
-            strcmp(node->assignments[i].zone_id, zone_id) == 0) {
-            return &node->assignments[i];
-        }
-    }
-    return NULL;
-}
-
 static actuator_zone_assignment_t *assignment_for_node(mqtt_node_t *node, const char *node_id) {
-    if (!node_id || node_id[0] == '\0') {
+    uint8_t irrigation_line = 0;
+    if (!vg_actuator_topology_lookup(
+            node->assignments,
+            VG_MAX_IRRIGATION_LINES,
+            node_id,
+            &irrigation_line
+        ) ||
+        irrigation_line == 0 || irrigation_line > VG_MAX_IRRIGATION_LINES) {
         return NULL;
     }
-
-    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
-        if (node->assignments[i].assigned && strcmp(node->assignments[i].node_id, node_id) == 0) {
-            return &node->assignments[i];
-        }
-    }
-    return NULL;
+    return &node->assignments[irrigation_line - 1u];
 }
 
 static actuator_line_run_t *run_for_line(mqtt_node_t *node, uint8_t irrigation_line) {
@@ -518,6 +514,67 @@ static actuator_line_run_t *run_for_line(mqtt_node_t *node, uint8_t irrigation_l
         return NULL;
     }
     return &node->runs[irrigation_line - 1u];
+}
+
+typedef enum {
+    CONFIG_PERSISTENCE_SAVED = 0,
+    CONFIG_PERSISTENCE_DEFERRED,
+    CONFIG_PERSISTENCE_FAILED,
+} config_persistence_result_t;
+
+bool mqtt_node_any_actuator_output_active(const mqtt_node_t *node) {
+    if (!node) {
+        return false;
+    }
+    for (size_t index = 0u; index < VG_MAX_IRRIGATION_LINES; ++index) {
+        // `running` stays authoritative until normal stop cleanup completes,
+        // so it conservatively remains active after an alarm has cut GPIO.
+        if (node->runs[index].running) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static config_persistence_result_t persist_config_when_idle(
+    mqtt_node_t *node,
+    char *error,
+    size_t error_size
+) {
+    if (!node || !node->config) {
+        return CONFIG_PERSISTENCE_FAILED;
+    }
+
+    // The current application is single-core. Disabling local interrupts
+    // makes this active-run check and the existing config flash mutation one
+    // boundary: a command callback cannot energize a relay in between. The
+    // hardware cutoff IRQ can only switch an output off.
+    const uint32_t interrupt_state = save_and_disable_interrupts();
+    const vg_actuator_flash_mutation_decision_t decision =
+        vg_actuator_flash_mutation_policy_decide(
+            VG_ACTUATOR_FLASH_MUTATION_CONFIGURATION_SAVE,
+            mqtt_node_any_actuator_output_active(node)
+        );
+    if (decision != VG_ACTUATOR_FLASH_MUTATION_ALLOWED) {
+        restore_interrupts(interrupt_state);
+        node->config_persistence_pending = true;
+        return CONFIG_PERSISTENCE_DEFERRED;
+    }
+
+    const bool saved = node_config_save(node->config, error, error_size);
+    restore_interrupts(interrupt_state);
+    node->config_persistence_pending = !saved;
+    return saved ? CONFIG_PERSISTENCE_SAVED : CONFIG_PERSISTENCE_FAILED;
+}
+
+static void flush_pending_config_persistence(mqtt_node_t *node) {
+    if (!node || !node->config_persistence_pending) {
+        return;
+    }
+    char error[128] = {0};
+    if (persist_config_when_idle(node, error, sizeof(error)) == CONFIG_PERSISTENCE_FAILED) {
+        set_error(node, error[0] ? error : "flash save failed");
+    }
 }
 
 static const char *actuator_status_name(actuator_status_t status) {
@@ -597,6 +654,7 @@ static uint32_t actuator_elapsed_seconds(const actuator_line_run_t *run) {
 
 static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone_id, const char *node_id, const char *idempotency_key,
                                              const actuator_line_run_t *run, actuator_status_t status,
+                                             const char *affected_run_idempotency_key,
                                              const char *fault_code, const char *fault_detail) {
     if (!g_runtime.connected || !g_runtime.client || !mqtt_client_is_connected(g_runtime.client)) {
         return false;
@@ -607,6 +665,7 @@ static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone
     char payload[MQTT_TX_PAYLOAD_MAX];
     char actual_runtime_json[24];
     char node_id_json[VG_MAX_NODE_ID_LEN + 4];
+    char affected_run_field_json[sizeof(((actuator_line_run_t *)0)->idempotency_key) + 40];
     char fault_code_json[64];
     char fault_detail_json[160];
     topic_actuator_status_for_zone(zone_id, topic, sizeof(topic));
@@ -627,6 +686,14 @@ static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone
         snprintf(node_id_json, sizeof(node_id_json), "null");
     }
 
+    if (status == ACTUATOR_STATUS_STOPPED && affected_run_idempotency_key && affected_run_idempotency_key[0] != '\0') {
+        snprintf(affected_run_field_json, sizeof(affected_run_field_json), ",\"affected_run_idempotency_key\":\"%s\"", affected_run_idempotency_key);
+    } else if (status == ACTUATOR_STATUS_STOPPED) {
+        snprintf(affected_run_field_json, sizeof(affected_run_field_json), ",\"affected_run_idempotency_key\":null");
+    } else {
+        affected_run_field_json[0] = '\0';
+    }
+
     if (fault_code && fault_code[0] != '\0') {
         snprintf(fault_code_json, sizeof(fault_code_json), "\"%s\"", fault_code);
     } else {
@@ -642,19 +709,20 @@ static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone
     snprintf(
         payload,
         sizeof(payload),
-        "{\"zone_id\":\"%s\",\"node_id\":%s,\"state\":\"%s\",\"timestamp\":\"%s\",\"idempotency_key\":\"%s\",\"actual_runtime_seconds\":%s,\"flow_ml\":null,\"fault_code\":%s,\"fault_detail\":%s}",
+        "{\"zone_id\":\"%s\",\"node_id\":%s,\"state\":\"%s\",\"timestamp\":\"%s\",\"idempotency_key\":\"%s\"%s,\"actual_runtime_seconds\":%s,\"flow_ml\":null,\"fault_code\":%s,\"fault_detail\":%s}",
         zone_id,
         node_id_json,
         actuator_status_name(status),
         timestamp,
         idempotency_key,
+        affected_run_field_json,
         actual_runtime_json,
         fault_code_json,
         fault_detail_json
     );
 
     u8_t qos = (status == ACTUATOR_STATUS_COMPLETED || status == ACTUATOR_STATUS_FAULT) ? 1 : 0;
-    err_t err = mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), qos, 1, mqtt_request_cb, node);
+    err_t err = mqtt_publish_locked(g_runtime.client, topic, payload, (u16_t)strlen(payload), qos, 0, mqtt_request_cb, node);
     if (err == ERR_OK) {
         set_error(node, "none");
         return true;
@@ -670,6 +738,8 @@ static bool mqtt_publish_actuator_status_now(mqtt_node_t *node, const char *zone
 
 static void actuator_stop_with_status(mqtt_node_t *node, actuator_line_run_t *run, uint8_t irrigation_line,
                                       actuator_status_t status,
+                                      const char *status_idempotency_key,
+                                      const char *affected_run_idempotency_key,
                                       const char *fault_code, const char *fault_detail) {
     printf("[actuator] stop zone=%s line=%u status=%s fault=%s hw_cutoff_fired=%d\n",
            run ? run->zone_id : "unknown",
@@ -690,7 +760,17 @@ static void actuator_stop_with_status(mqtt_node_t *node, actuator_line_run_t *ru
         if (run->cutoff_alarm_id > 0) {
             cancel_alarm(run->cutoff_alarm_id);
         }
-        mqtt_publish_actuator_status_now(node, run->zone_id, run->node_id, run->idempotency_key, run, status, fault_code, fault_detail);
+        mqtt_publish_actuator_status_now(
+            node,
+            run->zone_id,
+            run->node_id,
+            status_idempotency_key ? status_idempotency_key : run->idempotency_key,
+            run,
+            status,
+            affected_run_idempotency_key,
+            fault_code,
+            fault_detail
+        );
         memset(run, 0, sizeof(*run));
     }
 }
@@ -858,185 +938,104 @@ static void mqtt_state_publish_cb(void *arg, err_t err) {
     }
 }
 
-static bool zone_id_already_seen(const char (*seen)[VG_MAX_ZONE_ID_LEN], size_t seen_count, const char *zone_id) {
-    for (size_t i = 0; i < seen_count; ++i) {
-        if (strcmp(seen[i], zone_id) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void subscribe_assigned_zone_topics(mqtt_node_t *node) {
-    if (!g_runtime.client || !g_runtime.connected || !mqtt_client_is_connected(g_runtime.client)) {
+    if (!node->topology_ready || node->local_actuator_command_subscribed || node->config->zone_id[0] == '\0' ||
+        !g_runtime.client || !g_runtime.connected || !mqtt_client_is_connected(g_runtime.client)) {
         return;
     }
 
-    // All of this device's channels are commonly assigned to the same zone,
-    // so subscribe once per unique zone_id rather than once per assignment --
-    // each subscribe consumes one of MQTT_REQ_MAX_IN_FLIGHT request slots
-    // until the broker's SUBACK arrives, and re-subscribing to the same
-    // topic repeatedly back-to-back was exhausting that pool.
-    char seen_zone_ids[VG_MAX_IRRIGATION_LINES][VG_MAX_ZONE_ID_LEN];
-    size_t seen_count = 0;
-
-    for (size_t i = 0; i < VG_MAX_IRRIGATION_LINES; ++i) {
-        const actuator_zone_assignment_t *assignment = &node->assignments[i];
-        if (!assignment->assigned || assignment->zone_id[0] == '\0') {
-            continue;
-        }
-
-        if (zone_id_already_seen(seen_zone_ids, seen_count, assignment->zone_id)) {
-            continue;
-        }
-
-        char topic[MQTT_RX_TOPIC_MAX];
-        topic_actuator_command_for_zone(assignment->zone_id, topic, sizeof(topic));
-        err_t err = mqtt_subscribe_locked(g_runtime.client, topic, 0, mqtt_request_cb, node);
-        printf("[mqtt] subscribe zone command topic=%s err=%d\n", topic, (int)err);
-        if (err != ERR_OK) {
-            set_error(node, "zone command subscribe failed");
-        }
-
-        snprintf(seen_zone_ids[seen_count], VG_MAX_ZONE_ID_LEN, "%s", assignment->zone_id);
-        seen_count++;
+    // The persisted provisioned zone_id identifies this physical controller.
+    // A global topology must never expand that authority to another zone.
+    char topic[MQTT_RX_TOPIC_MAX];
+    topic_actuator_command_for_zone(node->config->zone_id, topic, sizeof(topic));
+    err_t err = mqtt_subscribe_locked(g_runtime.client, topic, 0, mqtt_request_cb, node);
+    printf("[mqtt] subscribe local actuator command topic=%s err=%d\n", topic, (int)err);
+    if (err == ERR_OK) {
+        node->local_actuator_command_subscribed = true;
+    } else {
+        set_error(node, "zone command subscribe failed");
     }
+}
+
+static void clear_actuator_topology(mqtt_node_t *node) {
+    memset(node->assignments, 0, sizeof(node->assignments));
+    node->irrigation_line_count = 0;
+    node->topology_ready = false;
 }
 
 static void handle_actuator_config_message(mqtt_node_t *node, const char *payload) {
-    char schema[32] = {0};
-    int irrigation_line_count = 0;
-
-    if (!extract_json_string(payload, "schema_version", schema, sizeof(schema)) ||
-        strcmp(schema, "actuator-config/v1") != 0 ||
-        !extract_json_int(payload, "irrigation_line_count", &irrigation_line_count) ||
-        irrigation_line_count < 0) {
-        set_error(node, "invalid actuator config");
+    actuator_zone_assignment_t candidate_assignments[VG_MAX_IRRIGATION_LINES] = {0};
+    uint8_t irrigation_line_count = 0;
+    size_t assignment_count = 0;
+    vg_actuator_topology_result_t topology_result = vg_actuator_topology_parse_v1(
+        payload,
+        node->config->zone_id,
+        VG_MAX_IRRIGATION_LINES,
+        candidate_assignments,
+        VG_MAX_IRRIGATION_LINES,
+        &irrigation_line_count,
+        &assignment_count
+    );
+    if (topology_result != VG_ACTUATOR_TOPOLOGY_VALID) {
+        clear_actuator_topology(node);
+        set_error(node, topology_result == VG_ACTUATOR_TOPOLOGY_INVALID_LOCAL
+            ? "invalid local actuator topology"
+            : "invalid actuator config");
         return;
     }
 
-    if (irrigation_line_count > (int)VG_MAX_IRRIGATION_LINES) {
-        irrigation_line_count = (int)VG_MAX_IRRIGATION_LINES;
-    }
-
-    memset(node->assignments, 0, sizeof(node->assignments));
-    node->irrigation_line_count = (uint8_t)irrigation_line_count;
-
-    const char *zones_array = strstr(payload, "\"zones\":[");
-    if (zones_array) {
-        const char *cursor = strchr(zones_array, '[');
-        if (cursor) {
-            ++cursor;
-            const char *array_end = strchr(cursor, ']');
-            while (array_end && (cursor = strstr(cursor, "{\"zone_id\":\"")) != NULL && cursor < array_end) {
-                actuator_zone_assignment_t assignment = {0};
-                const char *zone_start = cursor + strlen("{\"zone_id\":\"");
-                const char *after_zone = NULL;
-                int line_number = 0;
-                bool active = false;
-
-                if (!decode_json_string(zone_start, assignment.zone_id, sizeof(assignment.zone_id), &after_zone)) {
-                    break;
-                }
-
-                const char *object_end = strchr(after_zone, '}');
-                if (!object_end) {
-                    break;
-                }
-
-                const char *line_field = strstr(after_zone, "\"irrigation_line\":");
-                const char *active_field = strstr(after_zone, "\"active\":");
-                if (!line_field || line_field > object_end || !extract_json_int(line_field, "irrigation_line", &line_number)) {
-                    cursor = object_end + 1;
-                    continue;
-                }
-
-                if (active_field && active_field < object_end) {
-                    if (strncmp(active_field + strlen("\"active\":"), "true", 4) == 0) {
-                        active = true;
-                    }
-                }
-
-                if (line_number <= 0 || line_number > irrigation_line_count) {
-                    cursor = object_end + 1;
-                    continue;
-                }
-
-                assignment.assigned = true;
-                assignment.active = active;
-                assignment.irrigation_line = (uint8_t)line_number;
-                node->assignments[line_number - 1] = assignment;
-                printf("[actuator] config zone=%s line=%d active=%d\n",
-                       assignment.zone_id,
-                       line_number,
-                       (int)active);
-                cursor = object_end + 1;
-            }
-        }
-    }
-
-    const char *nodes_array = strstr(payload, "\"nodes\":[");
-    if (nodes_array) {
-        const char *cursor = strchr(nodes_array, '[');
-        if (cursor) {
-            ++cursor;
-            const char *array_end = strchr(cursor, ']');
-            while (array_end && (cursor = strstr(cursor, "{\"node_id\":\"")) != NULL && cursor < array_end) {
-                actuator_zone_assignment_t assignment = {0};
-                const char *node_start = cursor + strlen("{\"node_id\":\"");
-                const char *after_node = NULL;
-                int line_number = 0;
-                bool active = false;
-
-                if (!decode_json_string(node_start, assignment.node_id, sizeof(assignment.node_id), &after_node)) {
-                    break;
-                }
-
-                const char *object_end = strchr(after_node, '}');
-                if (!object_end || object_end > array_end) {
-                    break;
-                }
-
-                const char *line_field = strstr(after_node, "\"irrigation_line\":");
-                const char *active_field = strstr(after_node, "\"active\":");
-                if (!line_field || line_field > object_end || !extract_json_int(line_field, "irrigation_line", &line_number)) {
-                    cursor = object_end + 1;
-                    continue;
-                }
-
-                if (!extract_json_string(after_node, "zone_id", assignment.zone_id, sizeof(assignment.zone_id))) {
-                    cursor = object_end + 1;
-                    continue;
-                }
-
-                if (active_field && active_field < object_end) {
-                    if (strncmp(active_field + strlen("\"active\":"), "true", 4) == 0) {
-                        active = true;
-                    }
-                }
-
-                if (line_number <= 0 || line_number > irrigation_line_count) {
-                    cursor = object_end + 1;
-                    continue;
-                }
-
-                assignment.assigned = true;
-                assignment.active = active;
-                assignment.irrigation_line = (uint8_t)line_number;
-                node->assignments[line_number - 1] = assignment;
-                printf("[actuator] config node=%s zone=%s line=%d active=%d\n",
-                       assignment.node_id,
-                       assignment.zone_id,
-                       line_number,
-                       (int)active);
-                cursor = object_end + 1;
-            }
-        }
-    }
-
-    printf("[actuator] config applied line_count=%u\n", (unsigned)node->irrigation_line_count);
+    memcpy(node->assignments, candidate_assignments, sizeof(node->assignments));
+    node->irrigation_line_count = irrigation_line_count;
+    node->topology_ready = true;
+    printf("[actuator] config applied line_count=%u assignments=%u\n",
+           (unsigned)node->irrigation_line_count, (unsigned)assignment_count);
     subscribe_assigned_zone_topics(node);
     set_error(node, "none");
+}
+
+static bool start_command_has_fresh_issued_at(mqtt_node_t *node,
+                                              const char *topic_zone_id,
+                                              const char *node_id,
+                                              const char *idempotency_key,
+                                              const char *issued_at) {
+    int64_t trusted_now_epoch_seconds = 0;
+    bool trusted_time = time_sync_current_actuator_epoch_seconds(&trusted_now_epoch_seconds);
+    vg_actuator_command_freshness_result_t freshness =
+        vg_actuator_command_validate_start_freshness(
+            issued_at, trusted_now_epoch_seconds, trusted_time);
+    if (freshness == VG_ACTUATOR_COMMAND_FRESHNESS_FRESH) {
+        return true;
+    }
+
+    const char *fault_code = "INVALID_ISSUED_AT";
+    const char *fault_detail = "start_watering issued_at is not canonical UTC";
+    const char *error = "invalid start issued_at";
+    switch (freshness) {
+        case VG_ACTUATOR_COMMAND_FRESHNESS_TIME_NOT_TRUSTED:
+            fault_code = "TIME_NOT_SYNCED";
+            fault_detail = "trusted SNTP UTC is unavailable";
+            error = "actuator time not synced";
+            break;
+        case VG_ACTUATOR_COMMAND_FRESHNESS_STALE:
+            fault_code = "STALE_COMMAND";
+            fault_detail = "start_watering issued_at is older than the allowed age";
+            error = "stale actuator start command";
+            break;
+        case VG_ACTUATOR_COMMAND_FRESHNESS_FUTURE:
+            fault_code = "FUTURE_COMMAND";
+            fault_detail = "start_watering issued_at exceeds future clock skew";
+            error = "future actuator start command";
+            break;
+        case VG_ACTUATOR_COMMAND_FRESHNESS_INVALID_TIMESTAMP:
+        default:
+            break;
+    }
+
+    mqtt_publish_actuator_status_now(node, topic_zone_id, node_id, idempotency_key,
+                                     NULL, ACTUATOR_STATUS_FAULT, NULL,
+                                     fault_code, fault_detail);
+    set_error(node, error);
+    return false;
 }
 
 static void handle_actuator_command_message(mqtt_node_t *node, const char *topic_zone_id, const char *payload) {
@@ -1044,7 +1043,9 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
     char idempotency_key[96] = {0};
     char payload_zone_id[VG_MAX_ZONE_ID_LEN] = {0};
     char payload_node_id[VG_MAX_NODE_ID_LEN] = {0};
+    char issued_at[32] = {0};
     int runtime_seconds = 0;
+    vg_actuator_start_runtime_guard_output_t runtime_guard = {0};
 
     if (!payload || payload[0] == '\0') {
         set_error(node, "none");
@@ -1057,29 +1058,48 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
         return;
     }
 
-    if (extract_json_string(payload, "zone_id", payload_zone_id, sizeof(payload_zone_id)) &&
-        strcmp(payload_zone_id, topic_zone_id) != 0) {
-        mqtt_publish_actuator_status_now(node, topic_zone_id, NULL, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "ZONE_MISMATCH", "topic zone_id does not match payload");
+    extract_json_string(payload, "zone_id", payload_zone_id, sizeof(payload_zone_id));
+    extract_json_string(payload, "node_id", payload_node_id, sizeof(payload_node_id));
+
+    vg_actuator_command_guard_result_t guard_result = vg_actuator_command_guard_validate(
+        node->config->zone_id,
+        topic_zone_id,
+        payload_zone_id,
+        node->topology_ready,
+        payload_node_id
+    );
+    if (guard_result == VG_ACTUATOR_COMMAND_GUARD_ZONE_MISMATCH) {
+        const char *fault_detail = (!topic_zone_id || strcmp(topic_zone_id, node->config->zone_id) != 0)
+            ? "command topic is not this actuator's provisioned zone"
+            : "payload zone_id does not match this actuator's provisioned zone";
+        mqtt_publish_actuator_status_now(node, topic_zone_id, NULL, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, NULL, "ZONE_MISMATCH", fault_detail);
         set_error(node, "actuator zone mismatch");
         return;
     }
-    extract_json_string(payload, "node_id", payload_node_id, sizeof(payload_node_id));
 
     clear_retained_actuator_command(topic_zone_id);
 
-    // Commands are targeted by node_id where possible so that only the
-    // sensor channel a pump is assigned to can trigger that specific relay
-    // line (see the "nodes" assignment array in actuator-config/v1).
-    actuator_zone_assignment_t *assignment = payload_node_id[0] != '\0'
-        ? assignment_for_node(node, payload_node_id)
-        : assignment_for_zone(node, topic_zone_id);
-    if (assignment && strcmp(assignment->zone_id, topic_zone_id) != 0) {
-        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "ZONE_MISMATCH", "node assignment zone_id does not match command topic");
+    if (guard_result == VG_ACTUATOR_COMMAND_GUARD_TOPOLOGY_UNAVAILABLE) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, NULL, "UNASSIGNED_LINE", "actuator topology is not ready");
+        set_error(node, "actuator topology not ready");
+        return;
+    }
+    if (guard_result == VG_ACTUATOR_COMMAND_GUARD_MISSING_NODE) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, NULL, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, NULL, "UNASSIGNED_LINE", "node_id is required for actuator routing");
+        set_error(node, "actuator command missing node_id");
+        return;
+    }
+
+    // A valid command resolves only through the locally accepted node map.
+    actuator_zone_assignment_t *assignment = assignment_for_node(node, payload_node_id);
+    if (assignment && (strcmp(assignment->zone_id, node->config->zone_id) != 0 ||
+                       strcmp(assignment->zone_id, topic_zone_id) != 0)) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, NULL, "ZONE_MISMATCH", "node assignment is not this actuator's provisioned zone");
         set_error(node, "actuator node zone mismatch");
         return;
     }
     if (!assignment || assignment->irrigation_line == 0 || assignment->irrigation_line > node->irrigation_line_count) {
-        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, "UNASSIGNED_LINE", "target has no irrigation line mapping");
+        mqtt_publish_actuator_status_now(node, topic_zone_id, payload_node_id, idempotency_key, NULL, ACTUATOR_STATUS_FAULT, NULL, "UNASSIGNED_LINE", "target has no irrigation line mapping");
         set_error(node, "target missing irrigation line");
         return;
     }
@@ -1093,9 +1113,20 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
     if (strcmp(command, "stop_watering") == 0) {
         printf("[actuator] command=stop zone=%s node=%s id=%s\n", topic_zone_id, assignment->node_id, idempotency_key);
         if (run->running) {
-            actuator_stop_with_status(node, run, assignment->irrigation_line, ACTUATOR_STATUS_STOPPED, NULL, NULL);
+            char affected_run_idempotency_key[sizeof(run->idempotency_key)];
+            snprintf(affected_run_idempotency_key, sizeof(affected_run_idempotency_key), "%s", run->idempotency_key);
+            actuator_stop_with_status(
+                node,
+                run,
+                assignment->irrigation_line,
+                ACTUATOR_STATUS_STOPPED,
+                idempotency_key,
+                affected_run_idempotency_key,
+                NULL,
+                NULL
+            );
         } else {
-            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key, NULL, ACTUATOR_STATUS_STOPPED, NULL, NULL);
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key, NULL, ACTUATOR_STATUS_STOPPED, NULL, NULL, NULL);
         }
         set_error(node, "none");
         return;
@@ -1111,38 +1142,240 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
         return;
     }
 
+    if (run->running) {
+        // Before returning ALREADY_RUNNING, perform only a read-only durable
+        // lookup. An exact accepted START retry must stay idempotent even while
+        // its original output is running; a reused key must still be rejected as
+        // a conflict. Missing or malformed immutable identity deliberately keeps
+        // the established ALREADY_RUNNING precedence for an active output.
+        int64_t active_issued_at_epoch_seconds = 0;
+        const bool active_identity_is_valid =
+            extract_json_string(payload, "issued_at", issued_at, sizeof(issued_at)) &&
+            vg_actuator_command_parse_issued_at(
+                issued_at, &active_issued_at_epoch_seconds
+            );
+        const vg_combined_actuator_active_start_result_t active_start_result =
+            vg_combined_actuator_journal_classify_active_start(
+                node->durable_journal_runtime,
+                node->durable_start_journal,
+                active_identity_is_valid,
+                idempotency_key,
+                topic_zone_id,
+                assignment->node_id,
+                assignment->irrigation_line,
+                active_issued_at_epoch_seconds
+            );
+        if (active_start_result == VG_COMBINED_ACTUATOR_ACTIVE_START_DUPLICATE) {
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                             NULL, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL,
+                                             "duplicate START suppressed; durable accepted command already exists");
+            set_error(node, "duplicate actuator start suppressed");
+            return;
+        }
+        if (active_start_result == VG_COMBINED_ACTUATOR_ACTIVE_START_KEY_CONFLICT) {
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                             NULL, ACTUATOR_STATUS_FAULT, NULL, "IDEMPOTENCY_KEY_CONFLICT",
+                                             "idempotency key is already bound to another accepted START");
+            set_error(node, "actuator idempotency key conflict");
+            return;
+        }
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key, run, ACTUATOR_STATUS_FAULT, NULL, "ALREADY_RUNNING", "relay line is already watering");
+        set_error(node, "relay line already running");
+        return;
+    }
+
+    if (!extract_json_string(payload, "issued_at", issued_at, sizeof(issued_at))) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL,
+                                         "INVALID_ISSUED_AT",
+                                         "start_watering requires canonical issued_at");
+        set_error(node, "invalid start issued_at");
+        return;
+    }
+
+    int64_t issued_at_epoch_seconds = 0;
+    if (!vg_actuator_command_parse_issued_at(issued_at, &issued_at_epoch_seconds)) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL,
+                                         "INVALID_ISSUED_AT",
+                                         "start_watering requires canonical issued_at");
+        set_error(node, "invalid start issued_at");
+        return;
+    }
+
+    vg_combined_actuator_journal_admission_t journal_admission =
+        vg_combined_actuator_journal_classify_start(
+            node->durable_journal_runtime, node->durable_start_journal,
+            idempotency_key, topic_zone_id, assignment->node_id,
+            assignment->irrigation_line, issued_at_epoch_seconds);
+    if (journal_admission == VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_UNAVAILABLE) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_UNAVAILABLE",
+                                         "durable START history is not trustworthy");
+        set_error(node, "durable start journal unavailable");
+        return;
+    }
+    if (journal_admission == VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_DUPLICATE) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL,
+                                         "duplicate START suppressed; durable accepted command already exists");
+        set_error(node, "duplicate actuator start suppressed");
+        return;
+    }
+    if (journal_admission == VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_KEY_CONFLICT) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL, "IDEMPOTENCY_KEY_CONFLICT",
+                                         "idempotency key is already bound to another accepted START");
+        set_error(node, "actuator idempotency key conflict");
+        return;
+    }
+    if (journal_admission != VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_NEW &&
+        journal_admission != VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_FULL) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL,
+                                         "JOURNAL_UNAVAILABLE",
+                                         "durable START history could not be classified");
+        set_error(node, "durable start journal unavailable");
+        return;
+    }
+
+    const vg_actuator_start_runtime_guard_result_t runtime_guard_result =
+        vg_actuator_start_runtime_guard_validate(
+            runtime_seconds, node->config->max_pulse_runtime_sec, &runtime_guard
+        );
+    if (runtime_guard_result != VG_ACTUATOR_START_RUNTIME_GUARD_VALID) {
+        const char *fault_code = "RUNTIME_LIMIT_UNREPRESENTABLE";
+        const char *fault_detail = "configured local maximum runtime cannot be scheduled safely";
+        const char *error = "local runtime limit is unrepresentable";
+        if (runtime_guard_result == VG_ACTUATOR_START_RUNTIME_GUARD_LOCAL_RUNTIME_CAP_UNAVAILABLE) {
+            fault_code = "RUNTIME_LIMIT_UNAVAILABLE";
+            fault_detail = "configured local maximum runtime is unavailable";
+            error = "local runtime limit unavailable";
+        } else if (runtime_guard_result == VG_ACTUATOR_START_RUNTIME_GUARD_INVALID_REQUEST) {
+            fault_code = "INVALID_RUNTIME";
+            fault_detail = "start_watering requires a positive runtime_seconds";
+            error = "invalid actuator runtime";
+        }
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL,
+                                         fault_code, fault_detail);
+        set_error(node, error);
+        return;
+    }
+
+    if (journal_admission == VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_FULL) {
+        // Only unseen commands reach this branch; durable duplicates and key
+        // conflicts returned above remain read-only even while the journal is full.
+        if (!start_command_has_fresh_issued_at(node, topic_zone_id, assignment->node_id,
+                                                idempotency_key, issued_at)) return;
+        int64_t trusted_now = 0;
+        if (!time_sync_current_actuator_epoch_seconds(&trusted_now)) {
+            (void)start_command_has_fresh_issued_at(node, topic_zone_id, assignment->node_id,
+                                                     idempotency_key, issued_at);
+            return;
+        }
+        const vg_combined_actuator_journal_reclaim_result_t reclaim =
+            vg_combined_actuator_journal_boot_reclaim_full_start(
+                node->durable_journal_boot, trusted_now, true);
+        if (reclaim == VG_COMBINED_ACTUATOR_JOURNAL_RECLAIM_BUSY) {
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                             NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_BUSY",
+                                             "durable START reclamation requires every actuator output to be OFF");
+            set_error(node, "durable start journal busy"); return;
+        }
+        if (reclaim == VG_COMBINED_ACTUATOR_JOURNAL_RECLAIM_FULL) {
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                             NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_FULL",
+                                             "durable START history retains every accepted record");
+            set_error(node, "durable start journal full"); return;
+        }
+        if (reclaim != VG_COMBINED_ACTUATOR_JOURNAL_RECLAIM_READY) {
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                             NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_UNAVAILABLE",
+                                             "durable START reclamation could not establish a trustworthy history");
+            set_error(node, "durable start journal unavailable"); return;
+        }
+        journal_admission = vg_combined_actuator_journal_classify_start(
+            node->durable_journal_runtime, node->durable_start_journal, idempotency_key,
+            topic_zone_id, assignment->node_id, assignment->irrigation_line, issued_at_epoch_seconds);
+        if (journal_admission == VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_DUPLICATE) {
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                             NULL, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL,
+                                             "duplicate START suppressed; durable accepted command already exists");
+            set_error(node, "duplicate actuator start suppressed"); return;
+        }
+        if (journal_admission == VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_KEY_CONFLICT) {
+            mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                             NULL, ACTUATOR_STATUS_FAULT, NULL, "IDEMPOTENCY_KEY_CONFLICT",
+                                             "idempotency key is already bound to another accepted START");
+            set_error(node, "actuator idempotency key conflict"); return;
+        }
+    }
+    if (journal_admission == VG_COMBINED_ACTUATOR_JOURNAL_ADMISSION_FULL) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_FULL",
+                                         "durable START history has no free record slot");
+        set_error(node, "durable start journal full");
+        return;
+    }
+
+    if (!start_command_has_fresh_issued_at(node, topic_zone_id, assignment->node_id,
+                                            idempotency_key, issued_at)) {
+        return;
+    }
+
+    vg_actuator_start_journal_candidate_t journal_candidate;
+    if (vg_actuator_start_journal_prepare(
+            node->durable_start_journal, idempotency_key, topic_zone_id,
+            assignment->node_id, assignment->irrigation_line,
+            issued_at_epoch_seconds, &journal_candidate) != VG_ACTUATOR_START_JOURNAL_NEW) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_UNAVAILABLE",
+                                         "durable START history changed before persistence");
+        set_error(node, "durable start journal unavailable");
+        return;
+    }
+    uint64_t durable_sequence = 0u;
+    const vg_combined_actuator_journal_persistence_result_t persisted =
+        vg_combined_actuator_journal_boot_append_prepared_start(
+            node->durable_journal_boot, &journal_candidate, &durable_sequence);
+    if (persisted == VG_COMBINED_ACTUATOR_JOURNAL_PERSISTENCE_BUSY) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_BUSY",
+                                         "durable START append requires every actuator output to be OFF");
+        set_error(node, "durable start journal busy");
+        return;
+    }
+    if (persisted == VG_COMBINED_ACTUATOR_JOURNAL_PERSISTENCE_FULL) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_FULL",
+                                         "durable START history has no free record slot");
+        set_error(node, "durable start journal full");
+        return;
+    }
+    if (persisted != VG_COMBINED_ACTUATOR_JOURNAL_PERSISTENCE_OK) {
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL, "JOURNAL_UNAVAILABLE",
+                                         "durable START append or RAM commit failed");
+        set_error(node, "durable start journal unavailable");
+        return;
+    }
+
     printf("[actuator] command=%s zone=%s node=%s id=%s runtime=%d running=%d\n",
            command,
            topic_zone_id,
            assignment->node_id,
            idempotency_key,
-           runtime_seconds,
+           (int)runtime_guard.effective_runtime_seconds,
            (int)run->running);
 
-    // Compare the full int, not a uint16_t cast of it -- casting first would
-    // silently drop the high bits (e.g. runtime_seconds=65566 truncates to
-    // 30, which could compare as "under the cap" even though the real value
-    // is over 18 hours), letting a crafted or buggy runtime_seconds bypass
-    // this safety clamp entirely while still being stored and scheduled at
-    // its full, unclamped size below.
-    if (node->config->max_pulse_runtime_sec > 0 && runtime_seconds > (int)node->config->max_pulse_runtime_sec) {
-        runtime_seconds = (int)node->config->max_pulse_runtime_sec;
-    }
-
-    if (run->running) {
-        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key, run, ACTUATOR_STATUS_FAULT, "ALREADY_RUNNING", "relay line is already watering");
-        set_error(node, "relay line already running");
-        return;
-    }
-
     memset(run, 0, sizeof(*run));
-    run->running = true;
     snprintf(run->zone_id, sizeof(run->zone_id), "%s", topic_zone_id);
     snprintf(run->node_id, sizeof(run->node_id), "%s", assignment->node_id);
     snprintf(run->idempotency_key, sizeof(run->idempotency_key), "%s", idempotency_key);
     run->started_at_ms = to_ms_since_boot(get_absolute_time());
-    run->runtime_seconds = (uint32_t)runtime_seconds;
-    run->hard_deadline = make_timeout_time_ms((uint32_t)runtime_seconds * 1000u);
+    run->runtime_seconds = runtime_guard.effective_runtime_seconds;
+    run->hard_deadline = make_timeout_time_ms(runtime_guard.effective_runtime_milliseconds);
 
     // Independent hardware backstop for hard_deadline — see
     // actuator_hw_cutoff_callback. Snapshot the GPIO/level now so the ISR
@@ -1151,16 +1384,26 @@ static void handle_actuator_command_message(mqtt_node_t *node, const char *topic
     run->cutoff_off_level = !node->config->actuator_relay_active_high;
     run->hardware_cutoff_fired = false;
     run->cutoff_alarm_id = add_alarm_in_ms(
-        (uint32_t)runtime_seconds * 1000u, actuator_hw_cutoff_callback, run, true);
+        runtime_guard.effective_runtime_milliseconds, actuator_hw_cutoff_callback, run, true);
     if (run->cutoff_alarm_id < 0) {
-        printf("[actuator] WARNING: hardware cutoff alarm scheduling failed line=%u — software deadline check is the only cutoff for this run\n",
-               (unsigned)assignment->irrigation_line);
-        stdio_flush();
+        memset(run, 0, sizeof(*run));
+        mqtt_publish_actuator_status_now(node, topic_zone_id, assignment->node_id, idempotency_key,
+                                         NULL, ACTUATOR_STATUS_FAULT, NULL, "CUTOFF_UNAVAILABLE",
+                                         "hardware cutoff alarm could not be armed");
+        set_error(node, "hardware cutoff alarm unavailable");
+        return;
+    }
+    if (!start_command_has_fresh_issued_at(node, topic_zone_id, assignment->node_id,
+                                            idempotency_key, issued_at)) {
+        cancel_alarm(run->cutoff_alarm_id);
+        memset(run, 0, sizeof(*run));
+        return;
     }
 
-    mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL);
+    run->running = true;
+    mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_ACKNOWLEDGED, NULL, NULL, NULL);
     actuator_set_line_output(node, assignment->irrigation_line, true);
-    mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_RUNNING, NULL, NULL);
+    mqtt_publish_actuator_status_now(node, topic_zone_id, run->node_id, idempotency_key, run, ACTUATOR_STATUS_RUNNING, NULL, NULL, NULL);
 
     set_error(node, "none");
 }
@@ -1232,6 +1475,12 @@ static void handle_config_message(mqtt_node_t *node, const char *payload) {
     if (node_config_apply_json(node->config, payload, &zone_changed, error, sizeof(error))) {
         // Broker-retained node config is the source of truth for zone/crop settings.
         // Applying it in memory avoids flash writes while the MQTT/Wi-Fi stack is active.
+        if (zone_changed) {
+            // The existing local actuator map belongs to the prior zone. Do
+            // not allow it to bridge the change while main reconnects all
+            // zone-scoped sensor and actuator subscriptions.
+            clear_actuator_topology(node);
+        }
         publish_config_ack(node, "applied", NULL);
         node->publish_requested = true;
         node->config_changed_requires_reconnect = zone_changed;
@@ -1397,9 +1646,13 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection
             // confirmation is what discovery alone can't provide. Safe to
             // make it permanent now.
             g_runtime.broker_candidate_pending = false;
-            char save_error[64];
-            if (!node_config_save(node->config, save_error, sizeof(save_error))) {
+            char save_error[64] = {0};
+            const config_persistence_result_t persistence =
+                persist_config_when_idle(node, save_error, sizeof(save_error));
+            if (persistence == CONFIG_PERSISTENCE_FAILED) {
                 printf("[mqtt] broker candidate save failed: %s\n", save_error);
+            } else if (persistence == CONFIG_PERSISTENCE_DEFERRED) {
+                printf("[mqtt] broker candidate persistence deferred until outputs are OFF\n");
             } else {
                 printf("[mqtt] broker candidate host=%s port=%u verified and saved\n",
                        node->config->mqtt_host, (unsigned)node->config->mqtt_port);
@@ -1461,6 +1714,15 @@ void mqtt_node_init(mqtt_node_t *node, node_config_t *config) {
            (unsigned)line_gpio_for_index(node, 0),
            (int)config->actuator_relay_active_high,
            (unsigned)VG_MAX_IRRIGATION_LINES);
+}
+
+void mqtt_node_set_durable_start_journal(
+    mqtt_node_t *node, vg_combined_actuator_journal_boot_t *boot
+) {
+    if (!node) return;
+    node->durable_journal_runtime = boot ? &boot->runtime : NULL;
+    node->durable_start_journal = boot ? &boot->storage.logical_journal : NULL;
+    node->durable_journal_boot = boot;
 }
 
 static void mqtt_ensure_connected(mqtt_node_t *node) {
@@ -1611,9 +1873,11 @@ void mqtt_node_poll(mqtt_node_t *node) {
         }
 
         if (absolute_time_diff_us(get_absolute_time(), run->hard_deadline) <= 0) {
-            actuator_stop_with_status(node, run, (uint8_t)(i + 1u), ACTUATOR_STATUS_COMPLETED, NULL, NULL);
+            actuator_stop_with_status(node, run, (uint8_t)(i + 1u), ACTUATOR_STATUS_COMPLETED, NULL, NULL, NULL, NULL);
         }
     }
+
+    flush_pending_config_persistence(node);
 }
 
 bool mqtt_node_is_connected(const mqtt_node_t *node) {
@@ -1812,6 +2076,7 @@ void mqtt_node_disconnect(mqtt_node_t *node) {
     // watering run and its hard_deadline cutoff (enforced every
     // mqtt_node_poll regardless of connection state) are unaffected by this.
     if (node) {
+        node->local_actuator_command_subscribed = false;
         set_error(node, "none");
     }
 }

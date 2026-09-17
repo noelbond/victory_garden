@@ -9,5 +9,6 @@ void time_sync_deinit(void);
 void time_sync_poll(void);
 bool time_sync_ready(void);
 uint32_t time_sync_epoch_sec(void);
+bool time_sync_current_actuator_epoch_seconds(int64_t *epoch_seconds_out);
 void time_sync_format_iso8601(char *out, size_t out_size);
 void vg_time_sync_set_epoch_us(uint32_t sec, uint32_t usec);

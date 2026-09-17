@@ -129,9 +129,10 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
   end
 
   test "manually water queues a targeted start command for a configured node" do
+    ConnectionSetting.create!(irrigation_line_count: 1)
     crop = create(:crop_profile, max_pulse_runtime_sec: 45)
-    zone = create(:zone, zone_id: "zone1", crop_profile: crop)
-    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: Time.current, irrigation_line: 1)
+    zone = create(:zone, zone_id: "zone1")
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, crop_profile: crop, last_seen_at: Time.current, irrigation_line: 1)
 
     assert_enqueued_with(job: CommandPublishJob) do
       post manually_water_node_path(node)
@@ -146,21 +147,10 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
     assert_equal "manual_trigger", event.reason
   end
 
-  test "manually water on unassigned node redirects with alert and does not enqueue job" do
-    node = Node.create!(node_id: "unassigned-node-water", last_seen_at: Time.current)
-
-    assert_no_enqueued_jobs only: CommandPublishJob do
-      post manually_water_node_path(node)
-    end
-
-    assert_redirected_to node_path(node)
-    assert_equal "Assign the node before watering it.", flash[:alert]
-  end
-
   test "manually water on node without a pump relay assigned redirects with alert" do
     crop = create(:crop_profile, max_pulse_runtime_sec: 45)
-    zone = create(:zone, zone_id: "zone1", crop_profile: crop)
-    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: Time.current)
+    zone = create(:zone, zone_id: "zone1")
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, crop_profile: crop, last_seen_at: Time.current)
 
     assert_no_enqueued_jobs only: CommandPublishJob do
       post manually_water_node_path(node)
@@ -172,8 +162,8 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
 
   test "manually water on an offline node redirects with alert and does not enqueue job" do
     crop = create(:crop_profile, max_pulse_runtime_sec: 45)
-    zone = create(:zone, zone_id: "zone1", crop_profile: crop, publish_interval_ms: 3_600_000)
-    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: 3.hours.ago, irrigation_line: 1)
+    zone = create(:zone, zone_id: "zone1", publish_interval_ms: 3_600_000)
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, crop_profile: crop, last_seen_at: 3.hours.ago, irrigation_line: 1)
 
     assert_no_enqueued_jobs only: CommandPublishJob do
       post manually_water_node_path(node)
@@ -184,9 +174,10 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
   end
 
   test "manually water while a start command is already active for the node redirects with alert" do
+    ConnectionSetting.create!(irrigation_line_count: 1)
     crop = create(:crop_profile, max_pulse_runtime_sec: 45)
-    zone = create(:zone, zone_id: "zone1", crop_profile: crop)
-    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: Time.current, irrigation_line: 1)
+    zone = create(:zone, zone_id: "zone1")
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, crop_profile: crop, last_seen_at: Time.current, irrigation_line: 1)
     WateringCommand.start_node(node)
     clear_enqueued_jobs
 
@@ -198,10 +189,26 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
     assert_equal "Watering is already active for #{node.display_name}.", flash[:alert]
   end
 
+  test "manually water rejects a logical line beyond installed capacity" do
+    ConnectionSetting.create!(irrigation_line_count: 4)
+    crop = create(:crop_profile, max_pulse_runtime_sec: 45)
+    zone = create(:zone, zone_id: "zone1")
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, crop_profile: crop, last_seen_at: Time.current, irrigation_line: 8)
+    clear_enqueued_jobs
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post manually_water_node_path(node)
+    end
+
+    assert_redirected_to node_path(node)
+    assert_equal "Pump output 8 is not supported by the installed actuator capacity.", flash[:alert]
+    assert_equal 8, node.reload.irrigation_line
+  end
+
   test "manually water from health page redirects back to health" do
     crop = create(:crop_profile, max_pulse_runtime_sec: 45)
-    zone = create(:zone, zone_id: "zone1", crop_profile: crop)
-    node = Node.create!(node_id: "actuator-zone1", zone: zone, last_seen_at: Time.current, irrigation_line: 1)
+    zone = create(:zone, zone_id: "zone1")
+    node = Node.create!(node_id: "actuator-zone1", zone: zone, crop_profile: crop, last_seen_at: Time.current, irrigation_line: 1)
 
     post manually_water_node_path(node), params: { return_to: health_path(health_tab: "nodes") }
 
@@ -345,38 +352,6 @@ class NodeCommandsTest < ActionDispatch::IntegrationTest
     assert_equal "Node calibration updated.", flash[:notice]
     assert_equal 552, node.reload.moisture_raw_dry
     assert_equal 943, node.moisture_raw_wet
-  end
-
-  test "request reading on unassigned node redirects with alert and does not enqueue job" do
-    node = Node.create!(node_id: "unassigned-node", last_seen_at: Time.current)
-
-    assert_no_enqueued_jobs only: RequestReadingJob do
-      post request_reading_node_path(node)
-    end
-
-    assert_redirected_to node_path(node)
-    assert_equal "Assign the node before requesting a reading.", flash[:alert]
-  end
-
-  test "reboot on unassigned node redirects with alert and does not enqueue job" do
-    node = Node.create!(node_id: "unassigned-node-reboot", last_seen_at: Time.current)
-
-    assert_no_enqueued_jobs only: RebootNodeJob do
-      post reboot_node_path(node)
-    end
-
-    assert_redirected_to node_path(node)
-    assert_equal "Assign the node before sending a reboot command.", flash[:alert]
-  end
-
-  test "crop profile on unassigned node redirects with alert and does not update zone" do
-    crop = create(:crop_profile)
-    node = Node.create!(node_id: "unassigned-node-crop", last_seen_at: Time.current)
-
-    patch crop_profile_node_path(node), params: { crop_profile_id: crop.id }
-
-    assert_redirected_to node_path(node)
-    assert_equal "Assign the node before applying a crop profile.", flash[:alert]
   end
 
   test "node page explains runtime and config errors with fixes" do

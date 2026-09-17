@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_09_01_090000) do
+ActiveRecord::Schema[8.0].define(version: 2026_09_16_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -69,6 +69,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_09_01_090000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.string "node_id"
+    t.string "affected_run_idempotency_key"
     t.index ["idempotency_key", "state"], name: "index_actuator_statuses_on_idempotency_key_and_state_unique", unique: true, where: "(idempotency_key IS NOT NULL)"
     t.index ["node_id", "recorded_at"], name: "index_actuator_statuses_on_node_id_and_recorded_at"
     t.index ["zone_id", "recorded_at"], name: "index_actuator_statuses_on_zone_id_and_recorded_at"
@@ -137,9 +138,9 @@ ActiveRecord::Schema[8.0].define(version: 2026_09_01_090000) do
 
   create_table "nodes", force: :cascade do |t|
     t.string "node_id", null: false
-    t.bigint "zone_id"
+    t.bigint "zone_id", null: false
     t.string "reported_zone_id"
-    t.datetime "last_seen_at", null: false
+    t.datetime "last_seen_at"
     t.string "schema_version"
     t.boolean "provisioned", default: false, null: false
     t.decimal "battery_voltage", precision: 4, scale: 2
@@ -162,11 +163,13 @@ ActiveRecord::Schema[8.0].define(version: 2026_09_01_090000) do
     t.bigint "crop_profile_id"
     t.integer "irrigation_line"
     t.string "communication_transport", default: "wifi", null: false
+    t.boolean "active", default: true, null: false
     t.index ["crop_profile_id"], name: "index_nodes_on_crop_profile_id"
     t.index ["device_id"], name: "index_nodes_on_device_id"
     t.index ["irrigation_line"], name: "index_nodes_on_irrigation_line", unique: true, where: "(irrigation_line IS NOT NULL)"
     t.index ["node_id"], name: "index_nodes_on_node_id", unique: true
     t.index ["zone_id"], name: "index_nodes_on_zone_id"
+    t.check_constraint "irrigation_line IS NULL OR irrigation_line > 0", name: "chk_nodes_irrigation_line_positive"
   end
 
   create_table "sensor_readings", force: :cascade do |t|
@@ -239,16 +242,14 @@ ActiveRecord::Schema[8.0].define(version: 2026_09_01_090000) do
 
   create_table "zones", force: :cascade do |t|
     t.string "zone_id", null: false
-    t.bigint "crop_profile_id", null: false
     t.boolean "active", default: true, null: false
     t.jsonb "allowed_hours"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.string "name"
-    t.integer "irrigation_line"
     t.integer "publish_interval_ms", default: 3600000, null: false
-    t.index ["crop_profile_id"], name: "index_zones_on_crop_profile_id"
-    t.index ["irrigation_line"], name: "index_zones_on_irrigation_line", unique: true, where: "(irrigation_line IS NOT NULL)"
+    t.string "sensor_device_id"
+    t.index ["sensor_device_id"], name: "index_zones_on_sensor_device_id", unique: true, where: "(sensor_device_id IS NOT NULL)"
     t.index ["zone_id"], name: "index_zones_on_zone_id", unique: true
   end
 
@@ -260,5 +261,4 @@ ActiveRecord::Schema[8.0].define(version: 2026_09_01_090000) do
   add_foreign_key "nodes", "zones"
   add_foreign_key "sensor_readings", "zones"
   add_foreign_key "watering_events", "zones"
-  add_foreign_key "zones", "crop_profiles"
 end

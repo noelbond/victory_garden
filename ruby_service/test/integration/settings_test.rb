@@ -37,14 +37,16 @@ class SettingsTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
-  test "invalid irrigation_line_count below existing assignment renders show with error" do
-    create(:zone, irrigation_line: 3)
+  test "reducing installed capacity preserves higher logical node assignments" do
+    zone = create(:zone)
+    Node.create!(node_id: "sensor-zone1-ch3", zone: zone, irrigation_line: 3, last_seen_at: Time.current)
 
     patch settings_path, params: {
       connection_setting: { irrigation_line_count: 2 }
     }
 
-    assert_response :unprocessable_entity
+    assert_redirected_to settings_path
+    assert_equal 3, Node.find_by!(node_id: "sensor-zone1-ch3").irrigation_line
   end
 
   test "valid irrigation_line_count change saves and redirects" do

@@ -1,105 +1,70 @@
 erDiagram
-    CropProfile {
-        string  crop_id       PK
-        string  crop_name
-        decimal dry_threshold
-        int     max_pulse_runtime_sec
-        int     daily_max_runtime_sec
-        string  climate_preference
-        int     time_to_harvest_days
-        boolean active
-        text    notes
-    }
-
     Zone {
-        string  zone_id         PK
-        bigint  crop_profile_id FK
-        string  name
+        string zone_id PK
+        string sensor_device_id UK "one sensor package"
+        string name
         boolean active
-        jsonb   allowed_hours
+        jsonb allowed_hours
     }
 
     Node {
-        string   node_id          PK
-        bigint   zone_id          FK "nullable"
-        string   reported_zone_id
-        datetime last_seen_at
-        boolean  provisioned
-        decimal  battery_voltage
-        int      wifi_rssi
-        string   health
-        string   config_status
-        string   config_version
-        jsonb    desired_config
-        jsonb    applied_config
-        datetime config_published_at
-        datetime config_acknowledged_at
-        text     config_error
+        string node_id PK "stable package-ch0..ch3 identity"
+        bigint zone_id FK "required"
+        bigint crop_profile_id FK "optional during setup"
+        string device_id "sensor package identity"
+        string name "optional custom display name"
+        int irrigation_line UK "global logical assignment"
+        datetime last_seen_at "nil before telemetry"
+        boolean active
     }
 
-    SensorReading {
-        bigint   id             PK
-        bigint   zone_id        FK
-        string   node_id
-        datetime recorded_at
-        int      moisture_raw
-        decimal  moisture_percent
-        decimal  soil_temp_c
-        decimal  battery_voltage
-        int      battery_percent
-        int      wifi_rssi
-        bigint   uptime_seconds
-        bigint   wake_count
-        string   health
-        string   publish_reason
-        jsonb    raw_payload
-    }
-
-    WateringEvent {
-        bigint   id              PK
-        bigint   zone_id         FK
-        string   command
-        int      runtime_seconds
-        string   reason
-        datetime issued_at
-        string   idempotency_key UK
-        string   status
-    }
-
-    ActuatorStatus {
-        bigint   id                    PK
-        bigint   zone_id               FK
-        string   state
-        datetime recorded_at
-        string   idempotency_key
-        int      actual_runtime_seconds
-        int      flow_ml
-        string   fault_code
-        text     fault_detail
-    }
-
-    Fault {
-        bigint   id          PK
-        bigint   zone_id     FK
-        string   fault_code
-        text     detail
-        datetime recorded_at
-        datetime resolved_at
+    CropProfile {
+        string crop_id PK
+        string crop_name
+        decimal dry_threshold
+        int max_pulse_runtime_sec
+        int daily_max_runtime_sec
+        boolean active
     }
 
     ConnectionSetting {
-        bigint  id               PK
-        string  mqtt_host
-        int     mqtt_port
-        string  command_topic
-        string  config_topic
-        string  readings_topic
-        string  actuators_topic
+        bigint id PK
+        int irrigation_line_count "installed physical capacity"
+        string mqtt_host
+        int mqtt_port
     }
 
-    CropProfile  ||--o{  Zone           : "has many"
-    Zone         ||--o{  Node           : "has many"
-    Zone         ||--o{  SensorReading  : "has many"
-    Zone         ||--o{  WateringEvent  : "has many"
-    Zone         ||--o{  ActuatorStatus : "has many"
-    Zone         ||--o{  Fault          : "has many"
+    SensorReading {
+        bigint id PK
+        bigint zone_id FK
+        string node_id
+        datetime recorded_at
+        int moisture_raw
+        decimal moisture_percent
+        string health
+    }
+
+    WateringEvent {
+        bigint id PK
+        bigint zone_id FK
+        string node_id
+        string command
+        int runtime_seconds
+        string idempotency_key UK
+        string status
+    }
+
+    ActuatorStatus {
+        bigint id PK
+        bigint zone_id FK
+        string node_id
+        string state
+        string idempotency_key
+        string affected_run_idempotency_key
+    }
+
+    Zone        ||--o{ Node            : "one package; four provisioned Nodes"
+    CropProfile o|--o{ Node            : "owned by Node"
+    Zone        ||--o{ SensorReading   : "groups readings"
+    Zone        ||--o{ WateringEvent   : "command identity"
+    Zone        ||--o{ ActuatorStatus  : "status identity"

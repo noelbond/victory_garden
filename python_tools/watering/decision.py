@@ -52,6 +52,7 @@ def decide_watering(
         zone_id=reading.zone_id,
         runtime_seconds=runtime,
         reason="below_dry_threshold",
+        issued_at=now,
         idempotency_key=f"{reading.zone_id}-{now:%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}",
     )
 

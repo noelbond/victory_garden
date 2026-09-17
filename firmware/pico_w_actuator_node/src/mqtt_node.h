@@ -3,7 +3,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "actuator_topology.h"
+#include "actuator_start_journal.h"
 #include "config.h"
+#include "dedicated_actuator_journal_boot.h"
+#include "dedicated_actuator_journal_runtime_state.h"
 #include "pico/stdlib.h"
 
 typedef enum {
@@ -15,13 +19,7 @@ typedef enum {
     ACTUATOR_STATUS_FAULT,
 } actuator_status_t;
 
-typedef struct {
-    bool assigned;
-    bool active;
-    char zone_id[VG_MAX_ZONE_ID_LEN];
-    char node_id[VG_MAX_NODE_ID_LEN];
-    uint8_t irrigation_line;
-} actuator_zone_assignment_t;
+typedef vg_actuator_topology_assignment_t actuator_zone_assignment_t;
 
 typedef struct {
     bool running;
@@ -45,10 +43,21 @@ typedef struct {
 
 typedef struct {
     node_config_t *config;
+    // Retains the latest valid runtime configuration until an idle window
+    // permits the sector erase/program needed to make it durable.
+    bool config_persistence_pending;
     bool config_changed_requires_reconnect;
+    bool topology_ready;
+    bool global_command_subscribed;
     uint8_t irrigation_line_count;
     actuator_zone_assignment_t assignments[VG_MAX_IRRIGATION_LINES];
     actuator_line_run_t runs[VG_MAX_IRRIGATION_LINES];
+    // Boot reconstructs these once before networking begins. START consults
+    // them for every command and may append one verified ACCEPTED page only
+    // through the dedicated all-outputs-idle persistence boundary.
+    const vg_dedicated_actuator_journal_runtime_state_t *durable_journal_runtime;
+    const vg_actuator_start_journal_t *durable_start_journal;
+    vg_dedicated_actuator_journal_boot_t *durable_journal_boot;
     char last_error[128];
 } mqtt_node_t;
 
@@ -58,8 +67,13 @@ typedef struct {
 // not touch mqtt_node_t and has no network dependency.
 void actuator_relays_init_safe(const node_config_t *config);
 void mqtt_node_init(mqtt_node_t *node, node_config_t *config);
+void mqtt_node_set_durable_start_journal(
+    mqtt_node_t *node,
+    vg_dedicated_actuator_journal_boot_t *boot
+);
 void mqtt_node_poll(mqtt_node_t *node);
 void mqtt_node_disconnect(mqtt_node_t *node);
+bool mqtt_node_any_actuator_output_active(const mqtt_node_t *node);
 bool mqtt_node_is_connected(const mqtt_node_t *node);
 bool mqtt_node_publish_canary(mqtt_node_t *node);
 bool mqtt_node_take_reconnect_request(mqtt_node_t *node);

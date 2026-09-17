@@ -1,51 +1,31 @@
 stateDiagram-v2
     direction TB
 
-    [*] --> Unprovisioned : Node first boots\n(no WiFi / MQTT creds)
+    [*] --> ZoneCreated
+    ZoneCreated --> TopologyEstablished : backend provisioning transaction
+    TopologyEstablished : Zone package binding\nexactly Node ch0..ch3\nlast_seen_at may be nil
+    TopologyEstablished --> HardwareProvisioned : USB applies issued identities\nand acknowledgement matches
+    HardwareProvisioned --> TelemetryReconciled : first retained Node state
+    TelemetryReconciled --> TelemetryReconciled : known Node updates telemetry only
 
-    state "Provisioning Mode" as PROV {
-        direction LR
-        [*] --> HostingAP : No stored config
-        HostingAP : Hosting captive portal\n(AP mode)
-        HostingAP --> ConfigSaved : User submits\nWiFi + zone credentials
-        ConfigSaved : Credentials written\nto EEPROM
-        ConfigSaved --> [*]
+    state "Node configuration" as CFG {
+        [*] --> Pending
+        Pending : retained configuration published
+        Applied : sensor acknowledgement received
+        Error : sensor config apply failed
+        Pending --> Applied : config ACK = applied
+        Pending --> Error : config ACK = error
+        Error --> Pending : corrected config published
+        Applied --> Pending : Node or Zone config changes
     }
 
-    Unprovisioned --> PROV
-    PROV --> Operational : Reboot with stored config
-
-    state "Operational" as Operational {
-        direction TB
-
-        state "Node Config Sync" as CFG {
-            [*] --> Unassigned
-
-            Unassigned : config_status = nil\nNo zone assigned
-            Pending    : config_status = pending\nConfig published to MQTT
-            Applied    : config_status = applied\nNode ACK received
-            Error      : config_status = error\nApply failed on node
-
-            Unassigned --> Pending  : Zone assigned\n(PublishNodeConfigJob)
-            Pending    --> Applied  : Node ACK = applied
-            Pending    --> Error    : Node ACK = error\nor job retries exhausted
-            Error      --> Pending  : Retry publish
-            Applied    --> Pending  : Config changed\n(re-publish)
-            Pending    --> Unassigned : Zone unassigned
-            Applied    --> Unassigned : Zone unassigned
-            Error      --> Unassigned : Zone unassigned
-        }
-
-        state "Watering Event Lifecycle" as WE {
-            [*]      --> Queued
-
-            Queued    : WateringEvent created\nJob not yet executed
-            Sent      : Command published\nto MQTT broker
-            Completed : Actuator reported\nback (done)
-            Failed    : Job retries\nexhausted or error
-
-            Queued    --> Sent      : CommandPublishJob executes
-            Sent      --> Completed : ActuatorStatus ingest\n(state = done)
-            Sent      --> Failed    : ActuatorStatus ingest\n(state = fault)\nor timeout
-        }
+    state "Watering eligibility" as WATER {
+        [*] --> Ineligible
+        Ineligible : crop missing, line missing,\nor line unsupported
+        Eligible : active Node crop + supported logical line
+        Ineligible --> Eligible : complete safe Node configuration
+        Eligible --> Ineligible : crop/line/capacity becomes unsafe
     }
+
+    TelemetryReconciled --> CFG
+    CFG --> WATER

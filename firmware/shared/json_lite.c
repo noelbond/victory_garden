@@ -1,5 +1,7 @@
 #include "json_lite.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +38,7 @@ bool decode_json_string(const char *start, char *out, size_t out_size, const cha
     if (!start || !out || out_size == 0) {
         return false;
     }
+    out[0] = '\0';
 
     while (*cursor != '\0') {
         char ch = *cursor++;
@@ -70,15 +73,22 @@ bool decode_json_string(const char *start, char *out, size_t out_size, const cha
                     ch = '\t';
                     break;
                 default:
+                    out[0] = '\0';
                     return false;
             }
         }
 
-        if (out_len + 1 < out_size) {
-            out[out_len++] = ch;
+        // The destination must hold every decoded byte plus its terminator.
+        // Do not turn a malformed long identity into a valid shorter prefix:
+        // callers use these strings for MQTT routing and provisioning.
+        if (out_len + 1 >= out_size) {
+            out[0] = '\0';
+            return false;
         }
+        out[out_len++] = ch;
     }
 
+    out[0] = '\0';
     return false;
 }
 
@@ -114,7 +124,19 @@ bool extract_json_int(const char *payload, const char *key, int *out) {
     if ((*start < '0' || *start > '9') && *start != '-') {
         return false;
     }
-    *out = (int)strtol(start, NULL, 10);
+    errno = 0;
+    char *end = NULL;
+    const long value = strtol(start, &end, 10);
+    if (errno == ERANGE || end == start || value < INT_MIN || value > INT_MAX) {
+        return false;
+    }
+    // Accept only a complete JSON integer token. In particular, do not turn
+    // 1.5, 1e3, or a malformed suffix into an unintended positive runtime.
+    if (*end != '\0' && *end != ',' && *end != '}' && *end != ']' &&
+        *end != ' ' && *end != '\t' && *end != '\r' && *end != '\n') {
+        return false;
+    }
+    *out = (int)value;
     return true;
 }
 

@@ -2,7 +2,7 @@ require "test_helper"
 
 class NodeCommunicationTransportTest < ActiveSupport::TestCase
   test "defaults communication transport to wifi" do
-    node = Node.create!(node_id: "node-transport-default", last_seen_at: Time.current)
+    node = Node.create!(node_id: "node-transport-default", zone: create(:zone), last_seen_at: Time.current)
 
     assert_equal "wifi", node.communication_transport
     assert node.wifi_transport?
@@ -14,6 +14,7 @@ class NodeCommunicationTransportTest < ActiveSupport::TestCase
     Node::COMMUNICATION_TRANSPORTS.each do |transport|
       node = Node.new(
         node_id: "node-transport-#{transport}",
+        zone: create(:zone),
         last_seen_at: Time.current,
         communication_transport: transport
       )
@@ -25,6 +26,7 @@ class NodeCommunicationTransportTest < ActiveSupport::TestCase
   test "rejects unsupported communication transport" do
     node = Node.new(
       node_id: "node-transport-bad",
+      zone: create(:zone),
       last_seen_at: Time.current,
       communication_transport: "bluetooth"
     )

@@ -94,11 +94,10 @@ canonical `node-state/v1` payload to:
 greenhouse/zones/{zone_id}/nodes/{node_id}/state
 ```
 
-`zone_id` and `node_id` must be MQTT-safe:
+Provisioned firmware-visible `zone_id` and `node_id` use only:
 
 - letters
 - numbers
-- `.`
 - `_`
 - `-`
 

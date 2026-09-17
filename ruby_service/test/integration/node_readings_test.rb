@@ -3,8 +3,8 @@ require "test_helper"
 class NodeReadingsTest < ActionDispatch::IntegrationTest
   setup do
     crop = create(:crop_profile, crop_name: "Tomato")
-    @zone = create(:zone, zone_id: "zone1", name: "Greenhouse Zone 1", crop_profile: crop)
-    @node = Node.create!(node_id: "pico-w-zone1-a", zone: @zone, last_seen_at: Time.current)
+    @zone = create(:zone, zone_id: "zone1", name: "Greenhouse Zone 1")
+    @node = Node.create!(node_id: "pico-w-zone1-a", zone: @zone, crop_profile: crop, last_seen_at: Time.current)
   end
 
   test "node readings page renders reading-history style filters and results" do

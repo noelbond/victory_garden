@@ -268,8 +268,10 @@ Typical values to set before flashing:
 - Wi‑Fi SSID/password
 - MQTT broker IP/port/credentials
 - NTP server
-- node ID
-- zone ID
+
+For production sensor packages, do not hand-invent the package, Zone, or
+channel identities in local firmware configuration. Rails provisioning issues
+them first, then the USB provisioner sends those exact values to the Pico.
 
 Current moisture-input note:
 
@@ -280,17 +282,36 @@ Current moisture-input note:
 
 ### Four-channel installer flow
 
-The sensor Pico provisioning acknowledgement supplies four explicit channel node IDs. The installer waits for all four channel state messages before continuing; it does not derive IDs from naming conventions.
+Rails establishes production topology before the sensor reports telemetry. One
+Zone is bound to one sensor package and exactly four stable Node identities:
+`{package}-ch0` through `{package}-ch3`.
 
-1. Flash and provision one sensor Pico.
-2. Wait for all four ADS1115 channels to appear in Rails.
-3. Create the bed/zone for that sensor Pico.
-4. Assign any detected channel to the bed. Rails cascades the assignment to every sibling with the same physical `device_id`.
-5. Name each channel node as a plant, then assign its crop profile and pump/relay output.
-6. Put all four probes in dry soil and capture once. One `request_reading` wake publishes all four dry values.
-7. Put all four probes in saturated soil and capture once. One wake publishes all four wet values.
-8. The installer saves dry/wet calibration independently on each channel. Rails publishes one aggregated config to `greenhouse/nodes/{device_id}/config` with a four-entry `channels` array.
-9. Request a final calibrated reading and then validate watering against one configured plant channel.
+1. Create the Zone in browser onboarding or call the setup API with the sensor
+   package identity. Rails validates the identity, transactionally creates the
+   exact four Nodes, and allocates their logical greenhouse-wide irrigation
+   lines.
+2. Flash the sensor Pico, then use USB provisioning. The provisioner obtains the
+   backend-issued Zone ID, package ID, and four ordered channel IDs from Rails
+   and sends those exact values to the Pico.
+3. Verify `VG_PROVISION_OK` matches the issued package, Zone, and all four
+   channel IDs. Do not continue on a mismatched acknowledgement.
+4. Power the Pico and wait for telemetry only to confirm the already-known
+   Nodes. Unknown telemetry is diagnostic and does not create production Nodes.
+5. Give individual Nodes optional custom names, crop profiles, and logical
+   irrigation-line assignments. Different Nodes in the same Zone may use
+   different crops.
+6. Put all four probes in dry soil and capture once. One `request_reading` wake
+   publishes all four dry values.
+7. Put all four probes in saturated soil and capture once. One wake publishes
+   all four wet values.
+8. Save dry/wet calibration independently on each channel. Rails publishes one
+   aggregated config to `greenhouse/nodes/{device_id}/config` with a four-entry
+   `channels` array.
+9. Request a final calibrated reading and validate watering against one
+   configured plant Node.
+
+The legacy reconciliation controls are not a normal installation path. They do
+not permit assigning or moving one channel independently of its package.
 
 ### Pico verification
 
@@ -324,8 +345,7 @@ Typical values to set before flashing:
 - Wi‑Fi SSID/password
 - MQTT broker IP/port/credentials
 - NTP server
-- node ID
-- zone ID
+- actuator provisioning identity
 - relay GPIO
 - relay polarity
 
@@ -365,14 +385,11 @@ Expected during a test run:
 
 ## 5. Current Remaining Work
 
-The replacement-sensor live path is now validated end to end:
+Hardware validation remains deferred. In particular, the final physical actuator
+output capacity and real relay/sensor behavior must be validated on the target
+installation; firmware builds and host tests do not establish that evidence.
 
-- replacement Pico sensor installed and publishing live readings
-- dry and wet bounds calibrated for the current hardware
-- dry-soil -> water -> stop -> reread loop validated on hardware
+Also deferred:
 
-The remaining work is longer-running field validation:
-
-- multi-cycle stability on the real plant
-- reboot/recovery checks on the live stack
-- soak testing to confirm watering raises moisture above threshold over time
+- deterministic, durable Python producer identity and intent persistence (Step 60)
+- polished sensor replacement workflow and UI

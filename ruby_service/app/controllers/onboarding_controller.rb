@@ -41,7 +41,7 @@ class OnboardingController < ApplicationController
 
     if @setting.save
       ConfigPublishJob.perform_later
-      redirect_to onboarding_step_redirect("zone"), notice: "MQTT and water-zone settings saved."
+      redirect_to onboarding_step_redirect("zone"), notice: "MQTT and actuator-output settings saved."
     else
       render_onboarding_step("connection", status: :unprocessable_entity)
     end
@@ -61,13 +61,22 @@ class OnboardingController < ApplicationController
   def upsert_zone
     @zone_form = onboarding_zone_record
     @zone_form.assign_attributes(onboarding_zone_params)
-    @zone_form.crop_profile ||= default_crop_profile
 
-    if @zone_form.save
-      redirect_to onboarding_step_redirect("detected_node"), notice: "First zone saved."
-    else
-      render_onboarding_step("zone", status: :unprocessable_entity)
+    Zone.transaction do
+      @zone_form.save!
+      SensorZoneProvisioner.call(
+        zone: @zone_form,
+        sensor_device_id: onboarding_sensor_device_id(@zone_form)
+      )
     end
+
+    redirect_to onboarding_step_redirect("detected_node"), notice: "Zone and its four sensor positions were provisioned."
+  rescue ActiveRecord::RecordInvalid => error
+    @zone_form = error.record if error.record.is_a?(Zone)
+    render_onboarding_step("zone", status: :unprocessable_entity)
+  rescue SensorZoneProvisioner::ProvisioningError => error
+    @zone_form.errors.add(:base, error.message)
+    render_onboarding_step("zone", status: :unprocessable_entity)
   end
 
   def assign_node
@@ -79,10 +88,12 @@ class OnboardingController < ApplicationController
       return
     end
 
-    node.update!(zone: zone)
+    SensorPackageZoneAssignment.call(node: node, zone: zone)
     PublishNodeConfigJob.perform_later(node.id)
 
     redirect_to onboarding_step_redirect("reading"), notice: "#{node.reload.display_name} assigned to #{zone.name.presence || zone.zone_id}."
+  rescue SensorPackageZoneAssignment::AssignmentError => e
+    redirect_to onboarding_step_redirect("assigned_node"), alert: e.message
   end
 
   def publish_config
@@ -108,21 +119,42 @@ class OnboardingController < ApplicationController
   end
 
   def water_now
-    zone = selected_watering_zone
+    zone = requested_watering_zone
+    node = Node.find_by(id: params[:node_id])
 
     if zone.blank?
       redirect_to onboarding_step_redirect("watering"), alert: "Create a zone before testing watering."
       return
     end
 
-    if zone.watering_events.blocking_start_commands.exists?
-      redirect_to onboarding_step_redirect("watering"), alert: "Watering is already active for this zone."
+    if node.blank?
+      redirect_to onboarding_step_redirect("watering"), alert: "Choose a configured plant node before testing watering."
       return
     end
 
-    WateringCommand.start(zone)
+    if node.zone != zone
+      redirect_to onboarding_step_redirect("watering"), alert: "Choose a plant node assigned to this zone before testing watering."
+      return
+    end
 
-    redirect_to onboarding_step_redirect("watering"), notice: "Watering command queued. Refresh this step after the actuator responds."
+    unless node.watering_configured?
+      redirect_to onboarding_step_redirect("watering"), alert: "Assign a crop profile and pump output before testing watering for #{node.display_name}."
+      return
+    end
+
+    unless node.irrigation_line_supported?
+      redirect_to onboarding_step_redirect("watering"), alert: "Pump output #{node.irrigation_line} is not supported by the installed actuator capacity."
+      return
+    end
+
+    if zone.watering_events.blocking_start_commands.where(node_id: node.node_id).exists?
+      redirect_to onboarding_step_redirect("watering"), alert: "Watering is already active for this node."
+      return
+    end
+
+    WateringCommand.start_node(node)
+
+    redirect_to onboarding_step_redirect("watering"), notice: "Watering command queued for #{node.display_name}. Refresh this step after the actuator responds."
   end
 
   def firmware
@@ -201,7 +233,7 @@ class OnboardingController < ApplicationController
   def build_onboarding_wizard_steps
     setting = ConnectionSetting.first
     first_zone = Zone.order(:created_at).first
-    discovered_node = Node.order(last_seen_at: :desc, created_at: :desc).first
+    discovered_node = latest_provisioned_telemetry_node
     assigned_node = Node.assigned.order(last_seen_at: :desc, created_at: :desc).first
 
     [
@@ -219,18 +251,18 @@ class OnboardingController < ApplicationController
           "Pick the actual board type before flashing. Pico W and Pico 2 W need different UF2 files."
         ],
         actions: [
-          { label: "Go To MQTT & Water Zones", path: onboarding_step_path("connection"), class: "btn" }
+          { label: "Go To MQTT & Actuator Outputs", path: onboarding_step_path("connection"), class: "btn" }
         ] + firstboot_actions
       },
       {
         key: "connection",
-        title: "MQTT & Water Zones",
+        title: "MQTT & Actuator Outputs",
         done: onboarding_step_state(:connection),
         required: true,
-        description: "Confirm the broker settings and tell the app how many physical water-zone outputs exist on the actuator hardware.",
+        description: "Confirm the broker settings and tell the app how many physical outputs exist on the greenhouse-wide actuator hardware.",
         checklist: [
           connection_settings_complete?(setting) ? "MQTT host, port, username, and password are configured." : "MQTT host, port, username, and password still need setup.",
-          setting&.irrigation_line_count.present? ? "Installed water zones: #{setting.irrigation_line_count}." : "Installed water zones still need setup."
+          setting&.irrigation_line_count.present? ? "Installed actuator outputs: #{setting.irrigation_line_count}." : "Installed actuator outputs still need setup."
         ],
         actions: []
       },
@@ -252,34 +284,34 @@ class OnboardingController < ApplicationController
         title: "Create First Zone",
         done: onboarding_step_state(:zone),
         required: true,
-        description: "Create the first zone, attach a Crop Profile, and set the matching Water Zone number for the actuator hardware.",
+        description: "Create the first Zone. Crop and logical irrigation-line assignments are configured per plant sensor Node.",
         checklist: [
           first_zone.present? ? "Current first zone: #{first_zone.name.presence || first_zone.zone_id}." : "No zones exist yet.",
-          first_zone&.irrigation_line.present? ? "Water Zone #{first_zone.irrigation_line} is assigned." : "The first zone still needs a Water Zone assignment.",
+          "Plant sensor Nodes receive crop and logical irrigation-line assignments separately.",
           CropProfile.exists? ? "At least one crop profile is ready to assign." : "Create the first crop profile directly on this step before saving the zone."
         ],
         actions: []
       },
       {
         key: "detected_node",
-        title: "Detect Sensor Node",
+        title: "Confirm Sensor Telemetry",
         done: onboarding_step_state(:detected_node),
         required: true,
-        description: "Flash the sensor Pico, power it near the Pi, and wait for the app to detect its first live state publish.",
+        description: "Flash the sensor Pico, power it near the Pi, and confirm first live state for the four Node identities created during Zone provisioning.",
         checklist: [
-          discovered_node.present? ? "Latest discovered node: #{discovered_node.display_name}." : "No sensor nodes have been discovered yet.",
+          discovered_node.present? ? "Latest provisioned Node with telemetry: #{discovered_node.display_name}." : "No provisioned sensor Node has reported telemetry yet.",
           discovered_node&.reported_zone_id.present? ? "Reported Zone ID: #{discovered_node.reported_zone_id}." : "The node has not reported a zone identifier yet."
         ],
         actions: []
       },
       {
         key: "assigned_node",
-        title: "Assign Sensor Node",
+        title: "Review Provisioned Node",
         done: onboarding_step_state(:assigned_node),
         required: true,
-        description: "Assign the discovered sensor node to the zone you created so readings can be persisted and used by the controller.",
+        description: "Review a preprovisioned sensor position. Production Zone ownership is set during provisioning; the remaining selector is only a legacy reconciliation control.",
         checklist: [
-          assigned_node.present? ? "Assigned node: #{assigned_node.display_name} -> #{assigned_node.zone.name.presence || assigned_node.zone.zone_id}." : "No sensor node is assigned to a zone yet."
+          assigned_node.present? ? "Provisioned Node: #{assigned_node.display_name} -> #{assigned_node.zone.name.presence || assigned_node.zone.zone_id}." : "No provisioned sensor Node is available yet."
         ],
         actions: []
       },
@@ -288,7 +320,7 @@ class OnboardingController < ApplicationController
         title: "Confirm First Reading",
         done: onboarding_step_state(:reading),
         required: true,
-        description: "Request a reading from the assigned node and confirm it lands in Reading History and on the zone page.",
+        description: "Request a reading from the provisioned Node and confirm it lands in Reading History and on the Zone page.",
         checklist: [
           onboarding_step_state(:reading) ? "At least one persisted reading exists." : "No persisted readings exist yet."
         ],
@@ -392,7 +424,7 @@ class OnboardingController < ApplicationController
       @crop_profiles = CropProfile.order(:crop_name)
       @reading_frequency_options = ZonesController::READING_FREQUENCY_OPTIONS
     when "detected_node"
-      @latest_detected_node = Node.order(last_seen_at: :desc, created_at: :desc).first
+      @latest_detected_node = latest_provisioned_telemetry_node
     when "assigned_node"
       @assignable_nodes = Node.order(last_seen_at: :desc, node_id: :asc)
       @assignable_zones = Zone.order(:created_at, :id)
@@ -403,7 +435,7 @@ class OnboardingController < ApplicationController
       @selected_reading_node = selected_assigned_node
       @latest_selected_reading = latest_reading_for(@selected_reading_node)
     when "watering"
-      @watering_zones = Zone.includes(:crop_profile).order(:created_at, :id)
+      @watering_zones = Zone.order(:created_at, :id)
       @selected_watering_zone = selected_watering_zone
       @latest_watering_event = @selected_watering_zone&.watering_events&.order(issued_at: :desc)&.first
     end
@@ -419,16 +451,24 @@ class OnboardingController < ApplicationController
 
   def onboarding_zone_record
     zone = Zone.order(:created_at, :id).first || Zone.new(active: true)
-    zone.crop_profile ||= selected_crop_profile_for_onboarding
     zone.publish_interval_ms ||= Zone::DEFAULT_PUBLISH_INTERVAL_MS
     zone
+  end
+
+  def onboarding_sensor_device_id(zone)
+    zone.sensor_device_id.presence || "sensor-#{zone.zone_id}"
+  end
+
+  def latest_provisioned_telemetry_node
+    Node.includes(:zone).where.not(last_seen_at: nil).order(last_seen_at: :desc, created_at: :desc).detect do |node|
+      node.zone&.canonical_sensor_package_nodes?
+    end
   end
 
   def apply_zone_draft(zone)
     return if zone_draft_params.empty?
 
     zone.assign_attributes(zone_draft_params)
-    zone.crop_profile ||= selected_crop_profile_for_onboarding
   end
 
   def onboarding_crop_profile_record
@@ -439,18 +479,10 @@ class OnboardingController < ApplicationController
     )
   end
 
-  def default_crop_profile
-    CropProfile.order(:crop_name).first
-  end
-
-  def selected_crop_profile_for_onboarding
-    requested_id = params[:crop_profile_id].presence
-    CropProfile.find_by(id: requested_id) || default_crop_profile
-  end
 
   def selected_assignment_node
     node_id = params[:node_id].presence
-    Node.find_by(id: node_id) || Node.unassigned.order(last_seen_at: :desc, node_id: :asc).first || Node.assigned.order(last_seen_at: :desc, node_id: :asc).first
+    Node.find_by(id: node_id) || Node.assigned.order(last_seen_at: :desc, node_id: :asc).first
   end
 
   def selected_assignment_zone
@@ -472,8 +504,15 @@ class OnboardingController < ApplicationController
 
   def selected_watering_zone
     zone_id = params[:zone_id].presence || params[:watering_zone_id].presence
-    scope = Zone.includes(:crop_profile).order(:created_at, :id)
+    scope = Zone.order(:created_at, :id)
     zone_id.present? ? scope.find_by(id: zone_id) || scope.first : scope.first
+  end
+
+  def requested_watering_zone
+    zone_id = params[:zone_id].presence || params[:watering_zone_id].presence
+    return selected_watering_zone if zone_id.blank?
+
+    Zone.find_by(id: zone_id)
   end
 
   def waiting_for_watering_confirmation?
@@ -498,7 +537,6 @@ class OnboardingController < ApplicationController
     params.fetch(:zone_draft, {}).permit(
       :name,
       :active,
-      :irrigation_line,
       :publish_interval_ms
     )
   end

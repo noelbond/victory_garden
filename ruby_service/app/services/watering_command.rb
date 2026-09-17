@@ -1,13 +1,20 @@
 class WateringCommand
   Result = Struct.new(:event, :payload, keyword_init: true)
 
-  def self.start(zone)
-    new(zone, command: "start_watering", runtime_seconds: zone.crop_profile.max_pulse_runtime_sec, reason: "manual_trigger").issue!
+  def self.start(_zone)
+    raise ArgumentError, "start_watering requires a configured node"
   end
 
   def self.start_node(node)
-    profile = node.effective_crop_profile
-    raise ArgumentError, "node must have a crop profile before watering" if profile.blank?
+    unless node.watering_configured?
+      raise ArgumentError, "node must have an active assigned zone, crop profile, and irrigation line before watering"
+    end
+
+    unless node.irrigation_line_supported?
+      raise ArgumentError, "node irrigation line is not supported by installed actuator capacity"
+    end
+
+    profile = node.crop_profile
 
     new(
       node.zone,
@@ -18,8 +25,8 @@ class WateringCommand
     ).issue!
   end
 
-  def self.stop(zone)
-    new(zone, command: "stop_watering", runtime_seconds: nil, reason: "manual_stop").issue!
+  def self.stop(_zone)
+    raise ArgumentError, "zone-level stop_watering is unavailable until stop_all is implemented"
   end
 
   def initialize(zone, node: nil, command:, runtime_seconds:, reason:)
@@ -32,13 +39,14 @@ class WateringCommand
 
   def issue!
     issued_at = Time.current
+    actuator_issued_at = issued_at.utc.iso8601
     payload = {
       command: @command,
       zone_id: @zone.zone_id,
       node_id: @node&.node_id,
       runtime_seconds: @runtime_seconds,
       reason: @reason,
-      issued_at: issued_at,
+      issued_at: actuator_issued_at,
       idempotency_key: "#{@node&.node_id || @zone.zone_id}-#{issued_at.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(4)}"
     }
 
@@ -48,7 +56,7 @@ class WateringCommand
       command: payload[:command],
       runtime_seconds: payload[:runtime_seconds],
       reason: payload[:reason],
-      issued_at: payload[:issued_at],
+      issued_at: issued_at,
       idempotency_key: payload[:idempotency_key],
       status: "queued"
     )

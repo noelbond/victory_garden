@@ -12,16 +12,16 @@ class PublishNodeConfigJob < ApplicationJob
   end
 
   def perform(node_id)
-    node = Node.includes(zone: :crop_profile).find(node_id)
+    node = Node.includes(:zone, :crop_profile).find(node_id)
     device_id = node.device_id.presence || node.node_id
-    siblings = node.device_siblings.includes(zone: :crop_profile).order(:node_id).to_a
+    siblings = node.device_siblings.includes(:zone, :crop_profile).order(:node_id).to_a
     payload = build_payload(node, siblings: siblings, device_id: device_id)
     published_at = Time.current
 
     Node.where(id: siblings.map(&:id)).update_all(
       desired_config: payload,
       config_version: payload[:config_version],
-      config_status: node.assigned? ? "pending" : "unassigned",
+      config_status: "pending",
       config_published_at: published_at,
       config_error: nil,
       updated_at: published_at
@@ -43,9 +43,8 @@ class PublishNodeConfigJob < ApplicationJob
   def build_payload(node, siblings:, device_id:)
     issued_at = Time.current.utc.iso8601
 
-    if node.zone.present?
-      crop = node.effective_crop_profile
-      payload = {
+    crop = node.crop_profile
+    payload = {
         schema_version: "node-config/v1",
         config_version: issued_at,
         issued_at: issued_at,
@@ -58,40 +57,33 @@ class PublishNodeConfigJob < ApplicationJob
           allowed_hours: node.zone.allowed_hours,
           publish_interval_ms: node.zone.publish_interval_ms
         },
-        crop: {
-          crop_id: crop.crop_id,
-          crop_name: crop.crop_name,
-          dry_threshold: crop.dry_threshold.to_f,
-          max_pulse_runtime_sec: crop.max_pulse_runtime_sec,
-          daily_max_runtime_sec: crop.daily_max_runtime_sec,
-          climate_preference: crop.climate_preference,
-          time_to_harvest_days: crop.time_to_harvest_days
-        }
+        crop: crop_payload(crop)
       }
 
-      if node.device_id.present?
-        payload[:channels] = siblings.map { |sibling| channel_payload(sibling) }
-      else
-        payload[:sensor] = calibration_payload(node)
-      end
-      payload
+    if node.device_id.present?
+      payload[:channels] = siblings.map { |sibling| channel_payload(sibling) }
     else
-      {
-        schema_version: "node-config/v1",
-        config_version: issued_at,
-        issued_at: issued_at,
-        node_id: device_id,
-        assigned: false,
-        utc_offset_hours: current_utc_offset_hours,
-        zone: nil,
-        crop: nil,
-        channels: node.device_id.present? ? siblings.map { |sibling| channel_payload(sibling) } : nil
-      }.compact
+      payload[:sensor] = calibration_payload(node)
     end
+    payload
   end
 
   def channel_payload(node)
     { node_id: node.node_id }.merge(calibration_payload(node))
+  end
+
+  def crop_payload(crop)
+    return nil if crop.blank?
+
+    {
+      crop_id: crop.crop_id,
+      crop_name: crop.crop_name,
+      dry_threshold: crop.dry_threshold.to_f,
+      max_pulse_runtime_sec: crop.max_pulse_runtime_sec,
+      daily_max_runtime_sec: crop.daily_max_runtime_sec,
+      climate_preference: crop.climate_preference,
+      time_to_harvest_days: crop.time_to_harvest_days
+    }
   end
 
   def calibration_payload(node)

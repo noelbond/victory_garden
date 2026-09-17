@@ -9,7 +9,8 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     clear_performed_jobs
 
     @crop = create(:crop_profile, crop_id: "tomato-loop")
-    @zone = create(:zone, zone_id: "zone1", name: "Zone 1", crop_profile: @crop)
+    @zone = create(:zone, zone_id: "zone1", name: "Zone 1")
+    @node = Node.create!(node_id: "sensor-zone1", zone: @zone, crop_profile: @crop, irrigation_line: 1, last_seen_at: Time.current)
   end
 
   teardown do
@@ -17,7 +18,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     clear_performed_jobs
   end
 
-  def create_watering_event(idempotency_key:, status:, zone: @zone, node_id: nil, command: "start_watering",
+  def create_watering_event(idempotency_key:, status:, zone: @zone, node_id: @node.node_id, command: "start_watering",
                              runtime_seconds: 45, reason: "below_dry_threshold", issued_at: Time.current)
     WateringEvent.create!(
       zone: zone,
@@ -36,6 +37,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
 
     payload = {
       "zone_id" => @zone.zone_id,
+      "node_id" => @node.node_id,
       "state" => "COMPLETED",
       "timestamp" => Time.current.iso8601,
       "idempotency_key" => event.idempotency_key,
@@ -45,7 +47,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     freeze_time do
       assert_enqueued_with(
         job: RequestReadingJob,
-        args: [{ zone_id: "zone1", command_id: "zone1-run-001-reread", node_id: nil }],
+        args: [{ zone_id: "zone1", command_id: "zone1-run-001-reread", node_id: @node.node_id }],
         at: 5.minutes.from_now
       ) do
         ActuatorStatusIngestor.new(payload).call
@@ -80,7 +82,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   end
 
   test "node-targeted completed status stores node id and schedules node reread" do
-    node = Node.create!(node_id: "sensor-zone1-ch0", zone: @zone, crop_profile: @crop, irrigation_line: 1, last_seen_at: Time.current)
+    node = @node
     event = create_watering_event(idempotency_key: "sensor-zone1-ch0-run-001", status: "running", node_id: node.node_id)
 
     payload = {
@@ -155,10 +157,128 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
     assert_equal "stopped", started.reload.status
   end
 
+  test "stopped status with an affected run key marks that exact node run stopped" do
+    node = Node.create!(node_id: "sensor-zone1-ch1", zone: @zone, crop_profile: @crop, irrigation_line: 2, last_seen_at: Time.current)
+    started = create_watering_event(
+      idempotency_key: "sensor-zone1-ch1-run-001", status: "running", node_id: node.node_id,
+      reason: "manual_trigger", issued_at: 10.seconds.ago
+    )
+    stopped = create_watering_event(
+      idempotency_key: "sensor-zone1-ch1-stop-001", status: "command_sent", node_id: node.node_id,
+      command: "stop_watering", runtime_seconds: nil, reason: "manual_stop"
+    )
+
+    payload = {
+      "zone_id" => @zone.zone_id,
+      "node_id" => node.node_id,
+      "state" => "STOPPED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => stopped.idempotency_key,
+      "affected_run_idempotency_key" => started.idempotency_key
+    }
+    status = ActuatorStatusIngestor.new(payload).call
+    ActuatorStatusIngestor.new(payload).call
+
+    assert_equal "stopped", stopped.reload.status
+    assert_equal "stopped", started.reload.status
+    assert_equal started.idempotency_key, status.affected_run_idempotency_key
+    assert_equal 1, ActuatorStatus.where(zone: @zone, idempotency_key: stopped.idempotency_key, state: "STOPPED").count
+    assert_no_difference -> { Fault.count } do
+      ActuatorCommandTimeoutJob.perform_now(idempotency_key: stopped.idempotency_key, timeout_seconds: 30)
+    end
+  end
+
+  test "explicit unknown affected run does not fall back to the latest active start" do
+    node = Node.create!(node_id: "sensor-zone1-ch2", zone: @zone, crop_profile: @crop, irrigation_line: 3, last_seen_at: Time.current)
+    started = create_watering_event(idempotency_key: "sensor-zone1-ch2-run-001", status: "running", node_id: node.node_id)
+    stopped = create_watering_event(
+      idempotency_key: "sensor-zone1-ch2-stop-001", status: "command_sent", node_id: node.node_id,
+      command: "stop_watering", runtime_seconds: nil, reason: "manual_stop"
+    )
+
+    ActuatorStatusIngestor.new(
+      "zone_id" => @zone.zone_id,
+      "node_id" => node.node_id,
+      "state" => "STOPPED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => stopped.idempotency_key,
+      "affected_run_idempotency_key" => "missing-start-run"
+    ).call
+
+    assert_equal "stopped", stopped.reload.status
+    assert_equal "running", started.reload.status
+  end
+
+  test "explicit affected run for another node is ignored" do
+    target = Node.create!(node_id: "sensor-zone1-ch3", zone: @zone, crop_profile: @crop, irrigation_line: 4, last_seen_at: Time.current)
+    other = Node.create!(node_id: "sensor-zone1-ch4", zone: @zone, crop_profile: @crop, irrigation_line: 3, last_seen_at: Time.current)
+    started = create_watering_event(idempotency_key: "sensor-zone1-ch4-run-001", status: "running", node_id: other.node_id)
+    stopped = create_watering_event(
+      idempotency_key: "sensor-zone1-ch3-stop-001", status: "command_sent", node_id: target.node_id,
+      command: "stop_watering", runtime_seconds: nil, reason: "manual_stop"
+    )
+
+    ActuatorStatusIngestor.new(
+      "zone_id" => @zone.zone_id,
+      "node_id" => target.node_id,
+      "state" => "STOPPED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => stopped.idempotency_key,
+      "affected_run_idempotency_key" => started.idempotency_key
+    ).call
+
+    assert_equal "stopped", stopped.reload.status
+    assert_equal "running", started.reload.status
+  end
+
+  test "explicit affected run for another zone is ignored" do
+    node = Node.create!(node_id: "sensor-zone1-ch5", zone: @zone, crop_profile: @crop, irrigation_line: 2, last_seen_at: Time.current)
+    other_zone = create(:zone, zone_id: "zone2", name: "Zone 2")
+    started = create_watering_event(idempotency_key: "zone2-run-001", status: "running", zone: other_zone, node_id: node.node_id)
+    stopped = create_watering_event(
+      idempotency_key: "sensor-zone1-ch5-stop-001", status: "command_sent", node_id: node.node_id,
+      command: "stop_watering", runtime_seconds: nil, reason: "manual_stop"
+    )
+
+    ActuatorStatusIngestor.new(
+      "zone_id" => @zone.zone_id,
+      "node_id" => node.node_id,
+      "state" => "STOPPED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => stopped.idempotency_key,
+      "affected_run_idempotency_key" => started.idempotency_key
+    ).call
+
+    assert_equal "stopped", stopped.reload.status
+    assert_equal "running", started.reload.status
+  end
+
+  test "already-off stopped status marks only the stop command stopped" do
+    node = Node.create!(node_id: "sensor-zone1-ch6", zone: @zone, crop_profile: @crop, irrigation_line: 2, last_seen_at: Time.current)
+    started = create_watering_event(idempotency_key: "sensor-zone1-ch6-run-001", status: "running", node_id: node.node_id)
+    stopped = create_watering_event(
+      idempotency_key: "sensor-zone1-ch6-stop-001", status: "command_sent", node_id: node.node_id,
+      command: "stop_watering", runtime_seconds: nil, reason: "manual_stop"
+    )
+
+    status = ActuatorStatusIngestor.new(
+      "zone_id" => @zone.zone_id,
+      "node_id" => node.node_id,
+      "state" => "STOPPED",
+      "timestamp" => Time.current.iso8601,
+      "idempotency_key" => stopped.idempotency_key,
+      "affected_run_idempotency_key" => nil
+    ).call
+
+    assert_equal "stopped", stopped.reload.status
+    assert_equal "running", started.reload.status
+    assert_nil status.affected_run_idempotency_key
+  end
+
   test "completed status does not schedule reread when daily runtime cap is already met" do
     create_watering_event(
       idempotency_key: "zone1-run-cap", status: "completed",
-      runtime_seconds: @zone.crop_profile.daily_max_runtime_sec,
+      runtime_seconds: @crop.daily_max_runtime_sec,
       reason: "earlier_run", issued_at: Time.current.beginning_of_day + 1.hour
     )
 
@@ -166,6 +286,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
 
     payload = {
       "zone_id" => @zone.zone_id,
+      "node_id" => @node.node_id,
       "state" => "COMPLETED",
       "timestamp" => Time.current.iso8601,
       "idempotency_key" => event.idempotency_key
@@ -181,7 +302,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
   test "daily runtime cap ignores non-completed events" do
     create_watering_event(
       idempotency_key: "zone1-run-cap-fault", status: "fault",
-      runtime_seconds: @zone.crop_profile.daily_max_runtime_sec,
+      runtime_seconds: @crop.daily_max_runtime_sec,
       reason: "earlier_run", issued_at: Time.current.beginning_of_day + 1.hour
     )
 
@@ -189,6 +310,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
 
     payload = {
       "zone_id" => @zone.zone_id,
+      "node_id" => @node.node_id,
       "state" => "COMPLETED",
       "timestamp" => Time.current.iso8601,
       "idempotency_key" => event.idempotency_key
@@ -208,6 +330,7 @@ class ActuatorStatusIngestorTest < ActiveSupport::TestCase
 
     payload = {
       "zone_id" => @zone.zone_id,
+      "node_id" => @node.node_id,
       "state" => "COMPLETED",
       "timestamp" => Time.current.iso8601,
       "idempotency_key" => event.idempotency_key,

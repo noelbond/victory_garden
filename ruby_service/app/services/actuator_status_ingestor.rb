@@ -15,6 +15,7 @@ class ActuatorStatusIngestor
     zone = Zone.find_by(zone_id: @payload.fetch("zone_id"))
     raise ArgumentError, "Unknown zone_id: #{@payload['zone_id']}" unless zone
     node = node_for(zone)
+    affected_run_key_supplied = @payload.key?("affected_run_idempotency_key")
 
     duplicate_status = find_duplicate_status(zone)
     return duplicate_status if duplicate_status
@@ -27,6 +28,7 @@ class ActuatorStatusIngestor
           state: @payload.fetch("state"),
           recorded_at: @payload.fetch("timestamp"),
           idempotency_key: @payload["idempotency_key"],
+          affected_run_idempotency_key: @payload["affected_run_idempotency_key"],
           actual_runtime_seconds: @payload["actual_runtime_seconds"],
           flow_ml: @payload["flow_ml"],
           fault_code: @payload["fault_code"],
@@ -36,7 +38,7 @@ class ActuatorStatusIngestor
         find_duplicate_status(zone) || raise
       end
 
-      update_watering_event_status(status)
+      update_watering_event_status(status, affected_run_key_supplied: affected_run_key_supplied)
       record_fault_if_needed(zone, status)
       status
     end
@@ -48,7 +50,7 @@ class ActuatorStatusIngestor
 
   private
 
-  def update_watering_event_status(status)
+  def update_watering_event_status(status, affected_run_key_supplied:)
     return if status.idempotency_key.blank?
 
     event = WateringEvent.find_by(idempotency_key: status.idempotency_key)
@@ -58,12 +60,43 @@ class ActuatorStatusIngestor
     return unless transition_allowed?(event, mapped, source_state: status.state)
 
     event.update!(status: mapped)
-    mark_interrupted_run_stopped(event, status) if status.state == "STOPPED"
+    mark_interrupted_run_stopped(event, status, affected_run_key_supplied:) if status.state == "STOPPED"
   end
 
-  def mark_interrupted_run_stopped(event, status)
+  def mark_interrupted_run_stopped(event, status, affected_run_key_supplied:)
     return unless event.command == "stop_watering"
 
+    return mark_explicit_affected_run_stopped(event, status) if affected_run_key_supplied
+
+    mark_legacy_interrupted_run_stopped(event, status)
+  end
+
+  def mark_explicit_affected_run_stopped(stop_event, status)
+    affected_run_key = status.affected_run_idempotency_key
+    return if affected_run_key.blank?
+
+    affected_run = WateringEvent.find_by(idempotency_key: affected_run_key)
+    unless affected_start_for_stop?(affected_run, stop_event, status)
+      Rails.logger.warn(
+        "[actuator_status_ingestor] Ignoring affected run #{affected_run_key} for #{stop_event.idempotency_key}: " \
+        "it does not identify a start_watering event for the same zone and node"
+      )
+      return
+    end
+
+    return if terminal_status?(affected_run.status)
+
+    affected_run.update!(status: "stopped")
+  end
+
+  def affected_start_for_stop?(affected_run, stop_event, status)
+    affected_run&.command == "start_watering" &&
+      affected_run.zone_id == stop_event.zone_id &&
+      affected_run.node_id == stop_event.node_id &&
+      affected_run.node_id == status.node_id
+  end
+
+  def mark_legacy_interrupted_run_stopped(event, status)
     WateringEvent
       .where(zone: event.zone, command: "start_watering")
       .where(node_id: event.node_id)
@@ -162,7 +195,8 @@ class ActuatorStatusIngestor
 
   def daily_runtime_met?(zone, time)
     node = Node.find_by(node_id: @payload["node_id"]) if @payload["node_id"].present?
-    crop_profile = node&.effective_crop_profile || zone.crop_profile
+    crop_profile = node&.crop_profile
+    return true if crop_profile.blank?
     day_scope = time.beginning_of_day..time.end_of_day
     scope = WateringEvent.where(
       zone: zone,

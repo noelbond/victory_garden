@@ -32,7 +32,7 @@ class ConfigRepublishTest < ActiveSupport::TestCase
 
   test "node assignment change enqueues config republish" do
     zone = create(:zone)
-    node = Node.create!(node_id: "sensor-zone1", last_seen_at: Time.current)
+    node = Node.create!(node_id: "sensor-zone1", zone: create(:zone), last_seen_at: Time.current)
 
     assert_enqueued_with(job: ConfigPublishJob) do
       node.update!(zone: zone)

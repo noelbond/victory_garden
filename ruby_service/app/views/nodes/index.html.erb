@@ -1,7 +1,7 @@
 <div class="page-header">
   <div>
     <h1 class="page-title">Nodes</h1>
-    <div class="muted">Provisioned node identities discovered from MQTT state payloads.</div>
+    <div class="muted">Provisioned sensor positions. MQTT telemetry reconciles these backend-created identities.</div>
   </div>
   <div>
     <span class="env-pill"><%= Rails.env.production? ? "Production" : Rails.env.titleize %></span>
@@ -11,14 +11,14 @@
 
 <% if @nodes.empty? %>
   <div class="card" style="margin-bottom: 16px;">
-    <h3>No Nodes Discovered Yet</h3>
+    <h3>No Nodes Provisioned Yet</h3>
     <p class="muted">
-      This app has not received any node state payloads yet, so there is nothing to assign.
+      Provision a sensor Zone to establish four stable Nodes. Telemetry then updates those identities.
     </p>
     <ul class="list">
-      <li>Make sure the sensor node is powered on and publishing.</li>
+      <li>Provision a sensor Zone and make sure its Pico is powered on and publishing.</li>
       <li>Make sure this <strong><%= Rails.env.production? ? "production" : Rails.env.titleize.downcase %></strong> app is connected to the same MQTT broker as the node.</li>
-      <li>Once a node publishes state, it will appear here automatically.</li>
+      <li>Once a provisioned Node publishes state, its telemetry appears here automatically.</li>
     </ul>
     <div style="margin-top: 16px;">
       <%= link_to "Open Health", health_path, class: "btn" %>
@@ -28,43 +28,9 @@
   </div>
 <% end %>
 
-<div class="card" style="margin-bottom: 16px;">
-  <h3>Unassigned Nodes</h3>
-  <% if @unassigned_nodes.any? %>
-    <ul class="list node-directory-list">
-      <% @unassigned_node_groups.each do |device_key, nodes| %>
-        <% primary = nodes.first %>
-        <li class="node-directory-item">
-          <strong><%= primary.device_id.presence || primary.display_name %></strong>
-          <div class="node-directory-meta">
-            <div class="node-directory-line">Device ID: <%= primary.device_id.presence || "—" %></div>
-            <div class="node-directory-line">Reported Zone ID: <%= nodes.map(&:reported_zone_id).compact_blank.uniq.presence&.join(", ") || "—" %></div>
-            <div class="node-directory-line">Last Seen: <%= nodes.map(&:last_seen_at).compact.max || "—" %></div>
-            <div class="node-directory-line">Channels: <%= nodes.count %></div>
-            <div class="node-directory-line">
-              <% sorted_nodes = nodes.sort_by(&:node_id) %>
-              <% sorted_nodes.each do |node| %>
-                <%= link_to node.display_name, node_path(node) %> (<%= node.node_id %>, <%= node.health.presence || "—" %>, <%= node.config_status.presence || "—" %>)<%= ", " unless node == sorted_nodes.last %>
-              <% end %>
-            </div>
-          </div>
-        </li>
-      <% end %>
-    </ul>
-  <% else %>
-    <p class="muted">
-      <% if @nodes.empty? %>
-        No nodes have been discovered by this app yet.
-      <% else %>
-        No unassigned nodes discovered yet.
-      <% end %>
-    </p>
-  <% end %>
-</div>
-
 <div class="card">
-  <h3>Assigned Nodes</h3>
-  <% if @assigned_nodes.any? %>
+  <h3>Provisioned Nodes</h3>
+  <% if @nodes.any? %>
     <ul class="list node-directory-list">
       <% @assigned_node_groups.each do |device_key, nodes| %>
         <% primary = nodes.first %>
@@ -88,9 +54,9 @@
   <% else %>
     <p class="muted">
       <% if @nodes.empty? %>
-        No assigned nodes yet because no nodes have been discovered.
+        No provisioned nodes yet because no sensor Zone has been provisioned.
       <% else %>
-        No assigned nodes yet.
+        No provisioned nodes yet.
       <% end %>
     </p>
   <% end %>

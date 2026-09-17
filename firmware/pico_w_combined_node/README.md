@@ -5,6 +5,10 @@ actuator node onto a single board. Use this when one Pico is wired to both
 an ADS1115 (soil moisture) and a relay board, instead of running the split
 `pico_w_sensor_node` / `pico_w_actuator_node` boards.
 
+This is a demonstration, development, and end-to-end support target. It is not
+the greenhouse-wide production actuator architecture; production uses the
+dedicated actuator controller with retained global Node topology.
+
 ## Wiring
 
 | Pico pin | Connects to |
@@ -77,8 +81,8 @@ Current scope (superset of both split boards):
 Current limitations:
 - no provisioning AP yet
 - MQTT broker host must currently be an IPv4 address, not a hostname
-- only 4 irrigation lines wired (`VG_MAX_IRRIGATION_LINES` is 4 here, vs 12
-  on the standalone actuator board)
+- only 4 irrigation lines are wired in this combined target. That is a local
+  demo/development limitation, not a production greenhouse capacity decision.
 
 ## Build
 

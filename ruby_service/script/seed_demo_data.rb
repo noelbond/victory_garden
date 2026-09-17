@@ -24,13 +24,11 @@ def upsert_crop(crop_id:, crop_name:, dry_threshold:, max_pulse_runtime_sec:, da
   crop
 end
 
-def upsert_zone(zone_id:, name:, crop_profile:, irrigation_line:, publish_interval_ms:)
+def upsert_zone(zone_id:, name:, publish_interval_ms:)
   zone = Zone.find_or_initialize_by(zone_id: zone_id)
   zone.assign_attributes(
     name: name,
-    crop_profile: crop_profile,
     active: true,
-    irrigation_line: irrigation_line,
     publish_interval_ms: publish_interval_ms,
     allowed_hours: { "start_hour" => 6, "end_hour" => 20 }
   )
@@ -38,10 +36,11 @@ def upsert_zone(zone_id:, name:, crop_profile:, irrigation_line:, publish_interv
   zone
 end
 
-def upsert_node(node_id:, zone:, last_seen_at:, reported_zone_id:, health:, wifi_rssi:, battery_voltage:, last_error:, config_status:, config_version:, moisture_raw_dry:, moisture_raw_wet:, provisioned: true)
+def upsert_node(node_id:, zone:, crop_profile: nil, last_seen_at:, reported_zone_id:, health:, wifi_rssi:, battery_voltage:, last_error:, config_status:, config_version:, moisture_raw_dry:, moisture_raw_wet:, provisioned: true)
   node = Node.find_or_initialize_by(node_id: node_id)
   node.assign_attributes(
     zone: zone,
+    crop_profile: crop_profile,
     reported_zone_id: reported_zone_id,
     last_seen_at: last_seen_at,
     provisioned: provisioned,
@@ -254,24 +253,18 @@ pepper = upsert_crop(
 zone1 = upsert_zone(
   zone_id: "zone1",
   name: "Greenhouse Zone 1",
-  crop_profile: tomato,
-  irrigation_line: 1,
   publish_interval_ms: 3_600_000
 )
 
 zone2 = upsert_zone(
   zone_id: "zone2",
   name: "Greenhouse Zone 2",
-  crop_profile: basil,
-  irrigation_line: 2,
   publish_interval_ms: 7_200_000
 )
 
 zone3 = upsert_zone(
   zone_id: "zone3",
   name: "Greenhouse Zone 3",
-  crop_profile: pepper,
-  irrigation_line: 3,
   publish_interval_ms: 14_400_000
 )
 
@@ -280,6 +273,7 @@ zones_with_nodes = {
     upsert_node(
       node_id: "demo-zone1-#{suffix}",
       zone: zone1,
+      crop_profile: tomato,
       last_seen_at: now - (index + 1).minutes,
       reported_zone_id: zone1.zone_id,
       health: index == 6 ? "degraded" : "ok",
@@ -296,6 +290,7 @@ zones_with_nodes = {
     upsert_node(
       node_id: "demo-zone2-#{index}",
       zone: zone2,
+      crop_profile: basil,
       last_seen_at: now - (10 + index).minutes,
       reported_zone_id: zone2.zone_id,
       health: index == 3 ? "degraded" : "ok",
@@ -312,6 +307,7 @@ zones_with_nodes = {
     upsert_node(
       node_id: "demo-zone3-#{index}",
       zone: zone3,
+      crop_profile: pepper,
       last_seen_at: now - (25 + index).minutes,
       reported_zone_id: zone3.zone_id,
       health: "ok",
@@ -326,35 +322,12 @@ zones_with_nodes = {
   end
 }
 
-unassigned_node_ids = 2.times.map do |index|
-  node_id = "demo-unassigned-#{index + 1}"
-  node = Node.find_or_initialize_by(node_id: "demo-unassigned-#{index + 1}")
-  node.assign_attributes(
-    zone: nil,
-    reported_zone_id: "unassigned",
-    last_seen_at: now - (5 + index).minutes,
-    provisioned: true,
-    health: "ok",
-    wifi_rssi: -60 - index,
-    battery_voltage: 4.0 - (index * 0.03),
-    last_error: "none",
-    config_status: "unassigned",
-    config_version: now.iso8601,
-    config_published_at: nil,
-    config_acknowledged_at: nil,
-    moisture_raw_dry: 520,
-    moisture_raw_wet: 620
-  )
-  node.save!
-  node_id
-end
-
-expected_demo_node_ids = zones_with_nodes.values.flatten.map(&:node_id) + unassigned_node_ids
+expected_demo_node_ids = zones_with_nodes.values.flatten.map(&:node_id)
 stale_demo_node_ids = Node.where("node_id LIKE ?", "demo-%").where.not(node_id: expected_demo_node_ids).pluck(:node_id)
 SensorReading.where(node_id: stale_demo_node_ids).delete_all if stale_demo_node_ids.any?
 Node.where(node_id: stale_demo_node_ids).delete_all if stale_demo_node_ids.any?
 
-zones_with_nodes.each do |zone, nodes|
+zones_with_nodes.each_with_index do |(zone, nodes), zone_ordinal|
   nodes.each_with_index do |node, index|
     rows = build_demo_readings(
       node: node,
@@ -367,7 +340,7 @@ zones_with_nodes.each do |zone, nodes|
       raw_wet: node.moisture_raw_wet,
       battery_voltage: node.battery_voltage || 4.0,
       battery_percent: zone == zone1 ? 94 - index : 82 - index,
-      ip_address: "192.168.4.#{30 + index + zone.irrigation_line}",
+      ip_address: "192.168.4.#{31 + (zone_ordinal * 16) + index}",
       health_pattern: lambda do |reading_index, _recorded_at|
         if zone == zone2 && index == 2 && reading_index >= 15
           "degraded"
@@ -451,7 +424,6 @@ recreate_watering_history!(
 
 puts "Demo UI data ready:"
 puts "- Zones: #{Zone.order(:zone_id).pluck(:zone_id).join(', ')}"
-puts "- Demo assigned nodes: #{Node.where('node_id LIKE ?', 'demo-zone%').assigned.count}"
-puts "- Demo unassigned nodes: #{Node.where('node_id LIKE ?', 'demo-unassigned-%').count}"
+puts "- Demo provisioned nodes: #{Node.where('node_id LIKE ?', 'demo-zone%').count}"
 puts "- Demo readings: #{SensorReading.where('node_id LIKE ?', 'demo-%').count}"
 puts "- Demo completed waterings: #{WateringEvent.where('idempotency_key LIKE ? AND status = ?', 'demo-%', 'completed').count}"

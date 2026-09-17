@@ -47,6 +47,7 @@ Rails.application.routes.draw do
   patch "setup_api/connection", to: "setup_api#update_connection"
   post "setup_api/crop_profile", to: "setup_api#create_crop_profile"
   patch "setup_api/zone", to: "setup_api#upsert_zone"
+  post "setup_api/provision_zone", to: "setup_api#provision_zone"
   get "setup_api/node_status", to: "setup_api#node_status"
   post "setup_api/assign_node", to: "setup_api#assign_node"
   patch "setup_api/node", to: "setup_api#update_node"

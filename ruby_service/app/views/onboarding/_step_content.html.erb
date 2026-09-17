@@ -38,7 +38,7 @@
   <div class="wizard-step-block">
     <div class="wizard-section-header">
       <h3>Broker Connection</h3>
-      <p class="muted">Enter the broker and water-zone details needed for the rest of setup. Saving here also queues a config publish.</p>
+      <p class="muted">Enter the broker and greenhouse actuator details needed for the rest of setup. Saving here also queues a config publish.</p>
     </div>
   </div>
 
@@ -66,9 +66,9 @@
           <div class="wizard-field-note">Stored securely after save. Required before the wizard can move forward.</div>
         </div>
         <div class="field">
-          <%= f.label :irrigation_line_count, "Installed Water Zones" %>
-          <%= f.number_field :irrigation_line_count, min: 1 %>
-          <div class="wizard-field-note">Count the physical actuator outputs available on this install.</div>
+          <%= f.label :irrigation_line_count, "Installed Actuator Outputs" %>
+          <%= f.number_field :irrigation_line_count, min: 0 %>
+          <div class="wizard-field-note">Count physical outputs on the greenhouse-wide actuator. Node line assignments remain logical and unsupported outputs fail closed.</div>
         </div>
       </div>
     </div>
@@ -262,7 +262,7 @@
     <div class="wizard-step-block">
       <div class="wizard-section-header">
         <h3>Zone Details</h3>
-        <p class="muted">Define the first live growing zone and map it to a physical actuator output.</p>
+        <p class="muted">Define the first live growing zone. Saving establishes its sensor package and four backend-issued Node identities before the Pico reports telemetry. Pump/relay assignments are configured per plant sensor Node.</p>
       </div>
 
       <%= form_with model: @zone_form, url: onboarding_zone_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :patch, html: { data: { onboarding_zone_form: true } } do |f| %>
@@ -274,19 +274,9 @@
               <div class="wizard-field-note">Use the name operators should see on the dashboard.</div>
             </div>
             <div class="field">
-              <%= f.label :irrigation_line, "Water Zone" %>
-              <%= f.number_field :irrigation_line, min: 1 %>
-              <div class="wizard-field-note">Match the physical actuator output number that waters this zone.</div>
-            </div>
-            <div class="field">
               <%= f.label :publish_interval_ms, "Reading Frequency" %>
               <%= f.select :publish_interval_ms, options_for_select(@reading_frequency_options, @zone_form.publish_interval_ms) %>
               <div class="wizard-field-note">How often the node should publish its normal readings.</div>
-            </div>
-            <div class="field">
-              <%= f.label :crop_profile_id, "Crop Profile" %>
-              <%= f.select :crop_profile_id, options_from_collection_for_select(@crop_profiles, :id, :crop_name, @zone_form.crop_profile_id), { prompt: @crop_profiles.any? ? "Choose a crop profile" : "Create a crop profile below first" }, disabled: @crop_profiles.empty? %>
-              <div class="wizard-field-note">This determines watering thresholds and runtime limits.</div>
             </div>
             <div class="field">
               <%= f.label :active, "Zone Enabled" %>
@@ -297,7 +287,7 @@
         </div>
 
         <div class="dashboard-actions wizard-action-row">
-          <%= f.submit "Save and Continue", class: "btn", disabled: @crop_profiles.empty? %>
+          <%= f.submit "Provision Zone and Continue", class: "btn" %>
         </div>
       <% end %>
     </div>
@@ -309,7 +299,6 @@
       <%= form_with model: @crop_profile_form, url: onboarding_crop_profile_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :post, html: { data: { onboarding_crop_profile_form: true } } do |f| %>
         <%= hidden_field_tag "zone_draft[name]", @zone_form.name, data: { zone_draft_field: "name" } %>
         <%= hidden_field_tag "zone_draft[active]", @zone_form.active, data: { zone_draft_field: "active" } %>
-        <%= hidden_field_tag "zone_draft[irrigation_line]", @zone_form.irrigation_line, data: { zone_draft_field: "irrigation_line" } %>
         <%= hidden_field_tag "zone_draft[publish_interval_ms]", @zone_form.publish_interval_ms, data: { zone_draft_field: "publish_interval_ms" } %>
 
         <div class="form-grid">
@@ -448,8 +437,8 @@
         <div class="wizard-guide-step-head">
           <span class="wizard-guide-step-index">5</span>
           <div>
-            <strong>Wait for discovery</strong>
-            <div class="muted">The wizard checks every 5 seconds and marks this step done as soon as the node publishes live state. If it still does not appear, use Refresh Detection and re-check power, Wi-Fi reachability, and that the Pico really rebooted after flashing.</div>
+            <strong>Confirm first telemetry</strong>
+            <div class="muted">Zone provisioning already established the four Node identities. The wizard checks every 5 seconds for their first live state. If it does not appear, use Refresh Detection and re-check power, Wi-Fi reachability, and that the Pico rebooted after flashing.</div>
           </div>
         </div>
         <div class="dashboard-actions wizard-action-row">
@@ -469,28 +458,28 @@
   <% if @assignable_nodes.any? && @assignable_zones.any? %>
     <div class="card <%= onboarding_current_step[:done] ? "metric-ok" : "metric-warn" %> wizard-status-card">
       <div class="metric-label">Step Status</div>
-      <div class="metric-value"><%= onboarding_current_step[:done] ? "Sensor Assigned" : "Choose Node And Zone" %></div>
-      <div class="muted">Pick the discovered sensor node and the zone it should report into. Saving here keeps you inside the wizard and queues the node config update automatically.</div>
+      <div class="metric-value"><%= onboarding_current_step[:done] ? "Provisioned Node Confirmed" : "Review Provisioned Node" %></div>
+      <div class="muted">Choose a preprovisioned sensor position to review its Node-specific configuration. Its Zone is established during provisioning; saving queues the node config update automatically.</div>
     </div>
 
     <%= form_with url: onboarding_assignment_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :patch do %>
       <div class="form-grid">
         <div class="field">
-          <%= label_tag :node_id, "Sensor Node" %>
+          <%= label_tag :node_id, "Sensor Position" %>
           <%= select_tag :node_id, options_for_select(@assignable_nodes.map { |node| ["#{node.display_name} (#{node.node_id})", node.id] }, @selected_assignment_node&.id) %>
         </div>
         <div class="field">
-          <%= label_tag :zone_id, "Assign To Zone" %>
+          <%= label_tag :zone_id, "Zone (Legacy Reconciliation)" %>
           <%= select_tag :zone_id, options_for_select(@assignable_zones.map { |zone| [zone.name.presence || zone.zone_id, zone.id] }, @selected_assignment_zone&.id) %>
         </div>
       </div>
 
       <div class="dashboard-actions wizard-action-row">
-        <%= submit_tag "Assign and Continue", class: "btn" %>
+        <%= submit_tag "Reconcile and Continue", class: "btn" %>
       </div>
     <% end %>
   <% else %>
-    <p class="muted">You need at least one discovered node and one saved zone before assignment can continue.</p>
+    <p class="muted">Provision a sensor Zone first. It creates four stable Nodes before their first telemetry arrives.</p>
     <div class="dashboard-actions wizard-action-row">
       <%= link_to "Refresh", onboarding_step_path("assigned_node"), class: "btn" %>
     </div>
@@ -576,7 +565,6 @@
       <h3>Selected Zone</h3>
       <div class="wizard-fact-grid">
         <div class="wizard-fact"><span>Zone</span><strong><%= @selected_watering_zone.name.presence || @selected_watering_zone.zone_id %></strong></div>
-        <div class="wizard-fact"><span>Water Zone</span><strong><%= @selected_watering_zone.irrigation_line.presence || "Not set" %></strong></div>
         <div class="wizard-fact"><span>Latest Watering Event</span><strong><%= @latest_watering_event&.issued_at || "No watering events yet" %></strong></div>
         <div class="wizard-fact"><span>Latest Event Status</span><strong><%= @latest_watering_event&.status&.humanize || "—" %></strong></div>
       </div>

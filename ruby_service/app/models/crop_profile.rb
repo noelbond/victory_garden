@@ -1,5 +1,5 @@
 class CropProfile < ApplicationRecord
-  has_many :zones, dependent: :restrict_with_error
+  has_many :nodes, dependent: :restrict_with_error
 
   before_validation :ensure_crop_id, on: :create
   after_commit :enqueue_config_publish, on: :create
@@ -67,7 +67,7 @@ class CropProfile < ApplicationRecord
                   saved_change_to_time_to_harvest_days? ||
                   saved_change_to_active?
 
-    device_nodes = zones.includes(:nodes).flat_map(&:nodes)
+    device_nodes = nodes.includes(:zone).to_a
     Node.group_by_device(device_nodes).each_value do |nodes|
       PublishNodeConfigJob.perform_later(nodes.first.id)
     end

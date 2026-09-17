@@ -13,10 +13,11 @@ class FullLoopTest < ActiveSupport::TestCase
     clear_performed_jobs
 
     @crop = create(:crop_profile, crop_id: "tomato-full-loop")
-    @zone = create(:zone, zone_id: "zone1", name: "Zone 1", crop_profile: @crop)
+    @zone = create(:zone, zone_id: "zone1", name: "Zone 1")
     @node = Node.create!(
       node_id: "pico-full-loop",
       zone: @zone,
+      crop_profile: @crop,
       last_seen_at: 1.hour.ago,
       config_status: "applied"
     )
@@ -32,6 +33,7 @@ class FullLoopTest < ActiveSupport::TestCase
     freeze_time do
       event = WateringEvent.create!(
         zone: @zone,
+        node_id: @node.node_id,
         command: "start_watering",
         runtime_seconds: 45,
         reason: "manual_trigger",
@@ -42,6 +44,7 @@ class FullLoopTest < ActiveSupport::TestCase
 
       completion_payload = {
         "zone_id" => @zone.zone_id,
+        "node_id" => @node.node_id,
         "state" => "COMPLETED",
         "timestamp" => "2026-03-31T18:01:00Z",
         "idempotency_key" => event.idempotency_key,
@@ -50,7 +53,7 @@ class FullLoopTest < ActiveSupport::TestCase
 
       assert_enqueued_with(
         job: RequestReadingJob,
-        args: [{ zone_id: "zone1", command_id: "#{event.idempotency_key}-reread", node_id: nil }],
+        args: [{ zone_id: "zone1", command_id: "#{event.idempotency_key}-reread", node_id: @node.node_id }],
         at: 5.minutes.from_now
       ) do
         ActuatorStatusIngestor.new(completion_payload).call

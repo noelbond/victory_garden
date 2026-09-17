@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "hardware/flash.h"
+#include "actuator_persistent_flash_layout.h"
 
 #ifndef __has_include
 #define __has_include(x) 0
@@ -61,7 +61,7 @@
 #endif
 
 #ifndef VG_DEFAULT_NODE_ID
-#define VG_DEFAULT_NODE_ID "pico-w-actuator-zone1"
+#define VG_DEFAULT_NODE_ID "pico-w-actuator"
 #endif
 
 #ifndef VG_DEFAULT_ZONE_ID
@@ -108,7 +108,7 @@
 #define VG_DEFAULT_IRRIGATION_LINE_RELAY_GPIOS {16u, 17u, 18u, 19u, 11u, 10u, 9u, 8u, 7u, 6u, 5u, 4u}
 #endif
 
-#define VG_FLASH_CONFIG_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
+#define VG_FLASH_CONFIG_OFFSET VG_ACTUATOR_PERSISTENT_CONFIG_OFFSET
 
 typedef struct {
     uint32_t magic;

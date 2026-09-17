@@ -16,7 +16,7 @@ class NodeAssignmentTest < ActionDispatch::IntegrationTest
 
   test "assigning a node attaches it to the zone and enqueues config publish" do
     zone = create(:zone)
-    node = Node.create!(node_id: "unassigned-1", last_seen_at: Time.current)
+    node = Node.create!(node_id: "reassigned-1", zone: create(:zone), last_seen_at: Time.current)
 
     assert_enqueued_with(job: PublishNodeConfigJob, args: [node.id]) do
       patch assign_node_path(node), params: { zone_id: zone.id }
@@ -29,7 +29,7 @@ class NodeAssignmentTest < ActionDispatch::IntegrationTest
 
   test "assigning a node with a named zone uses the zone name in the notice" do
     zone = create(:zone, name: "Greenhouse Bed A")
-    node = Node.create!(node_id: "unassigned-2", last_seen_at: Time.current)
+    node = Node.create!(node_id: "reassigned-2", zone: create(:zone), last_seen_at: Time.current)
 
     patch assign_node_path(node), params: { zone_id: zone.id }
 
@@ -47,21 +47,21 @@ class NodeAssignmentTest < ActionDispatch::IntegrationTest
     assert_equal new_zone, node.reload.zone
   end
 
-  test "unassigning a node removes the zone and enqueues config publish" do
+  test "unassigning a node is rejected to preserve required zone ownership" do
     zone = create(:zone)
     node = Node.create!(node_id: "assigned-node", zone: zone, last_seen_at: Time.current)
 
-    assert_enqueued_with(job: PublishNodeConfigJob, args: [node.id]) do
+    assert_no_enqueued_jobs only: PublishNodeConfigJob do
       patch unassign_node_path(node)
     end
 
     assert_redirected_to nodes_path
-    assert_equal "Node unassigned.", flash[:notice]
-    assert_nil node.reload.zone
+    assert_equal "Nodes must remain assigned to a Zone. Reassign the node explicitly instead.", flash[:alert]
+    assert_equal zone, node.reload.zone
   end
 
-  test "unassigning an already unassigned node redirects cleanly without enqueuing" do
-    node = Node.create!(node_id: "never-assigned", last_seen_at: Time.current)
+  test "unassigning a node remains a no-op without enqueuing" do
+    node = Node.create!(node_id: "still-assigned", zone: create(:zone), last_seen_at: Time.current)
 
     assert_no_enqueued_jobs only: PublishNodeConfigJob do
       patch unassign_node_path(node)

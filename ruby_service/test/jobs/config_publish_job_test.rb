@@ -54,10 +54,10 @@ class ConfigPublishJobTest < ActiveSupport::TestCase
     end
   end
 
-  test "publishes crops referenced by active zones even when the crop is inactive" do
+  test "publishes crops referenced by configured nodes even when the crop is inactive" do
     crop = create(:crop_profile, crop_id: "tomato", active: false)
-    zone = create(:zone, zone_id: "zone1", crop_profile: crop, active: true, irrigation_line: 1)
-    node = Node.create!(node_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+    zone = create(:zone, zone_id: "zone1", active: true)
+    node = Node.create!(node_id: "sensor-zone1", zone: zone, crop_profile: crop, irrigation_line: 1, last_seen_at: Time.current)
     published_payloads = []
     published_actuator_payloads = []
     ConnectionSetting.create!(irrigation_line_count: 4)
@@ -73,36 +73,21 @@ class ConfigPublishJobTest < ActiveSupport::TestCase
     payload = published_payloads.fetch(0)
     actuator_payload = published_actuator_payloads.fetch(0)
     assert_equal ["tomato"], payload[:crops].map { |entry| entry[:crop_id] }
-    assert_equal ["zone1"], payload[:zones].map { |entry| entry[:zone_id] }
-    assert_equal 1, payload[:zones].first[:irrigation_line]
+    assert_equal 4, payload[:irrigation_line_count]
+    assert_equal [
+      {
+        zone_id: "zone1",
+        node_ids: [node.node_id],
+        active: true,
+        allowed_hours: zone.allowed_hours,
+        watering_mode: "node"
+      }
+    ], payload[:zones]
+    refute_includes payload[:zones].first, :irrigation_line
     assert_equal "actuator-config/v1", actuator_payload[:schema_version]
     assert_equal 4, actuator_payload[:irrigation_line_count]
-    assert_equal [{ zone_id: "zone1", irrigation_line: 1, active: true }], actuator_payload[:zones]
-  end
-
-  test "publishes actuator topology ordered by irrigation line and keeps assigned inactive zones" do
-    crop = create(:crop_profile, crop_id: "tomato")
-    zone2 = create(:zone, zone_id: "zone2", crop_profile: crop, active: true, irrigation_line: 2)
-    zone1 = create(:zone, zone_id: "zone1", crop_profile: crop, active: false, irrigation_line: 1)
-    Node.create!(node_id: "sensor-zone2", zone: zone2, last_seen_at: Time.current)
-    ConnectionSetting.create!(irrigation_line_count: 3)
-    published_actuator_payloads = []
-
-    with_publish_config_stub(->(_payload) {}) do
-      with_publish_actuator_config_stub(->(payload) { published_actuator_payloads << payload }) do
-        ConfigPublishJob.perform_now
-      end
-    end
-
-    actuator_payload = published_actuator_payloads.fetch(0)
-    assert_equal 3, actuator_payload[:irrigation_line_count]
-    assert_equal(
-      [
-        { zone_id: "zone1", irrigation_line: 1, active: false },
-        { zone_id: "zone2", irrigation_line: 2, active: true }
-      ],
-      actuator_payload[:zones]
-    )
+    assert_equal [], actuator_payload[:zones]
+    assert_equal [{ node_id: node.node_id, zone_id: zone.zone_id, irrigation_line: 1, active: true }], actuator_payload[:nodes]
   end
 
   test "enqueues one node config publish per physical sensor device" do
@@ -129,9 +114,8 @@ class ConfigPublishJobTest < ActiveSupport::TestCase
 
   test "publishes node watering targets for controller and actuator config" do
     ConnectionSetting.create!(irrigation_line_count: 4)
-    zone_crop = create(:crop_profile, crop_id: "tomato-zone")
     plant_crop = create(:crop_profile, crop_id: "squash-plant")
-    zone = create(:zone, zone_id: "zone1", crop_profile: zone_crop, active: true, irrigation_line: nil)
+    zone = create(:zone, zone_id: "zone1", active: true)
     node = Node.create!(
       node_id: "sensor-zone1-ch0",
       device_id: "sensor-zone1",
@@ -160,5 +144,83 @@ class ConfigPublishJobTest < ActiveSupport::TestCase
       [{ node_id: node.node_id, zone_id: zone.zone_id, irrigation_line: 2, active: true }],
       actuator_payload[:nodes]
     )
+    assert_equal [], actuator_payload[:zones]
+  end
+
+  test "retains unsupported logical lines in system config but excludes them from actuator config" do
+    ConnectionSetting.create!(irrigation_line_count: 4)
+    crop = create(:crop_profile, crop_id: "tomato")
+    zone1 = create(:zone, zone_id: "zone1")
+    zone2 = create(:zone, zone_id: "zone2")
+    node1 = Node.create!(node_id: "sensor-zone1", zone: zone1, crop_profile: crop, irrigation_line: 1, last_seen_at: Time.current)
+    node2 = Node.create!(node_id: "sensor-zone2", zone: zone2, crop_profile: crop, irrigation_line: 5, last_seen_at: Time.current)
+    published_payloads = []
+    published_actuator_payloads = []
+
+    with_publish_config_stub(->(payload) { published_payloads << payload }) do
+      with_publish_actuator_config_stub(->(payload) { published_actuator_payloads << payload }) do
+        ConfigPublishJob.perform_now
+      end
+    end
+
+    actuator_payload = published_actuator_payloads.fetch(0)
+    system_payload = published_payloads.fetch(0)
+    assert_equal [], actuator_payload[:zones]
+    assert_equal(
+      [
+        { node_id: node1.node_id, zone_id: zone1.zone_id, irrigation_line: 1, active: true }
+      ],
+      actuator_payload[:nodes]
+    )
+    assert_equal [1, 5], system_payload[:nodes].map { |node| node[:irrigation_line] }
+    assert_equal 5, node2.reload.irrigation_line
+  end
+
+  test "removes inactive Zone routes from retained actuator topology and restores them on reactivation" do
+    ConnectionSetting.create!(irrigation_line_count: 2)
+    crop = create(:crop_profile)
+    active_zone = create(:zone, zone_id: "zone-active", active: true)
+    inactive_zone = create(:zone, zone_id: "zone-toggle", active: true)
+    active_node = Node.create!(node_id: "sensor-active-ch0", zone: active_zone, crop_profile: crop, irrigation_line: 1, last_seen_at: Time.current)
+    toggled_node = Node.create!(node_id: "sensor-toggle-ch0", zone: inactive_zone, crop_profile: crop, irrigation_line: 2, last_seen_at: Time.current)
+    published_actuator_payloads = []
+
+    with_publish_config_stub(->(_payload) {}) do
+      with_publish_actuator_config_stub(->(payload) { published_actuator_payloads << payload }) do
+        ConfigPublishJob.perform_now
+        inactive_zone.update!(active: false)
+        ConfigPublishJob.perform_now
+        inactive_zone.update!(active: true)
+        ConfigPublishJob.perform_now
+      end
+    end
+
+    initial, deactivated, reactivated = published_actuator_payloads
+    assert_equal [active_node.node_id, toggled_node.node_id], initial[:nodes].map { |node| node[:node_id] }
+    assert_equal [active_node.node_id], deactivated[:nodes].map { |node| node[:node_id] }
+    assert_equal [active_node.node_id, toggled_node.node_id], reactivated[:nodes].map { |node| node[:node_id] }
+    assert_equal [active_zone.zone_id], deactivated[:nodes].map { |node| node[:zone_id] }
+    assert toggled_node.reload.active?
+    assert_equal crop, toggled_node.crop_profile
+    assert_equal 2, toggled_node.irrigation_line
+  end
+
+  test "does not route a node without an irrigation line from its zone" do
+    ConnectionSetting.create!(irrigation_line_count: 4)
+    crop = create(:crop_profile, crop_id: "tomato")
+    zone = create(:zone, zone_id: "zone1")
+    Node.create!(node_id: "sensor-zone1", zone: zone, crop_profile: crop, last_seen_at: Time.current)
+    published_actuator_payloads = []
+
+    with_publish_config_stub(->(_payload) {}) do
+      with_publish_actuator_config_stub(->(payload) { published_actuator_payloads << payload }) do
+        ConfigPublishJob.perform_now
+      end
+    end
+
+    actuator_payload = published_actuator_payloads.fetch(0)
+    assert_equal "actuator-config/v1", actuator_payload[:schema_version]
+    assert_equal [], actuator_payload[:zones]
+    assert_equal [], actuator_payload[:nodes]
   end
 end

@@ -25,18 +25,14 @@ class ZonesCrudTest < ActionDispatch::IntegrationTest
     assert Zone.find_by(name: "New Zone")
   end
 
-  test "creating a zone assigns selected unassigned nodes" do
-    node1 = Node.create!(node_id: "unassigned-a", last_seen_at: Time.current)
-    node2 = Node.create!(node_id: "unassigned-b", last_seen_at: Time.current)
-
+  test "creating a zone does not depend on discovered unassigned nodes" do
     post zones_path, params: {
       zone: { name: "Zone With Nodes", crop_profile_id: @crop.id },
-      node_ids: [node1.id.to_s]
+      node_ids: []
     }
 
     zone = Zone.find_by!(name: "Zone With Nodes")
-    assert_equal zone, node1.reload.zone
-    assert_nil node2.reload.zone
+    assert_equal 0, zone.nodes.count
   end
 
   test "creating a zone with invalid params renders new with error" do

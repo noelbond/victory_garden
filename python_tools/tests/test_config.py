@@ -6,13 +6,14 @@ from pydantic import ValidationError
 
 from watering.config import (
     CropsConfig,
+    SystemConfigPayload,
+    SystemNodeConfig,
+    SystemZoneConfig,
     ZoneConfig,
     ZonesConfig,
     load_crops,
     load_zones,
-    validate_zone_crop_refs,
 )
-from watering.profiles import CropProfile
 
 
 class TestCropsConfig:
@@ -75,33 +76,30 @@ class TestZoneConfig:
     def test_valid_zone_config(self):
         data = {
             "zone_id": "zone1",
-            "crop_id": "tomato",
             "node_id": "sensor-gh1-zone1",
         }
         zone = ZoneConfig.model_validate(data)
         assert zone.zone_id == "zone1"
-        assert zone.crop_id == "tomato"
         assert zone.node_id == "sensor-gh1-zone1"
 
     def test_zone_config_empty_zone_id_fails(self):
-        data = {"zone_id": "", "crop_id": "tomato", "node_id": "sensor-1"}
+        data = {"zone_id": "", "node_id": "sensor-1"}
         with pytest.raises(ValidationError):
             ZoneConfig.model_validate(data)
 
-    def test_zone_config_empty_crop_id_fails(self):
-        data = {"zone_id": "zone1", "crop_id": "", "node_id": "sensor-1"}
+    def test_zone_config_rejects_crop_id(self):
+        data = {"zone_id": "zone1", "crop_id": "tomato", "node_id": "sensor-1"}
         with pytest.raises(ValidationError):
             ZoneConfig.model_validate(data)
 
     def test_zone_config_empty_node_id_fails(self):
-        data = {"zone_id": "zone1", "crop_id": "tomato", "node_id": ""}
+        data = {"zone_id": "zone1", "node_id": ""}
         with pytest.raises(ValidationError):
             ZoneConfig.model_validate(data)
 
     def test_zone_config_extra_field_forbidden(self):
         data = {
             "zone_id": "zone1",
-            "crop_id": "tomato",
             "node_id": "sensor-1",
             "extra_field": "not_allowed",
         }
@@ -113,8 +111,8 @@ class TestZonesConfig:
     def test_valid_zones_config(self):
         data = {
             "zones": [
-                {"zone_id": "zone1", "crop_id": "tomato", "node_id": "sensor-gh1-zone1"},
-                {"zone_id": "zone2", "crop_id": "basil", "node_id": "sensor-gh1-zone2"},
+                {"zone_id": "zone1", "node_id": "sensor-gh1-zone1"},
+                {"zone_id": "zone2", "node_id": "sensor-gh1-zone2"},
             ]
         }
         config = ZonesConfig.model_validate(data)
@@ -131,6 +129,58 @@ class TestZonesConfig:
         data = {"zones": [], "extra_field": "not_allowed"}
         with pytest.raises(ValidationError):
             ZonesConfig.model_validate(data)
+
+
+class TestSystemConfigRoutingFields:
+    def test_system_capacity_allows_zero_and_preserves_logical_line_assignment(self):
+        payload = SystemConfigPayload.model_validate(
+            {
+                "crops": [],
+                "zones": [],
+                "nodes": [],
+                "irrigation_line_count": 0,
+            }
+        )
+
+        assert payload.irrigation_line_count == 0
+
+    def test_current_rails_zone_without_crop_or_irrigation_line_is_valid(self):
+        zone = SystemZoneConfig.model_validate(
+            {
+                "zone_id": "zone1",
+                "node_ids": ["sensor-zone1-ch0"],
+                "active": True,
+                "allowed_hours": {"start_hour": 6, "end_hour": 20},
+                "watering_mode": "node",
+            }
+        )
+
+        assert zone.zone_id == "zone1"
+        assert zone.watering_mode == "node"
+
+    def test_legacy_zone_irrigation_line_is_rejected(self):
+        with pytest.raises(ValidationError) as exc_info:
+            SystemZoneConfig.model_validate(
+                {
+                    "zone_id": "zone1",
+                    "irrigation_line": 1,
+                }
+            )
+
+        assert "irrigation_line" in str(exc_info.value)
+        assert "extra_forbidden" in str(exc_info.value)
+
+    def test_node_irrigation_line_remains_valid(self):
+        node = SystemNodeConfig.model_validate(
+            {
+                "node_id": "sensor-zone1-ch0",
+                "zone_id": "zone1",
+                "crop_id": "tomato",
+                "irrigation_line": 1,
+            }
+        )
+
+        assert node.irrigation_line == 1
 
 
 class TestLoadCrops:
@@ -248,10 +298,8 @@ class TestLoadZones:
     def test_load_zones_valid_file(self):
         yaml_content = """zones:
   - zone_id: zone1
-    crop_id: tomato
     node_id: sensor-gh1-zone1
   - zone_id: zone2
-    crop_id: basil
     node_id: sensor-gh1-zone2
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -263,9 +311,7 @@ class TestLoadZones:
             assert len(zones) == 2
             assert "zone1" in zones
             assert "zone2" in zones
-            assert zones["zone1"].crop_id == "tomato"
             assert zones["zone1"].node_id == "sensor-gh1-zone1"
-            assert zones["zone2"].crop_id == "basil"
         finally:
             temp_path.unlink()
 
@@ -289,7 +335,7 @@ class TestLoadZones:
     def test_load_zones_invalid_yaml(self):
         yaml_content = """zones:
   - zone_id: zone1
-    crop_id: ""
+    crop_id: tomato
     node_id: sensor-1
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -305,7 +351,6 @@ class TestLoadZones:
     def test_load_zones_missing_required_field(self):
         yaml_content = """zones:
   - zone_id: zone1
-    node_id: sensor-1
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
@@ -320,10 +365,8 @@ class TestLoadZones:
     def test_load_zones_duplicate_zone_ids(self):
         yaml_content = """zones:
   - zone_id: zone1
-    crop_id: tomato
     node_id: sensor-1
   - zone_id: zone1
-    crop_id: basil
     node_id: sensor-2
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -341,7 +384,6 @@ class TestLoadZones:
         yaml_content = """# Zone configuration
 zones:
   - zone_id: zone1
-    crop_id: tomato
     node_id: sensor-gh1-zone1  # Main greenhouse
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -351,48 +393,6 @@ zones:
         try:
             zones = load_zones(temp_path)
             assert len(zones) == 1
-            assert zones["zone1"].crop_id == "tomato"
+            assert zones["zone1"].node_id == "sensor-gh1-zone1"
         finally:
             temp_path.unlink()
-
-
-class TestValidateZoneCropRefs:
-    def test_validate_zone_crop_refs_passes(self):
-        crops = {
-            "tomato": CropProfile(
-                crop_id="tomato",
-                crop_name="Tomato",
-                dry_threshold=30.0,
-                runtime_seconds=45,
-                max_daily_runtime_seconds=300,
-            )
-        }
-        zones = {
-            "zone1": ZoneConfig(
-                zone_id="zone1",
-                crop_id="tomato",
-                node_id="sensor-gh1-zone1",
-            )
-        }
-        validate_zone_crop_refs(crops, zones)
-
-    def test_validate_zone_crop_refs_missing_crop(self):
-        crops = {
-            "tomato": CropProfile(
-                crop_id="tomato",
-                crop_name="Tomato",
-                dry_threshold=30.0,
-                runtime_seconds=45,
-                max_daily_runtime_seconds=300,
-            )
-        }
-        zones = {
-            "zone1": ZoneConfig(
-                zone_id="zone1",
-                crop_id="basil",
-                node_id="sensor-gh1-zone1",
-            )
-        }
-        with pytest.raises(ValueError) as exc:
-            validate_zone_crop_refs(crops, zones)
-        assert "unknown crop_id" in str(exc.value).lower()

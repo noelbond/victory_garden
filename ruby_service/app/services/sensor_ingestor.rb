@@ -5,6 +5,8 @@ class SensorIngestor
 
   def call
     node = upsert_node!
+    return if node.nil?
+
     enqueue_config_refresh_if_utc_offset_changed(node)
     zone = resolve_zone_for(node)
 
@@ -66,7 +68,15 @@ class SensorIngestor
   private
 
   def upsert_node!
-    node = Node.find_or_initialize_by(node_id: @payload.fetch("node_id"))
+    node = Node.find_by(node_id: @payload.fetch("node_id"))
+    if node.nil?
+      Rails.logger.warn(
+        "SensorIngestor: ignoring telemetry for unknown node #{@payload['node_id']}; " \
+        "production Nodes must be provisioned with an authoritative Zone"
+      )
+      return nil
+    end
+
     attributes = {
       reported_zone_id: @payload["zone_id"],
       last_seen_at: [node.last_seen_at, @payload.fetch("recorded_at")].compact.max,
@@ -77,7 +87,15 @@ class SensorIngestor
       health: @payload["health"],
       last_error: @payload["last_error"]
     }
-    attributes[:device_id] = @payload["device_id"] if @payload.key?("device_id")
+    if @payload.key?("device_id")
+      reported_device_id = @payload["device_id"]
+      bound_device_id = node.zone&.sensor_device_id
+      if bound_device_id.present? && reported_device_id.present? && reported_device_id != bound_device_id
+        Rails.logger.warn("SensorIngestor: preserving authoritative package binding #{bound_device_id} for #{node.node_id}; reported #{reported_device_id.inspect}")
+      else
+        attributes[:device_id] = reported_device_id
+      end
+    end
     node.assign_attributes(attributes)
     node.save!
     node

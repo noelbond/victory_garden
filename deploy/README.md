@@ -100,6 +100,33 @@ sudo ./deploy/install_pi.sh --skip-system-packages
 pull because it applies environment defaults, dependencies, database
 preparation, systemd units, and service restarts.
 
+## Product Topology Rollout
+
+For a deployment that introduces or changes sensor topology, use this order:
+
+1. Back up PostgreSQL and apply the Rails release/migrations first. Rails is
+   the authority for Zones, Node identities, Node crop assignments, and global
+   logical irrigation lines.
+2. Start the Rails services and publish the retained system configuration and
+   greenhouse-wide actuator topology.
+3. Provision each sensor package through the setup flow. Rails establishes one
+   Zone and exactly four backend-issued Node identities (`package-ch0` through
+   `package-ch3`) before the Pico receives configuration; setup verifies the
+   Pico acknowledgement.
+4. Deploy the dedicated actuator firmware/configuration. One production
+   dedicated actuator serves supported Nodes from every Zone; it is not owned
+   by a single Zone.
+5. Start the Python automatic controller only after retained Node/system and
+   actuator topology configuration is valid.
+
+MQTT telemetry reconciles the backend-created Node topology. It does not create
+normal production Nodes from incoming sensor state. A crop-less Node or a
+logical irrigation line above installed capacity remains fail-closed for
+watering.
+
+Physical hardware validation and the final supported physical actuator capacity
+remain deployment prerequisites outside this repository workflow.
+
 Production runs Solid Queue only through `victory-garden-jobs.service`. The
 installer sets `SOLID_QUEUE_IN_PUMA=false`, including on upgrades from older
 installations that used the Puma plugin, so Puma does not start a second queue
@@ -234,9 +261,13 @@ Expected events include:
 - `frame_received`
 - `frame_published`
 
-6. Confirm Rails ingestion after the node is assigned to a zone.
+6. Confirm Rails ingestion for the backend-provisioned Node identity.
 
-Rails creates or updates the node from MQTT, but historical `sensor_readings` rows depend on the node being assigned/configured for the intended zone. If a valid MQTT payload appears but no reading is stored, check the node assignment before debugging LoRa.
+Rails reconciles known Nodes from MQTT and persists their readings. It does not
+create normal production Node topology from incoming MQTT. If a valid payload
+appears but no reading is stored, verify that the package was provisioned and
+that its reported Zone/Node identity matches the backend topology before
+debugging LoRa.
 
 ## LoRa Outbound Manual Validation
 

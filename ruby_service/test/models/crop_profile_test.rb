@@ -60,9 +60,9 @@ class CropProfileTest < ActiveSupport::TestCase
 
   test "enqueues one node config publish per device when assigned crop profile changes" do
     crop = create(:crop_profile)
-    zone = create(:zone, crop_profile: crop)
+    zone = create(:zone)
     channels = 4.times.map do |channel|
-      Node.create!(node_id: "sensor-zone1-ch#{channel}", device_id: "sensor-zone1", zone: zone, last_seen_at: Time.current)
+      Node.create!(node_id: "sensor-zone1-ch#{channel}", device_id: "sensor-zone1", zone: zone, crop_profile: crop, last_seen_at: Time.current)
     end
 
     assert_enqueued_jobs 1, only: PublishNodeConfigJob do

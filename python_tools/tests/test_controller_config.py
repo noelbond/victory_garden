@@ -11,6 +11,7 @@ from watering.controller import (
     LATEST_ZONE_READINGS,
     SYSTEM_CONFIG_TOPIC,
     allowed_now,
+    effective_node_targets,
     load_controller_runtime,
     process_node_tick,
     on_message,
@@ -19,10 +20,12 @@ from watering.controller import (
     save_controller_runtime,
     set_subscriber_context,
     store_latest_reading,
+    skip_zones_without_eligible_node_targets,
     sync_zone_state_subscriptions,
     zone_moisture_snapshot,
 )
-from watering.controller_runtime import LIVE_NODES
+from watering.controller_runtime import CONTROLLER_RUNTIME, LIVE_NODES
+from watering.controller_mqtt import effective_zone_configs
 from watering.schemas import SensorReading
 from watering.state import ZoneState
 
@@ -54,16 +57,18 @@ def sample_system_config() -> dict:
                 "daily_max_runtime_sec": 300,
             }
         ],
-        "zones": [
+                        "zones": [
             {
                 "zone_id": "zone1",
-                "crop_id": "tomato",
                 "node_ids": ["sensor-zone1"],
                 "active": True,
                 "allowed_hours": {"start_hour": 6, "end_hour": 20},
-                "irrigation_line": 1,
             }
         ],
+        "nodes": [
+            {"node_id": "sensor-zone1", "zone_id": "zone1", "crop_id": "tomato", "irrigation_line": 1}
+        ],
+        "irrigation_line_count": 4,
     }
 
 
@@ -89,6 +94,7 @@ def setup_function():
     LIVE_CROPS.clear()
     LIVE_NODES.clear()
     LIVE_ZONES.clear()
+    CONTROLLER_RUNTIME.installed_irrigation_line_count = None
     LATEST_STATE.clear()
     LATEST_ZONE_READINGS.clear()
     set_subscriber_context(FakeClient(), {}, None)
@@ -109,6 +115,21 @@ def test_system_config_message_populates_live_policy():
     assert LIVE_ZONES["zone1"].allowed_hours.end_hour == 20
 
 
+def test_inactive_zone_is_not_an_automatic_watering_target():
+    config = sample_system_config()
+    config["zones"][0]["active"] = False
+
+    on_message(
+        None,
+        None,
+        SimpleNamespace(topic=SYSTEM_CONFIG_TOPIC, payload=json.dumps(config).encode("utf-8")),
+    )
+
+    active_zones = effective_zone_configs({})
+    assert active_zones == {}
+    assert effective_node_targets(active_zones) == {}
+
+
 def test_process_zone_tick_skips_watering_outside_allowed_hours():
     on_message(
         None,
@@ -122,7 +143,7 @@ def test_process_zone_tick_skips_watering_outside_allowed_hours():
     reading = sample_reading()
     LATEST_STATE[reading.zone_id] = reading
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
 
     zone_runtime, states = process_zone_tick(
@@ -143,7 +164,7 @@ def test_process_zone_tick_skips_watering_outside_allowed_hours():
     assert not any("request_reading" in payload for _, payload, _ in client.messages)
 
 
-def test_process_zone_tick_reuses_dry_reading_when_allowed_window_opens():
+def test_process_zone_tick_does_not_start_from_dry_average_when_window_opens():
     on_message(
         None,
         None,
@@ -156,7 +177,7 @@ def test_process_zone_tick_reuses_dry_reading_when_allowed_window_opens():
     reading = sample_reading()
     LATEST_STATE[reading.zone_id] = reading
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     states = {"zone1": ZoneState(zone_id="zone1", day=date(2026, 3, 31))}
 
@@ -182,8 +203,9 @@ def test_process_zone_tick_reuses_dry_reading_when_allowed_window_opens():
         local_tz=timezone(timedelta(hours=-4)),
     )
 
-    assert states["zone1"].runtime_seconds_today == 45
-    assert any(topic.endswith("/controller/event") for topic, _, _ in client.messages)
+    assert states["zone1"].runtime_seconds_today == 0
+    assert zone_runtime["last_skip_reason"] == "no_eligible_node_targets"
+    assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
 
 
 def test_process_zone_tick_only_publishes_outside_allowed_skip_once_per_signature():
@@ -199,7 +221,7 @@ def test_process_zone_tick_only_publishes_outside_allowed_skip_once_per_signatur
     reading = sample_reading()
     LATEST_STATE[reading.zone_id] = reading
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     args = controller_args()
 
@@ -229,7 +251,7 @@ def test_process_zone_tick_only_publishes_outside_allowed_skip_once_per_signatur
     assert len(skip_topics) == 1
 
 
-def test_process_zone_tick_reuses_low_reading_after_cooldown_expires():
+def test_process_zone_tick_does_not_start_from_changed_dry_average():
     on_message(
         None,
         None,
@@ -240,7 +262,7 @@ def test_process_zone_tick_reuses_low_reading_after_cooldown_expires():
     )
 
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     args = controller_args()
     initial_states = {"zone1": ZoneState(zone_id="zone1", day=date(2026, 3, 31))}
@@ -289,12 +311,12 @@ def test_process_zone_tick_reuses_low_reading_after_cooldown_expires():
         local_tz=timezone(timedelta(hours=-4)),
     )
 
-    assert states["zone1"].runtime_seconds_today == 90
+    assert states["zone1"].runtime_seconds_today == 0
     assert any(topic.endswith("/controller/skip") for topic, _, _ in client.messages)
-    assert len([topic for topic, _, _ in client.messages if topic.endswith("/controller/event")]) == 2
+    assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
 
 
-def test_process_zone_tick_only_publishes_cooldown_skip_once_per_signature():
+def test_process_zone_tick_only_publishes_target_skip_once_per_signature():
     on_message(
         None,
         None,
@@ -305,7 +327,7 @@ def test_process_zone_tick_only_publishes_cooldown_skip_once_per_signature():
     )
 
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     args = controller_args()
 
@@ -354,10 +376,10 @@ def test_process_zone_tick_only_publishes_cooldown_skip_once_per_signature():
     )
 
     skip_topics = [topic for topic, _, _ in client.messages if topic.endswith("/controller/skip")]
-    assert len(skip_topics) == 1
+    assert len(skip_topics) == 2
 
 
-def test_process_zone_tick_waters_within_allowed_hours():
+def test_process_zone_tick_does_not_water_within_allowed_hours():
     on_message(
         None,
         None,
@@ -370,7 +392,7 @@ def test_process_zone_tick_waters_within_allowed_hours():
     reading = sample_reading()
     LATEST_STATE[reading.zone_id] = reading
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
 
     zone_runtime, states = process_zone_tick(
@@ -384,9 +406,9 @@ def test_process_zone_tick_waters_within_allowed_hours():
         local_tz=timezone(timedelta(hours=-4)),
     )
 
-    assert states["zone1"].runtime_seconds_today == 45
-    assert zone_runtime["last_watering_signature"]["zone_id"] == "zone1"
-    assert any(topic.endswith("/controller/event") for topic, _, _ in client.messages)
+    assert states["zone1"].runtime_seconds_today == 0
+    assert zone_runtime["last_skip_reason"] == "no_eligible_node_targets"
+    assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
 
 
 def test_restart_with_persisted_controller_runtime_does_not_republish_same_retained_reading():
@@ -402,7 +424,7 @@ def test_restart_with_persisted_controller_runtime_does_not_republish_same_retai
     reading = sample_reading()
     LATEST_STATE[reading.zone_id] = reading
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     args = controller_args()
 
     first_client = FakeClient()
@@ -438,7 +460,7 @@ def test_restart_with_persisted_controller_runtime_does_not_republish_same_retai
         local_tz=timezone(timedelta(hours=-4)),
     )
 
-    assert states["zone1"].runtime_seconds_today == 45
+    assert states["zone1"].runtime_seconds_today == 0
     assert restart_client.messages == []
     assert reloaded_zone_runtime["last_processed_signature"]["zone_id"] == "zone1"
 
@@ -454,7 +476,7 @@ def test_restart_with_persisted_cooldown_skip_does_not_repeat_skip_for_same_read
     )
 
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     args = controller_args()
 
     first_reading = sample_reading()
@@ -513,7 +535,7 @@ def test_restart_with_persisted_cooldown_skip_does_not_repeat_skip_for_same_read
         local_tz=timezone(timedelta(hours=-4)),
     )
 
-    assert loaded_runtime["zone1"]["last_skip_reason"] == "cooldown"
+    assert loaded_runtime["zone1"]["last_skip_reason"] == "no_eligible_node_targets"
     assert [topic for topic, _, _ in restart_client.messages if topic.endswith("/controller/skip")] == []
 
 
@@ -589,14 +611,16 @@ def test_zone_moisture_snapshot_averages_fresh_configured_sensors():
                     "zones": [
                         {
                             "zone_id": "zone1",
-                            "crop_id": "tomato",
                             "node_ids": ["sensor-a", "sensor-b", "sensor-c"],
                             "active": True,
                             "allowed_hours": {"start_hour": 6, "end_hour": 20},
-                            "irrigation_line": 1,
-                        }
-                    ],
-                }
+                            }
+                        ],
+                        "nodes": [
+                            {"node_id": node_id, "zone_id": "zone1", "crop_id": "tomato", "irrigation_line": index + 1}
+                            for index, node_id in enumerate(["sensor-a", "sensor-b", "sensor-c", "sensor-d", "sensor-e", "sensor-f"])
+                        ],
+                    }
             ).encode("utf-8"),
         ),
     )
@@ -634,17 +658,19 @@ def test_zone_moisture_snapshot_handles_status_only_reading_without_soil_measure
             payload=json.dumps(
                 {
                     "crops": sample_system_config()["crops"],
-                    "zones": [
+                        "zones": [
                         {
                             "zone_id": "zone1",
-                            "crop_id": "tomato",
                             "node_ids": ["sensor-a"],
                             "active": True,
                             "allowed_hours": {"start_hour": 6, "end_hour": 20},
-                            "irrigation_line": 1,
-                        }
-                    ],
-                }
+                            }
+                        ],
+                        "nodes": [
+                            {"node_id": node_id, "zone_id": "zone1", "crop_id": "tomato", "irrigation_line": index + 1}
+                            for index, node_id in enumerate(["sensor-a", "sensor-b", "sensor-c", "sensor-d", "sensor-e", "sensor-f"])
+                        ],
+                    }
             ).encode("utf-8"),
         ),
     )
@@ -684,12 +710,14 @@ def test_process_zone_tick_skips_when_valid_sensor_count_below_quorum():
                     "zones": [
                         {
                             "zone_id": "zone1",
-                            "crop_id": "tomato",
                             "node_ids": ["sensor-a", "sensor-b", "sensor-c", "sensor-d", "sensor-e", "sensor-f"],
                             "active": True,
                             "allowed_hours": {"start_hour": 6, "end_hour": 20},
-                            "irrigation_line": 1,
                         }
+                    ],
+                    "nodes": [
+                        {"node_id": node_id, "zone_id": "zone1", "crop_id": "tomato", "irrigation_line": index + 1}
+                        for index, node_id in enumerate(["sensor-a", "sensor-b", "sensor-c", "sensor-d", "sensor-e", "sensor-f"])
                     ],
                 }
             ).encode("utf-8"),
@@ -708,7 +736,7 @@ def test_process_zone_tick_skips_when_valid_sensor_count_below_quorum():
         )
 
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     args = controller_args()
     args.min_zone_sensor_readings = 4
@@ -730,7 +758,7 @@ def test_process_zone_tick_skips_when_valid_sensor_count_below_quorum():
     assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
 
 
-def test_process_zone_tick_waters_when_quorum_average_is_dry():
+def test_process_zone_tick_does_not_water_from_a_dry_zone_average():
     on_message(
         None,
         None,
@@ -742,12 +770,14 @@ def test_process_zone_tick_waters_when_quorum_average_is_dry():
                     "zones": [
                         {
                             "zone_id": "zone1",
-                            "crop_id": "tomato",
                             "node_ids": ["sensor-a", "sensor-b", "sensor-c", "sensor-d", "sensor-e", "sensor-f"],
                             "active": True,
                             "allowed_hours": {"start_hour": 6, "end_hour": 20},
-                            "irrigation_line": 1,
                         }
+                    ],
+                    "nodes": [
+                        {"node_id": node_id, "zone_id": "zone1", "crop_id": "tomato", "irrigation_line": index + 1}
+                        for index, node_id in enumerate(["sensor-a", "sensor-b", "sensor-c", "sensor-d", "sensor-e", "sensor-f"])
                     ],
                 }
             ).encode("utf-8"),
@@ -766,7 +796,7 @@ def test_process_zone_tick_waters_when_quorum_average_is_dry():
         )
 
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     args = controller_args()
     args.min_zone_sensor_readings = 4
@@ -782,11 +812,10 @@ def test_process_zone_tick_waters_when_quorum_average_is_dry():
         local_tz=timezone(timedelta(hours=-4)),
     )
 
-    assert states["zone1"].runtime_seconds_today == 45
-    event_payloads = [json.loads(payload) for topic, payload, _ in client.messages if topic.endswith("/controller/event")]
-    assert event_payloads[0]["moisture_percent"] == 23.5
-    assert event_payloads[0]["valid_sensor_count"] == 4
-    assert any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
+    assert states["zone1"].runtime_seconds_today == 0
+    assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
+    skip_payloads = [json.loads(payload) for topic, payload, _ in client.messages if topic.endswith("/controller/skip")]
+    assert skip_payloads[0]["reason"] == "no_eligible_node_targets"
 
 
 def test_process_node_tick_waters_only_the_dry_channel_target():
@@ -816,11 +845,9 @@ def test_process_node_tick_waters_only_the_dry_channel_target():
                     "zones": [
                         {
                             "zone_id": "zone1",
-                            "crop_id": "tomato",
                             "node_ids": ["sensor-zone1-ch0", "sensor-zone1-ch1"],
                             "active": True,
                             "allowed_hours": {"start_hour": 6, "end_hour": 20},
-                            "irrigation_line": 1,
                         }
                     ],
                     "nodes": [
@@ -899,11 +926,14 @@ def test_process_node_tick_waters_only_the_dry_channel_target():
     ]
     assert len(command_payloads) == 1
     assert command_payloads[0]["node_id"] == "sensor-zone1-ch0"
+    assert command_payloads[0]["zone_id"] == "zone1"
+    assert command_payloads[0]["issued_at"] == "2026-03-31T10:01:00Z"
+    assert "irrigation_line" not in command_payloads[0]
     assert states["node:sensor-zone1-ch0"].runtime_seconds_today == 45
     assert states["node:sensor-zone1-ch1"].runtime_seconds_today == 0
 
 
-def test_process_zone_tick_caps_global_quorum_to_expected_sensor_count():
+def test_process_zone_tick_does_not_use_zone_line_when_quorum_is_dry():
     on_message(
         None,
         None,
@@ -916,7 +946,7 @@ def test_process_zone_tick_caps_global_quorum_to_expected_sensor_count():
     reading = sample_reading()
     store_latest_reading(reading)
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     args = controller_args()
     args.min_zone_sensor_readings = 4
@@ -932,8 +962,8 @@ def test_process_zone_tick_caps_global_quorum_to_expected_sensor_count():
         local_tz=timezone(timedelta(hours=-4)),
     )
 
-    assert states["zone1"].runtime_seconds_today == 45
-    assert any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
+    assert states["zone1"].runtime_seconds_today == 0
+    assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
 
 
 def test_stale_reading_is_not_ready_for_control_with_age_limit():
@@ -971,7 +1001,7 @@ def test_process_zone_tick_skips_stale_reading():
     )
     LATEST_STATE[reading.zone_id] = reading
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
 
     zone_runtime, states = process_zone_tick(
@@ -1010,7 +1040,7 @@ def test_process_zone_tick_only_publishes_stale_skip_once_per_signature():
     )
     LATEST_STATE[reading.zone_id] = reading
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     args = controller_args()
 
@@ -1051,7 +1081,7 @@ def test_process_zone_tick_reuses_fresh_reading_after_stale_skip():
     )
 
     zone = LIVE_ZONES["zone1"]
-    profile = LIVE_CROPS[zone.crop_id]
+    profile = LIVE_CROPS[LIVE_NODES[zone.node_ids[0]].crop_id]
     client = FakeClient()
     args = controller_args()
     states = {"zone1": ZoneState(zone_id="zone1", day=date(2026, 3, 31))}
@@ -1097,5 +1127,86 @@ def test_process_zone_tick_reuses_fresh_reading_after_stale_skip():
         local_tz=timezone(timedelta(hours=-4)),
     )
 
-    assert states["zone1"].runtime_seconds_today == 45
-    assert any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
+    assert states["zone1"].runtime_seconds_today == 0
+    assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
+
+
+def test_missing_node_irrigation_line_skips_without_zone_fallback():
+    config = sample_system_config()
+    config["nodes"] = [
+        {
+            "node_id": "sensor-zone1",
+            "zone_id": "zone1",
+            "crop_id": "tomato",
+            "active": True,
+            "irrigation_line": None,
+        }
+    ]
+    on_message(
+        None,
+        None,
+        SimpleNamespace(
+            topic=SYSTEM_CONFIG_TOPIC,
+            payload=json.dumps(config).encode("utf-8"),
+        ),
+    )
+
+    client = FakeClient()
+    runtime_data: dict[str, dict] = {}
+    skip_zones_without_eligible_node_targets(
+        LIVE_ZONES,
+        runtime_data,
+        client,
+        datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert effective_node_targets(LIVE_ZONES) == {}
+    assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
+    skip_payloads = [json.loads(payload) for topic, payload, _ in client.messages if topic.endswith("/controller/skip")]
+    assert skip_payloads == [
+        {
+            "zone_id": "zone1",
+            "node_id": None,
+            "timestamp": "2026-03-31T10:00:00+00:00",
+            "reason": "missing_irrigation_line",
+        }
+    ]
+
+
+def test_unsupported_logical_line_is_preserved_but_never_becomes_an_automatic_target():
+    config = sample_system_config()
+    config["irrigation_line_count"] = 4
+    config["nodes"][0]["irrigation_line"] = 8
+    on_message(
+        None,
+        None,
+        SimpleNamespace(topic=SYSTEM_CONFIG_TOPIC, payload=json.dumps(config).encode("utf-8")),
+    )
+
+    client = FakeClient()
+    runtime_data: dict[str, dict] = {}
+    skip_zones_without_eligible_node_targets(
+        LIVE_ZONES,
+        runtime_data,
+        client,
+        datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert LIVE_NODES["sensor-zone1"].irrigation_line == 8
+    assert effective_node_targets(LIVE_ZONES) == {}
+    assert not any(topic.endswith("/actuator/command") for topic, _, _ in client.messages)
+    assert json.loads(client.messages[0][1])["reason"] == "unsupported_irrigation_line"
+
+    config["irrigation_line_count"] = 8
+    on_message(None, None, SimpleNamespace(topic=SYSTEM_CONFIG_TOPIC, payload=json.dumps(config).encode("utf-8")))
+    assert set(effective_node_targets(LIVE_ZONES)) == {"sensor-zone1"}
+
+    config["irrigation_line_count"] = 4
+    on_message(None, None, SimpleNamespace(topic=SYSTEM_CONFIG_TOPIC, payload=json.dumps(config).encode("utf-8")))
+    assert LIVE_NODES["sensor-zone1"].irrigation_line == 8
+    assert effective_node_targets(LIVE_ZONES) == {}
+
+    config["irrigation_line_count"] = 0
+    on_message(None, None, SimpleNamespace(topic=SYSTEM_CONFIG_TOPIC, payload=json.dumps(config).encode("utf-8")))
+    assert LIVE_NODES["sensor-zone1"].irrigation_line == 8
+    assert effective_node_targets(LIVE_ZONES) == {}

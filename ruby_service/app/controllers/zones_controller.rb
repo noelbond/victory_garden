@@ -23,14 +23,13 @@ class ZonesController < ApplicationController
       return
     end
 
-    @zones = Zone.includes(:crop_profile, :nodes).order(:zone_id)
+    @zones = Zone.includes(:nodes).order(:zone_id)
     @latest_readings = latest_readings_for(@zones)
     @zone_moisture_snapshots = zone_moisture_snapshots_for(@zones)
     @aggregate_freshness_minutes = AGGREGATE_READING_FRESHNESS_MINUTES
     @latest_statuses = latest_statuses_for(@zones)
     @latest_watering_events = latest_watering_events_for(@zones)
     @open_fault_counts = open_fault_counts_for(@zones)
-    @unassigned_node_count = Node.unassigned.count
     @summary = {
       zones: @zones.count,
       active_zones: @zones.count(&:active?),
@@ -75,11 +74,11 @@ class ZonesController < ApplicationController
 
   def new
     @zone = Zone.new
-    load_crop_profiles
+    load_zone_form_dependencies
   end
 
   def edit
-    load_crop_profiles
+    load_zone_form_dependencies
   end
 
   def create
@@ -88,7 +87,7 @@ class ZonesController < ApplicationController
       sync_zone_nodes!(@zone)
       redirect_to zones_path, notice: "Zone created."
     else
-      load_crop_profiles
+      load_zone_form_dependencies
       render :new, status: :unprocessable_entity
     end
   end
@@ -98,19 +97,21 @@ class ZonesController < ApplicationController
       sync_zone_nodes!(@zone)
       redirect_to @zone, notice: "Zone updated."
     else
-      load_crop_profiles
+      load_zone_form_dependencies
       render :edit, status: :unprocessable_entity
     end
   end
 
   def destroy
-    @zone.destroy
-    redirect_to zones_path, notice: "Zone removed."
+    if @zone.destroy
+      redirect_to zones_path, notice: "Zone removed."
+    else
+      redirect_to @zone, alert: @zone.errors.full_messages.to_sentence
+    end
   end
 
   def stop_watering
-    WateringCommand.stop(@zone)
-    redirect_to @zone, notice: "Stop command queued."
+    redirect_to @zone, alert: "Zone-level stopping is unavailable until the explicit stop-all operation is implemented."
   end
 
   def toggle_active
@@ -124,9 +125,7 @@ class ZonesController < ApplicationController
     @zone = Zone.find(params[:id])
   end
 
-  def load_crop_profiles
-    @crop_profiles = CropProfile.order(:crop_name)
-    @zone.crop_profile ||= @crop_profiles.first if @zone.crop_profile.blank?
+  def load_zone_form_dependencies
     @reading_frequency_options = READING_FREQUENCY_OPTIONS
     @assignable_nodes = assignable_nodes_for(@zone)
   end
@@ -141,21 +140,12 @@ class ZonesController < ApplicationController
 
   def assignable_nodes_for(zone)
     scope = Node.order(:last_seen_at, :node_id)
-    if zone.persisted?
-      scope.where(zone_id: nil).or(scope.where(zone_id: zone.id))
-    else
-      scope.where(zone_id: nil)
-    end
+    zone.persisted? ? scope.where(zone_id: zone.id) : scope.none
   end
 
   def sync_zone_nodes!(zone)
     desired_ids = selected_node_ids
     assignable = assignable_nodes_for(zone)
-
-    assignable.where(zone_id: zone.id).where.not(id: desired_ids).find_each do |node|
-      node.update!(zone: nil)
-      PublishNodeConfigJob.perform_later(node.id)
-    end
 
     assignable.where(id: desired_ids).find_each do |node|
       next if node.zone_id == zone.id

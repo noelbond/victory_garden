@@ -10,6 +10,9 @@
 #include "pico/stdlib.h"
 #include "wifi.h"
 
+#define VG_TIME_SYNC_MIN_VALID_EPOCH_SECONDS 1577836800u
+#define VG_TIME_SYNC_TRUST_MAX_AGE_US (2ull * 60ull * 60ull * 1000000ull)
+
 typedef struct {
     bool initialized;
     bool synced;
@@ -20,6 +23,12 @@ typedef struct {
 static time_sync_runtime_t g_time_sync;
 
 void vg_time_sync_set_epoch_us(uint32_t sec, uint32_t usec) {
+    // Do not convert a zero/obviously pre-deployment SNTP sample into
+    // authority to energize a relay. A later valid sample restores trust.
+    if (sec < VG_TIME_SYNC_MIN_VALID_EPOCH_SECONDS || usec >= 1000000u) {
+        return;
+    }
+
     g_time_sync.synced = true;
     g_time_sync.synced_epoch_us = ((uint64_t)sec * 1000000ull) + usec;
     g_time_sync.synced_boot_us = to_us_since_boot(get_absolute_time());
@@ -51,7 +60,24 @@ void time_sync_poll(void) {
 }
 
 bool time_sync_ready(void) {
-    return g_time_sync.synced;
+    if (!g_time_sync.synced) {
+        return false;
+    }
+
+    uint64_t now_boot_us = to_us_since_boot(get_absolute_time());
+    return now_boot_us >= g_time_sync.synced_boot_us &&
+           now_boot_us - g_time_sync.synced_boot_us <= VG_TIME_SYNC_TRUST_MAX_AGE_US;
+}
+
+bool time_sync_current_epoch_seconds(int64_t *epoch_seconds_out) {
+    if (!epoch_seconds_out || !time_sync_ready()) {
+        return false;
+    }
+
+    uint64_t now_us = g_time_sync.synced_epoch_us +
+                      (to_us_since_boot(get_absolute_time()) - g_time_sync.synced_boot_us);
+    *epoch_seconds_out = (int64_t)(now_us / 1000000ull);
+    return true;
 }
 
 void time_sync_format_iso8601(char *out, size_t out_size) {

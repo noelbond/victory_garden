@@ -30,6 +30,7 @@ class ControllerRuntime:
     live_crops: dict[str, CropProfile] = field(default_factory=dict)
     live_zones: dict[str, SystemZoneConfig] = field(default_factory=dict)
     live_nodes: dict[str, SystemNodeConfig] = field(default_factory=dict)
+    installed_irrigation_line_count: int | None = None
     subscribed_state_topics: set[str] = field(default_factory=set)
     subscription_fallback_zones: dict[str, ZoneConfig] = field(default_factory=dict)
     subscription_zone_filter: set[str] | None = None
@@ -118,6 +119,11 @@ def write_text_if_changed(path: Path, text: str, previous: str | None) -> str:
 def live_config_snapshot() -> tuple[dict[str, CropProfile], dict[str, SystemZoneConfig], dict[str, SystemNodeConfig]]:
     with CONTROLLER_RUNTIME.live_config_lock:
         return dict(CONTROLLER_RUNTIME.live_crops), dict(CONTROLLER_RUNTIME.live_zones), dict(CONTROLLER_RUNTIME.live_nodes)
+
+
+def installed_irrigation_line_count() -> int | None:
+    with CONTROLLER_RUNTIME.live_config_lock:
+        return CONTROLLER_RUNTIME.installed_irrigation_line_count
 
 
 def latest_reading(zone_id: str) -> SensorReading | None:

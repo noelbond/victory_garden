@@ -65,19 +65,21 @@ end
 tomato = CropProfile.find_by!(crop_id: "tomato")
 basil = CropProfile.find_by!(crop_id: "basil")
 
-Zone.find_or_create_by!(zone_id: "zone1") do |zone|
+zone1 = Zone.find_or_create_by!(zone_id: "zone1") do |zone|
   zone.name = "Greenhouse Zone 1"
-  zone.crop_profile = tomato
   zone.active = true
   zone.allowed_hours = { "start_hour" => 6, "end_hour" => 20 }
 end
 
-Zone.find_or_create_by!(zone_id: "zone2") do |zone|
+zone2 = Zone.find_or_create_by!(zone_id: "zone2") do |zone|
   zone.name = "Greenhouse Zone 2"
-  zone.crop_profile = basil
   zone.active = true
   zone.allowed_hours = { "start_hour" => 6, "end_hour" => 20 }
 end
+
+# Seed nodes retain crop ownership; Zones only group sensor positions.
+Node.find_or_create_by!(node_id: "sensor-zone1-ch0") { |node| node.zone = zone1; node.crop_profile = tomato }
+Node.find_or_create_by!(node_id: "sensor-zone2-ch0") { |node| node.zone = zone2; node.crop_profile = basil }
 
 ConnectionSetting.find_or_create_by!(mqtt_host: "localhost") do |s|
   s.mqtt_port = 1883

@@ -9,6 +9,9 @@
 // array-of-objects support next_json_object provides for the ADS1115 channel
 // list.
 
+// Decodes a complete JSON string body. The decoded value must fit exactly in
+// out, including the NUL terminator; overlength values fail rather than being
+// truncated. On failure, out is cleared when it is a valid destination.
 bool decode_json_string(const char *start, char *out, size_t out_size, const char **end_out);
 bool extract_json_string(const char *payload, const char *key, char *out, size_t out_size);
 bool extract_json_bool(const char *payload, const char *key, bool *out);

@@ -1,6 +1,7 @@
 #include <stdio.h>
 
 #include "config.h"
+#include "dedicated_actuator_journal_boot.h"
 #include "hardware/watchdog.h"
 #include "mqtt_node.h"
 #include "pico/cyw43_arch.h"
@@ -22,6 +23,29 @@ static const uint32_t VG_WATCHDOG_TIMEOUT_MS = 8000u;
 // radio. Bound it: after this long of unbroken failure, force a reboot.
 static const uint32_t VG_WIFI_RETRY_REBOOT_MS = 5u * 60u * 1000u;
 #define VG_SKIP_REVIEW_ONCE_MAGIC 0x56475201u
+
+// The reconstructed journal holds fixed-size shared storage records. Keep it
+// out of the small main stack; START reads this durable acceptance history
+// before it can reach freshness or relay admission.
+static vg_dedicated_actuator_journal_boot_t g_durable_journal;
+
+static bool mqtt_node_outputs_active(void *context) {
+    return mqtt_node_any_actuator_output_active((const mqtt_node_t *)context);
+}
+
+static const char *journal_maintenance_action_name(
+    vg_dedicated_actuator_journal_maintenance_action_t action
+) {
+    switch (action) {
+        case VG_DEDICATED_ACTUATOR_JOURNAL_MAINTENANCE_INITIALIZE_BLANK:
+            return "initialize_blank";
+        case VG_DEDICATED_ACTUATOR_JOURNAL_MAINTENANCE_CLEANUP_INACTIVE:
+            return "cleanup_inactive";
+        case VG_DEDICATED_ACTUATOR_JOURNAL_MAINTENANCE_NONE:
+        default:
+            return "none";
+    }
+}
 
 static void print_json_string(const char *value) {
     putchar('"');
@@ -191,6 +215,15 @@ static bool wifi_connect_with_retry(const node_config_t *config, char *error, si
 }
 
 int main(void) {
+    // A relay's GPIO and polarity live in persistent configuration. Read that
+    // small local record and actively drive every known output OFF before USB
+    // enumeration, the fixed boot delay, watchdog setup, journal work, or
+    // any network activity. A corrupt record resets to the compiled safe
+    // hardware defaults inside node_config_load().
+    node_config_t config;
+    node_config_load(&config);
+    actuator_relays_init_safe(&config);
+
     stdio_init_all();
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -198,11 +231,10 @@ int main(void) {
     printf("[main] boot\n");
     stdio_flush();
 
-    node_config_t config;
     mqtt_node_t node;
     char wifi_error[128] = {0};
 
-    node_config_load(&config);
+    // Provisioning is intentionally after the earliest safe-OFF operation.
     wait_for_usb_provisioning(&config);
 
     // Arm the watchdog now that the interactive USB provisioning wait is
@@ -210,10 +242,41 @@ int main(void) {
     // forces a reboot instead of leaving the relay/network stack wedged.
     watchdog_enable(VG_WATCHDOG_TIMEOUT_MS, true);
 
-    // Force every relay to its safe OFF level before touching Wi-Fi/MQTT,
-    // so a relay is never left floating while the board is offline —
-    // including the time it takes to reconnect after any reboot.
-    actuator_relays_init_safe(&config);
+    // Establish every runtime run slot before maintenance. This touches only
+    // safe relay initialization; it does not begin MQTT activity until the
+    // normal polling loop runs after Wi-Fi setup below.
+    mqtt_node_init(&node, &config);
+
+    // The physical relay outputs are already explicitly OFF. This scan reads
+    // the reserved journal banks only; it cannot arm a cutoff, alter GPIO, or
+    // mutate flash. Keep it before network initialization so boot health is
+    // known without delaying the earliest safe-off action.
+    vg_dedicated_actuator_journal_boot_load(&g_durable_journal);
+    vg_dedicated_actuator_journal_boot_maintain(
+        &g_durable_journal,
+        mqtt_node_outputs_active,
+        &node
+    );
+    mqtt_node_set_durable_start_journal(
+        &node,
+        &g_durable_journal
+    );
+    const vg_dedicated_actuator_journal_runtime_state_t *journal_runtime =
+        &g_durable_journal.runtime;
+    printf("[journal] maintenance=%s attempted=%d result=%d policy_denied=%d\n",
+           journal_maintenance_action_name(g_durable_journal.maintenance.action),
+           (int)g_durable_journal.maintenance.mutation_attempted,
+           (int)g_durable_journal.maintenance.storage_result,
+           (int)g_durable_journal.maintenance_policy_denied);
+    printf("[journal] health=%s authoritative_bank=%s records=%u high_water=%llu cleanup_required=%d\n",
+           vg_dedicated_actuator_journal_health_name(journal_runtime->health),
+           journal_runtime->authoritative_bank < VG_ACTUATOR_START_JOURNAL_STORAGE_BANK_COUNT
+               ? (journal_runtime->authoritative_bank == 0u ? "A" : "B")
+               : "none",
+           (unsigned)journal_runtime->record_count,
+           (unsigned long long)journal_runtime->sequence_high_water,
+           (int)journal_runtime->cleanup_required);
+    stdio_flush();
 
     printf("[main] config: node=%s zone=%s broker=%s:%d\n",
         config.node_id, config.zone_id, config.mqtt_host, config.mqtt_port);
@@ -225,7 +288,6 @@ int main(void) {
 
     wifi_connect_with_retry(&config, wifi_error, sizeof(wifi_error));
     time_sync_init();
-    mqtt_node_init(&node, &config);
 
     absolute_time_t wifi_reconnect_allowed_at = make_timeout_time_ms(VG_WIFI_STABILIZE_MS);
     absolute_time_t wifi_ip_wait_started_at = get_absolute_time();

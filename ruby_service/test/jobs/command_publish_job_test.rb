@@ -93,4 +93,22 @@ class CommandPublishJobTest < ActiveSupport::TestCase
 
     assert_equal "queued", event.reload.status
   end
+
+  test "retry preserves the original canonical issued_at payload" do
+    command = {
+      command: "start_watering",
+      zone_id: "zone1",
+      node_id: "actuator-zone1",
+      runtime_seconds: 45,
+      reason: "manual_trigger",
+      issued_at: "2026-09-14T16:52:12Z",
+      idempotency_key: "actuator-zone1-20260914T165212Z-retry001"
+    }
+
+    with_publish_command_stub(->(_payload) { raise StandardError, "broker unavailable" }) do
+      assert_enqueued_with(job: CommandPublishJob, args: [command]) do
+        CommandPublishJob.perform_now(command)
+      end
+    end
+  end
 end

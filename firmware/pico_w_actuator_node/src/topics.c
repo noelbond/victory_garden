@@ -6,6 +6,10 @@ void topic_actuator_command_for_zone(const char *zone_id, char *out, size_t out_
     snprintf(out, out_size, "greenhouse/zones/%s/actuator/command", zone_id);
 }
 
+void topic_actuator_command_wildcard(char *out, size_t out_size) {
+    snprintf(out, out_size, "greenhouse/zones/+/actuator/command");
+}
+
 void topic_actuator_status_for_zone(const char *zone_id, char *out, size_t out_size) {
     snprintf(out, out_size, "greenhouse/zones/%s/actuator/status", zone_id);
 }

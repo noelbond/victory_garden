@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+from urllib import error, request
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,13 @@ PICO_USB_VID = 0x2E8A
 
 class PicoConfigError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class BackendTopology:
+    zone_id: str
+    device_id: str
+    channel_node_ids: tuple[str, str, str, str]
 
 
 @dataclass(frozen=True)
@@ -178,7 +186,44 @@ def mqtt_hosts_equivalent(saved: str, expected: str) -> bool:
         return False
 
 
-def update_payload(args: argparse.Namespace, ready: ReadyConfig) -> dict[str, Any]:
+def validate_channel_node_ids(device_id: str, channel_node_ids: list[str]) -> tuple[str, str, str, str]:
+    expected = [f"{device_id}-ch{channel}" for channel in range(4)]
+    if channel_node_ids != expected:
+        raise PicoConfigError("backend topology must contain exactly #{device}-ch0 through #{device}-ch3 in channel order".replace("#{device}", device_id))
+    return tuple(channel_node_ids)  # type: ignore[return-value]
+
+
+def fetch_backend_topology(args: argparse.Namespace) -> BackendTopology:
+    if not args.rails_url or not args.zone_id or not args.sensor_device_id:
+        raise PicoConfigError("update requires --rails-url, --zone-id, and --sensor-device-id")
+    body = json.dumps({"zone_id": args.zone_id, "sensor_device_id": args.sensor_device_id}).encode("utf-8")
+    endpoint = args.rails_url.rstrip("/") + "/setup_api/provision_zone"
+    try:
+        response = request.urlopen(request.Request(endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST"), timeout=15)
+        payload = json.loads(response.read().decode("utf-8"))
+    except (error.URLError, error.HTTPError, json.JSONDecodeError) as exc:
+        raise PicoConfigError(f"could not provision backend topology: {exc}") from exc
+    zone = payload.get("zone") if isinstance(payload, dict) else None
+    nodes = payload.get("nodes") if isinstance(payload, dict) else None
+    if not isinstance(zone, dict) or not isinstance(nodes, list):
+        raise PicoConfigError("backend provisioning response is malformed")
+    device_id = str(zone.get("sensor_device_id", ""))
+    zone_id = str(zone.get("zone_id", ""))
+    node_ids = sorted(str(node.get("node_id", "")) for node in nodes if isinstance(node, dict))
+    return BackendTopology(zone_id=zone_id, device_id=device_id, channel_node_ids=validate_channel_node_ids(device_id, node_ids))
+
+
+def verify_provision_ack(line: str, topology: BackendTopology) -> None:
+    try:
+        payload = json.loads(line.removeprefix("VG_PROVISION_OK "))
+    except json.JSONDecodeError as exc:
+        raise PicoConfigError(f"Pico returned invalid VG_PROVISION_OK JSON: {exc}") from exc
+    channels = payload.get("channels")
+    if payload.get("node_id") != topology.device_id or payload.get("zone_id") != topology.zone_id or channels != list(topology.channel_node_ids):
+        raise PicoConfigError("Pico acknowledgement does not match the backend-issued package, zone, and channel identities")
+
+
+def update_payload(args: argparse.Namespace, ready: ReadyConfig, topology: BackendTopology) -> dict[str, Any]:
     if args.yes and (not args.wifi_ssid or not args.mqtt_host):
         raise PicoConfigError("--yes requires --wifi-ssid and --mqtt-host")
     wifi_ssid = args.wifi_ssid or input(f"Wi-Fi SSID [{ready.wifi_ssid}]: ").strip() or ready.wifi_ssid
@@ -190,8 +235,9 @@ def update_payload(args: argparse.Namespace, ready: ReadyConfig) -> dict[str, An
         "mqtt_port": args.mqtt_port,
         "mqtt_username": args.mqtt_username,
         "mqtt_password": secret("VG_MQTT_PASSWORD", "MQTT password: "),
-        "node_id": args.node_id or ready.node_id,
-        "zone_id": args.zone_id or ready.zone_id,
+        "node_id": topology.device_id,
+        "zone_id": topology.zone_id,
+        "channels": [{"node_id": node_id} for node_id in topology.channel_node_ids],
         "publish_interval_ms": args.publish_interval_ms,
         "utc_offset_hours": args.utc_offset_hours,
     }
@@ -223,7 +269,8 @@ def run(args: argparse.Namespace) -> int:
             print("Saved configuration preserved; Pico is continuing startup.")
             return 0
 
-        payload = update_payload(args, ready)
+        topology = fetch_backend_topology(args)
+        payload = update_payload(args, ready, topology)
         if not args.yes:
             answer = input("Replace the Pico configuration with these non-secret values? [y/N] ").strip().lower()
             if answer not in {"y", "yes"}:
@@ -236,7 +283,7 @@ def run(args: argparse.Namespace) -> int:
         command = "VG_PROVISION " + json.dumps(payload, separators=(",", ":")) + "\n"
         port.write(command.encode("utf-8"))
         port.flush()
-        wait_for_prefix(port, "VG_PROVISION_OK ")
+        verify_provision_ack(wait_for_prefix(port, "VG_PROVISION_OK "), topology)
         print("Pico configuration updated; device is rebooting.")
         return 0
     finally:
@@ -255,8 +302,9 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--mqtt-host", help="Prompt with the retained broker as the default when omitted.")
     update.add_argument("--mqtt-port", type=int, default=1883)
     update.add_argument("--mqtt-username", default="victory_garden")
-    update.add_argument("--node-id")
-    update.add_argument("--zone-id")
+    update.add_argument("--rails-url", help="Rails base URL used to issue the authoritative sensor topology.")
+    update.add_argument("--zone-id", help="Backend Zone machine ID.")
+    update.add_argument("--sensor-device-id", help="Backend sensor package identity.")
     update.add_argument("--publish-interval-ms", type=int)
     update.add_argument("--utc-offset-hours", type=int)
     update.add_argument("--yes", action="store_true", help="Skip the final non-secret configuration confirmation.")

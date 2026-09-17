@@ -7,7 +7,7 @@ It assumes:
 - one Raspberry Pi on your LAN
 - one bed/zone
 - one four-channel sensor device whose channel nodes are plant sensors in that bed
-- one dedicated actuator Pico with one pump/relay output per plant sensor
+- one dedicated greenhouse-wide actuator Pico with enough installed outputs for the Nodes you intend to water
 - Mosquitto and Rails running on the Pi
 
 If you need the full install flow first, start with [`setup.md`](../docs/setup.md).
@@ -46,9 +46,9 @@ In the Rails UI:
    - MQTT port is `1883`
    - MQTT username/password match the Pi broker if auth is enabled
 3. use the seeded Crop Profile library or create a custom profile if needed
-4. create one bed/zone
+4. create one bed/zone and provision its sensor package; provisioning creates four stable Nodes before telemetry
 
-The health page should show the app is running even before a node is assigned.
+The health page should show the app is running even before first telemetry arrives.
 
 ## 3. Bring up the sensor and actuator nodes
 
@@ -81,7 +81,7 @@ Flash:
 - `firmware-bundles/pico_w_actuator_node.uf2` for a Pico W actuator board
 - `firmware-bundles/pico2_w_actuator_node.uf2` for a Pico 2 W actuator board
 
-## 4. Confirm node discovery
+## 4. Confirm provisioned Node telemetry
 
 On the Pi:
 
@@ -97,18 +97,19 @@ You should see four retained `node-state/v1` messages from the sensor device. Ea
 In Rails:
 
 1. open `Nodes`
-2. confirm all four channel nodes appear
-3. assign any channel to the bed you created; Rails cascades the assignment to its `device_id` siblings
-4. open each channel node and assign its plant crop profile and pump/relay output
+2. confirm the four preprovisioned channel Nodes are present
+3. confirm incoming telemetry reconciles with those identities
+4. open each channel Node and assign its plant crop profile and logical irrigation line as needed
 
 Important:
 
-- unassigned nodes are visible and updated
-- only assigned nodes persist readings and trigger automatic decisions
+- Nodes belong to their Zone from provisioning; MQTT does not create production topology
+- crop-less Nodes can publish readings but cannot water automatically or through crop-derived manual watering
+- logical irrigation lines are global. Lines above installed actuator capacity remain saved but fail closed until supported
 
 ## 5. Confirm live ingest
 
-After the node is assigned:
+After the Node reports telemetry:
 
 - the health page should show the node
 - Rails should persist new `sensor_readings`

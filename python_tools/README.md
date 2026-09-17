@@ -11,10 +11,10 @@ The controller runtime is intentionally split into four files:
 
 ## Responsibilities
 
-- Load fallback crop and zone config from YAML
+- Load development fallback Node/Zone config from YAML
 - Consume live system config from Rails over MQTT
 - Validate node payloads
-- Track per-zone daily runtime state
+- Track per-Node daily runtime state
 - Evaluate automatic watering decisions
 - Publish actuator commands and controller telemetry
 - Receive validated inbound LoRa node-state frames and republish them to MQTT
@@ -67,9 +67,9 @@ secrets do not enter shell history or process listings.
 Both tools expect a running MQTT broker. Override the broker with `--mqtt-host` and `--mqtt-port` if needed.
 Both also accept `--mqtt-username` and `--mqtt-password`, and default those from `MQTT_USERNAME` / `MQTT_PASSWORD` when present.
 The LoRa receiver uses the same MQTT options, publishes newline-delimited `node-state/v1` frames to the canonical retained node-state topic, and routes valid `greenhouse/nodes/+/lora/command` messages to newline-delimited compact LoRa command frames while serial is connected.
-When available, the controller prefers retained `greenhouse/system/config/current` from Rails over local YAML so `allowed_hours`, active zones, and crop thresholds stay consistent with the UI.
+When available, the controller prefers retained `greenhouse/system/config/current` from Rails over local YAML so Node crop assignments, Zone schedules, and active-state metadata stay consistent with the UI.
 The controller also refuses to act on stale retained readings older than `--max-reading-age-seconds` (default: 900) so an old dry payload cannot trigger watering after a long outage or restart.
-For multi-sensor zones, it averages fresh readings from the zone's configured `node_ids` and can require a quorum with `--min-zone-sensor-readings` before watering.
+Automatic watering evaluates each Node independently. A crop-less Node or a Node whose logical irrigation line exceeds the currently installed capacity is skipped and cannot publish an automatic START.
 
 ## Pico Flasher Helper
 
@@ -102,13 +102,13 @@ to flash; the helper performs the actual filesystem write to the mounted BOOTSEL
 [`config/zones.yaml`](config/zones.yaml) maps:
 
 - `zone_id`
-- `crop_id`
-- `node_id`
+- Zone schedule/grouping metadata
+- `node_id` for the legacy development fallback entry
 
 Validation rules:
 
-- Duplicate `crop_id` or `zone_id` is an error
-- every zone must reference an existing crop profile
+- Duplicate `zone_id` is an error
+- Zone entries do not own or select crop profiles; Node entries carry crop identity when configured
 
 ## MQTT Topics
 
@@ -135,7 +135,7 @@ The Python controller publishes `greenhouse/zones/{zone_id}/actuator/command`.
 The dedicated actuator Pico subscribes to that topic, enforces the bounded runtime locally, and
 publishes `greenhouse/zones/{zone_id}/actuator/status`.
 Rails separately publishes `greenhouse/system/actuator/config/current` so the actuator Pico knows
-how many Water Zones exist and which zone is assigned to each Water Zone.
+the installed output capacity and the supported greenhouse-wide Node-to-line mappings.
 
 The runtime safety boundary is on the actuator Pico:
 
@@ -146,11 +146,11 @@ The runtime safety boundary is on the actuator Pico:
 
 ## Runtime Boundaries
 
-- The Python controller is the authoritative automatic watering decision-maker for configured zones.
+- The Python controller is the authoritative automatic watering decision-maker for configured Nodes.
 - MQTT retained node state is its working input.
 - Rails/Postgres remains authoritative for crop definitions, zone assignments, config publication, historical records, and manual operator actions.
 - The actuator Pico is part of the live stack and executes `greenhouse/zones/{zone_id}/actuator/command`.
-- Shared actuator topology is configured in Rails with one Water Zone per zone.
+- Shared actuator topology is configured in Rails with global logical lines per Node; the dedicated actuator serves supported Nodes from every Zone.
 - Rails continues to schedule delayed rereads from actuator completion because that logic depends on persisted watering-event correlation.
 
 ## Notes
@@ -160,6 +160,6 @@ The runtime safety boundary is on the actuator Pico:
 - Incoming MQTT state is validated through `SensorReading` before any control logic touches it.
 - Empty retained clears are ignored cleanly.
 - Invalid or out-of-range sensor payloads are ignored, and stale retained readings are skipped rather than watered.
-- Multi-sensor zones use the average fresh moisture across configured nodes; insufficient fresh readings publish `insufficient_sensor_quorum`.
+- There is no production Zone-average or Zone-crop watering fallback. Crop-less and installed-capacity-unsupported Nodes fail closed.
 - The controller emits structured JSON logs for MQTT lifecycle, decisions, skips, reread requests, and command publication.
 - The current seeded thresholds are `30` for tomato and `40` for basil, reflecting current normalized sensor policy informed by crop watering preference rather than a universal absolute soil standard.

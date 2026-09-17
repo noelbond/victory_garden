@@ -12,7 +12,46 @@ This document defines the canonical MQTT transport used by the Pico nodes, the P
 - Retained topics are used only where replay-on-reconnect is intentional
 - The deployed Pi stack uses MQTT username/password authentication on the local broker
 
+`nodes.zone_id` in Rails is authoritative for routing. A Zone is grouping and
+topic metadata for one sensor package; a Node owns its crop assignment and
+logical irrigation line. A reported `zone_id` is diagnostic and must not
+rewrite the provisioned topology.
+
 Outside MQTT itself, the Pi also exposes a small UDP discovery responder on `MQTT_DISCOVERY_PORT`. Pico nodes use it only when their saved broker IP is stale so they can learn the Pi's current IP and then reconnect over normal MQTT.
+
+## Sensor USB Provisioning Before MQTT
+
+MQTT carries live state and configuration; it is not the authority that creates
+production topology. Before a sensor Pico publishes state, Rails provisions one
+Zone/package and exactly four Node identities. The USB provisioner fetches those
+backend-issued values, sends them to the Pico, and verifies its acknowledgement.
+
+The production `VG_PROVISION` payload includes network and timing fields as well
+as this identity shape (secrets omitted here):
+
+```json
+{
+  "node_id": "sensor-zone1",
+  "zone_id": "zone1",
+  "channels": [
+    { "node_id": "sensor-zone1-ch0" },
+    { "node_id": "sensor-zone1-ch1" },
+    { "node_id": "sensor-zone1-ch2" },
+    { "node_id": "sensor-zone1-ch3" }
+  ]
+}
+```
+
+The `channels` array must contain exactly those four entries, in `ch0` through
+`ch3` order. A Pico returns `VG_PROVISION_OK` containing the applied package ID,
+Zone ID, and all four channel IDs; the provisioner rejects an acknowledgement
+that differs from Rails' issued topology. Telemetry then reconciles known Nodes
+by `node_id`; unknown telemetry does not create normal production Nodes.
+
+Firmware-visible Zone and Node IDs are limited to 31 bytes. A package ID is
+limited to 27 bytes so `{package}-chN` fits. Identity values use only ASCII
+letters, digits, hyphen, and underscore. Rails rejects invalid values; it never
+silently truncates, sanitizes, or rewrites them.
 
 ## Topic Summary
 
@@ -25,7 +64,7 @@ Outside MQTT itself, the Pi also exposes a small UDP discovery responder on `MQT
 | `greenhouse/nodes/{node_id}/config_ack` | sensor node | Rails | yes | acknowledgement of applied or rejected node config |
 | `greenhouse/zones/{zone_id}/actuator/command` | Python controller, Rails manual ops | actuator Pico node | no | start or stop watering |
 | `greenhouse/zones/{zone_id}/actuator/status` | actuator Pico node | Rails | no | watering progress or fault |
-| `greenhouse/system/actuator/config/current` | Rails | actuator Pico node | yes | retained shared actuator topology, line count, and zone-to-line mapping |
+| `greenhouse/system/actuator/config/current` | Rails | dedicated actuator Pico node | yes | retained greenhouse-wide supported Node-to-line topology and installed line count |
 | `greenhouse/zones/{zone_id}/controller/event` | Python controller | operators | no | decision summary for a watering pass |
 | `greenhouse/zones/{zone_id}/controller/skip` | Python controller | operators | no | skipped-decision summary |
 | `greenhouse/zones/{zone_id}/controller/moisture_percent` | Python controller | operators | no | latest controller input moisture |
@@ -121,7 +160,7 @@ Receiver rules:
 - CRLF input is accepted; trailing `\r` is stripped before JSON parsing
 - maximum frame size: `1024` bytes by default
 - malformed JSON, invalid UTF-8, oversized frames, and schema-invalid payloads are dropped and logged
-- `zone_id` and `node_id` must be MQTT-safe: letters, numbers, `.`, `_`, and `-`
+- `zone_id` and `node_id` must use only ASCII letters, digits, hyphen, and underscore
 - the MQTT topic is derived from the validated payload:
 
 ```text
@@ -255,7 +294,7 @@ Example assigned payload:
 }
 ```
 
-Example unassigned payload:
+Example crop-less setup payload:
 
 ```json
 {
@@ -263,8 +302,8 @@ Example unassigned payload:
   "config_version": "2026-03-30T21:10:00Z",
   "issued_at": "2026-03-30T21:10:00Z",
   "node_id": "pico-w-zone1",
-  "assigned": false,
-  "zone": null,
+  "assigned": true,
+  "zone": { "zone_id": "zone1", "active": true },
   "crop": null
 }
 ```
@@ -317,15 +356,10 @@ Example:
 {
   "schema_version": "actuator-config/v1",
   "config_version": "2026-04-07T18:10:00Z",
-  "irrigation_line_count": 4,
+  "irrigation_line_count": 8,
   "nodes": [
     { "node_id": "sensor-zone1-ch0", "zone_id": "zone1", "irrigation_line": 1, "active": true },
-    { "node_id": "sensor-zone1-ch1", "zone_id": "zone1", "irrigation_line": 2, "active": true }
-  ],
-  "zones": [
-    { "zone_id": "zone1", "irrigation_line": 1, "active": true },
-    { "zone_id": "zone2", "irrigation_line": 2, "active": true },
-    { "zone_id": "zone3", "irrigation_line": 3, "active": false }
+    { "node_id": "sensor-zone2-ch0", "zone_id": "zone2", "irrigation_line": 5, "active": true }
   ]
 }
 ```
@@ -333,12 +367,12 @@ Example:
 Behavior:
 
 - published retained
-- defines the installed pump/relay output count on the shared actuator controller
-- maps each plant node to one pump/relay output through `nodes`
-- keeps `zones` as a legacy zone-to-line fallback
-- lets the actuator Pico subscribe to exact per-zone command topics such as `greenhouse/zones/zone1/actuator/command`
-- zone subscriptions are derived from retained node and zone assignments, not from a wildcard topic
-- `active` is currently topology metadata for operators and upstream publishers; the actuator Pico uses `zone_id` to `irrigation_line` mapping and does not reject commands only because `active` is `false`
+- defines the installed output count on the shared greenhouse-wide actuator controller
+- maps each physically supported plant Node to exactly one global pump/relay output through `nodes`
+- contains no Zone-to-line fallback; duplicate Node IDs, duplicate non-null lines, malformed mappings, and unsupported lines are rejected by the dedicated controller
+- permits an empty `nodes` array for actuator-first setup
+- is consumed with a wildcard command subscription (`greenhouse/zones/+/actuator/command`); Zone remains command and status identity metadata, not controller ownership
+- does not delete or remap a Node's logical line when installed capacity is reduced. Rails omits unsupported mappings from this actuator payload and both automatic and manual watering fail closed.
 
 ### Actuator Command
 
@@ -382,7 +416,8 @@ Rules:
 
 - `runtime_seconds` must be present and `> 0` for `start_watering`
 - `runtime_seconds` must be `null` for `stop_watering`
-- `node_id` targets a specific plant pump/relay when the actuator config includes `nodes`
+- `node_id` targets a specific plant pump/relay in the retained global Node topology
+- the topic Zone, payload Zone, and topology Node Zone must agree before a dedicated controller accepts the command
 - `idempotency_key` is the correlation key expected back in actuator status
 
 ### Actuator Status
@@ -453,7 +488,10 @@ Observed `controller/skip_reason` values in the current controller include:
 - `incomplete-reading`
 - `same-reading-after-watering`
 
-When node-level watering targets are configured, the Python controller evaluates each node independently using that node's crop profile and publishes actuator commands with `node_id`. The older zone-average path remains available as a fallback when no node targets are configured; in that mode a zone can require a minimum fresh sensor count with `--min-zone-sensor-readings`.
+The Python controller evaluates each Node independently using that Node's crop
+profile and publishes actuator commands with `node_id`. There is no production
+Zone-crop or Zone-average watering fallback. Crop-less Nodes and Nodes whose
+logical irrigation line is unsupported by installed capacity are skipped.
 
 ## Retained Message Rules
 
@@ -478,7 +516,7 @@ Clearing retained topics:
 
 ## Source Of Truth Boundaries
 
-- Rails/Postgres is authoritative for zones, crop profiles, node assignments, config sync status, watering history, and faults
+- Rails/Postgres is authoritative for Zones, Node-to-Zone assignments, Node crop and logical line assignments, config sync status, watering history, and faults
 - MQTT retained state is the live transport layer for nodes and the controller
 - `nodes.zone_id` in Rails is authoritative for routing readings; node-reported `zone_id` is stored as visibility metadata
 

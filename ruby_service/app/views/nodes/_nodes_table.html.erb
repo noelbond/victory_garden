@@ -1,4 +1,4 @@
-<% empty_message ||= "No nodes discovered yet." %>
+<% empty_message ||= "No Nodes provisioned yet." %>
 
 <% if nodes.any? %>
   <div class="health-table-wrap">
@@ -28,12 +28,12 @@
           <% reading_freshness_class = node.zone.present? && latest_reading.present? ? node.zone.reading_freshness(latest_reading.recorded_at) : "offline" %>
           <tr>
             <td><%= link_to node.node_id, node_path(node) %></td>
-            <td><%= node.zone&.name.presence || node.zone&.zone_id || "Unassigned" %></td>
+            <td><%= node.zone&.name.presence || node.zone&.zone_id || "—" %></td>
             <td><%= node.reported_zone_id.presence || "—" %></td>
             <td>
               <div class="status-row">
                 <span class="status-dot <%= freshness_class %>"></span>
-                <span class="health-pill <%= freshness_class %>"><%= time_ago_in_words(node.last_seen_at) %> ago</span>
+                <span class="health-pill <%= freshness_class %>"><%= node.last_seen_at.present? ? "#{time_ago_in_words(node.last_seen_at)} ago" : "Never seen" %></span>
               </div>
             </td>
             <td>

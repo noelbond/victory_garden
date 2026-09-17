@@ -56,10 +56,7 @@ class NodesController < ApplicationController
 
   def index
     @nodes = Node.includes(:zone).order(last_seen_at: :desc, node_id: :asc)
-    @unassigned_nodes = @nodes.select { |node| !node.assigned? }
-    @assigned_nodes = @nodes.select(&:assigned?)
-    @unassigned_node_groups = Node.group_by_device(@unassigned_nodes)
-    @assigned_node_groups = Node.group_by_device(@assigned_nodes)
+    @assigned_node_groups = Node.group_by_device(@nodes)
 
     @distinct_zone_ids = Node.distinct.pluck(:zone_id)
   end
@@ -103,19 +100,16 @@ class NodesController < ApplicationController
   def assign
     zone = Zone.find(params.require(:zone_id))
 
-    @node.update!(zone: zone)
+    SensorPackageZoneAssignment.call(node: @node, zone: zone)
     PublishNodeConfigJob.perform_later(@node.id)
 
     redirect_to node_path(@node), notice: "Node assigned to #{zone.name.presence || zone.zone_id}."
+  rescue SensorPackageZoneAssignment::AssignmentError => e
+    redirect_to node_path(@node), alert: e.message
   end
 
   def unassign
-    if @node.zone.present?
-      @node.update!(zone: nil)
-      PublishNodeConfigJob.perform_later(@node.id)
-    end
-
-    redirect_to nodes_path, notice: "Node unassigned."
+    redirect_to nodes_path, alert: "Nodes must remain assigned to a Zone. Reassign the node explicitly instead."
   end
 
   def publish_config
@@ -137,6 +131,11 @@ class NodesController < ApplicationController
 
     unless @node.watering_configured?
       redirect_to resolved_return_path, alert: "Assign a crop profile and pump output before watering #{@node.display_name}."
+      return
+    end
+
+    unless @node.irrigation_line_supported?
+      redirect_to resolved_return_path, alert: "Pump output #{@node.irrigation_line} is not supported by the installed actuator capacity."
       return
     end
 

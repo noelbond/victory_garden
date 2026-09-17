@@ -31,3 +31,27 @@ target_include_directories(lora_protocol_tests PRIVATE
 )
 
 add_test(NAME lora_protocol_tests COMMAND lora_protocol_tests)
+
+add_executable(sensor_provisioning_channels_tests
+    test_sensor_provisioning_channels.c
+    ../src/node_config.c
+    ../../shared/json_lite.c
+)
+
+target_include_directories(sensor_provisioning_channels_tests PRIVATE
+    include
+    ../src
+    ../../shared
+)
+
+add_test(NAME sensor_provisioning_channels_tests COMMAND sensor_provisioning_channels_tests)
+
+add_executable(sensor_provisioning_ack_tests
+    test_sensor_provisioning_ack.c
+)
+
+target_compile_definitions(sensor_provisioning_ack_tests PRIVATE
+    VG_SENSOR_MAIN_SOURCE="${CMAKE_CURRENT_LIST_DIR}/../src/main.c"
+)
+
+add_test(NAME sensor_provisioning_ack_tests COMMAND sensor_provisioning_ack_tests)

@@ -13,7 +13,7 @@ class SensorIngestorTest < ActiveSupport::TestCase
     clear_performed_jobs
 
     @crop = create(:crop_profile, crop_id: "tomato-test")
-    @zone = create(:zone, zone_id: "zone1", name: "Zone 1", crop_profile: @crop)
+    @zone = create(:zone, zone_id: "zone1", name: "Zone 1")
   end
 
   teardown do
@@ -418,23 +418,29 @@ class SensorIngestorTest < ActiveSupport::TestCase
     assert_equal 0, WateringEvent.count
   end
 
-  test "updates an unassigned node but skips persistence and decisions" do
+  test "ignores unknown telemetry instead of creating an unassigned node" do
     payload = load_fixture("node-state-v1.json").merge("node_id" => "unassigned-zone1")
 
     assert_no_enqueued_jobs only: CommandPublishJob do
       SensorIngestor.new(payload).call
     end
 
-    node = Node.find_by!(node_id: "unassigned-zone1")
-
-    assert_nil node.zone
-    assert_equal "zone1", node.reported_zone_id
-    assert_equal "degraded", node.health
+    assert_nil Node.find_by(node_id: "unassigned-zone1")
     assert_equal 0, SensorReading.where(node_id: "unassigned-zone1").count
     assert_equal 0, WateringEvent.count
   end
 
+  test "first telemetry records last seen for a logical node that has never reported" do
+    node = Node.create!(node_id: "pico-w-zone1", zone: @zone, last_seen_at: nil)
+    payload = load_fixture("node-state-v1.json").merge("timestamp" => Time.current.utc.iso8601)
+
+    SensorIngestor.new(payload).call
+
+    assert_equal Time.iso8601(payload.fetch("timestamp")).to_i, node.reload.last_seen_at.to_i
+  end
+
   test "stores the physical device id from channel state" do
+    SensorZoneProvisioner.call(zone: @zone, sensor_device_id: "sensor-zone1")
     payload = load_fixture("node-state-v1.json").merge(
       "node_id" => "sensor-zone1-ch2",
       "device_id" => "sensor-zone1"

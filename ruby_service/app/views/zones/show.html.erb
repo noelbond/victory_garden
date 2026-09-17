@@ -4,7 +4,6 @@
     <div class="muted"><%= @zone.zone_id %></div>
   </div>
   <div class="dashboard-actions">
-    <%= button_to "Stop", stop_watering_zone_path(@zone), method: :post, class: "btn secondary" %>
     <%= button_to(@zone.active ? "Disable" : "Enable", toggle_active_zone_path(@zone), method: :post, class: "btn light") %>
   </div>
 </div>
@@ -28,7 +27,6 @@
       <%= link_to "Zone History", zone_path(@zone, zone_tab: "zone-history"), class: zone_nav_link_class.call("zone-history"), data: { zone_nav_target: "zone-history" } %>
       <%= link_to "Recent Faults", zone_path(@zone, zone_tab: "recent-faults"), class: zone_nav_link_class.call("recent-faults"), data: { zone_nav_target: "recent-faults" } %>
       <%= link_to "Edit Zone", edit_zone_path(@zone), class: zone_action_link_class.call("edit-zone"), data: { turbo_frame: "zone_workspace", zone_nav_target: "edit-zone" } %>
-      <%= link_to "Crop Profile", crop_profile_path(@zone.crop_profile, return_to: zone_path(@zone), zone_id: @zone.id), class: zone_action_link_class.call("crop-profile"), data: { turbo_frame: "zone_workspace", zone_nav_target: "crop-profile" } %>
       <%= link_to "Nodes", zone_nodes_path(@zone), class: zone_action_link_class.call("nodes"), data: { turbo_frame: "zone_workspace", zone_nav_target: "nodes" } %>
     </nav>
   </div>
@@ -38,7 +36,7 @@
   <div class="card metric-card <%= @zone.active ? "metric-ok" : "metric-alert" %>">
     <div class="metric-label">Zone State</div>
     <div class="metric-value"><%= @zone.active ? "Active" : "Inactive" %></div>
-    <div class="muted"><%= @zone.crop_profile.crop_name %></div>
+    <div class="muted">Plant crops are configured per Node.</div>
   </div>
   <div class="card metric-card <%= @aggregate_freshness == "ok" ? "metric-ok" : (@aggregate_freshness == "stale" ? "metric-warn" : "metric-alert") %>">
     <div class="metric-label">Zone Average</div>
@@ -86,7 +84,6 @@
       <%= link_to "Zone History", zone_path(@zone, zone_tab: "zone-history"), class: zone_nav_link_class.call("zone-history"), data: { zone_nav_target: "zone-history" } %>
       <%= link_to "Recent Faults", zone_path(@zone, zone_tab: "recent-faults"), class: zone_nav_link_class.call("recent-faults"), data: { zone_nav_target: "recent-faults" } %>
       <%= link_to "Edit Zone", edit_zone_path(@zone), class: zone_action_link_class.call("edit-zone"), data: { turbo_frame: "zone_workspace", zone_nav_target: "edit-zone" } %>
-      <%= link_to "Crop Profile", crop_profile_path(@zone.crop_profile, return_to: zone_path(@zone), zone_id: @zone.id), class: zone_action_link_class.call("crop-profile"), data: { turbo_frame: "zone_workspace", zone_nav_target: "crop-profile" } %>
       <%= link_to "Nodes", zone_nodes_path(@zone), class: zone_action_link_class.call("nodes"), data: { turbo_frame: "zone_workspace", zone_nav_target: "nodes" } %>
     </nav>
   </aside>
@@ -104,7 +101,7 @@
         <div class="col card">
           <h3>Zone Configuration</h3>
           <ul class="list">
-      <li>Legacy Crop Fallback: <strong><%= @zone.crop_profile.crop_name %></strong></li>
+      <li>Crop Profiles: configured per plant Node</li>
       <li>Watering Mode: Per-node plant sensors</li>
       <li>Reading Frequency: <%= @zone.reading_frequency_hours || "—" %><%= " hours" if @zone.reading_frequency_hours.present? %></li>
       <li>
@@ -153,8 +150,8 @@
                   <strong><%= node.display_name %></strong>
                   <div class="muted">
                     <%= node.node_id %>
-                    • crop: <%= node.effective_crop_profile&.crop_name || "—" %>
-                    • pump relay: <%= node.irrigation_line || "—" %>
+                    • crop: <%= node.crop_profile&.crop_name || "—" %>
+                    • logical irrigation line: <%= node.irrigation_line || "—" %>
                   </div>
                   <% if reading.present? %>
                     <div>

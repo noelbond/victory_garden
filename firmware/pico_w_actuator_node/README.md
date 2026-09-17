@@ -2,18 +2,18 @@
 
 Native Raspberry Pi Pico W firmware for the Victory Garden actuator node.
 
-This firmware is the dedicated outdoor relay/pump controller. It is separate
-from the sensor Pico firmware so the two boards can have distinct roles and
-distinct MQTT identities.
+This firmware is the dedicated production relay/pump controller. One controller
+serves supported Nodes across the greenhouse; it is separate from sensor Pico
+firmware so the boards retain distinct roles and MQTT identities.
 
 Current scope:
 - boot and serial logging
 - Wi-Fi connect using Pico W native `cyw43_arch`
 - lwIP MQTT client connection
 - handles non-retained `start_watering` / `stop_watering` commands
-- subscribes to exact per-zone command topics derived from retained actuator topology config
+- subscribes to `greenhouse/zones/+/actuator/command`
 - publishes canonical actuator status updates
-- drives one relay per configured irrigation line
+- consumes retained global Node-to-line actuator topology and drives supported outputs
 - enforces a local runtime cutoff on the actuator Pico itself
 - syncs UTC time over SNTP after Wi-Fi is up
 
@@ -89,10 +89,19 @@ MQTT contract:
 
 Shared actuator model:
 
-- one irrigation line maps to one zone
-- Rails publishes the installed `irrigation_line_count` and the zone-to-line assignments
-- the actuator Pico subscribes to the exact zone command topics from that mapping
-- each assigned zone gets its own exact command subscription after retained actuator config is applied
-- the `active` field in retained actuator config is informational today; command acceptance is based on zone-to-line assignment
+- Rails publishes the installed `irrigation_line_count` and physically supported Node-to-line assignments
+- irrigation lines are global within the greenhouse; a Zone is command, status, and journal identity metadata, not controller ownership
+- a command is accepted only when its topic Zone and payload Zone match, its Node exists in retained topology, and that topology Node belongs to that Zone
+- duplicate Node IDs, duplicate non-null lines, malformed assignments, and unsupported lines fail closed; an empty topology is valid for actuator-first setup
+- a Node's logical assignment can remain above installed capacity. It is not remapped, but it is omitted from actuator topology and cannot water until capacity supports it
 - line 1 uses the configured `actuator_relay_gpio`
-- lines 2-12 use the default relay GPIO table in `src/config.h` unless overridden in `config_local.h`
+- further lines use the GPIO table in `src/config.h` unless overridden in `config_local.h`; this compile-time table is not a hardware-validated final physical capacity
+
+Safety behavior:
+
+- START admission is durable before GPIO changes, including duplicate acknowledgement and idempotency-key conflict rejection
+- command freshness, runtime guards, local runtime cutoff, targeted STOP correlation, and status correlation are enforced on-device
+- journal corruption and invalid topology fail closed
+- configured outputs are actively driven to their safe OFF state before the USB provisioning wait, networking, MQTT, journal work, or watchdog setup; active-high and active-low relay polarity remains supported
+
+Hardware validation and the final physical output capacity remain deferred.

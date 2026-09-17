@@ -15,12 +15,7 @@ class SetupApiTest < ActionDispatch::IntegrationTest
       max_pulse_runtime_sec: 45,
       daily_max_runtime_sec: 300
     )
-    zone = Zone.create!(
-      name: "Beds",
-      crop_profile: crop,
-      irrigation_line: 1,
-      publish_interval_ms: 3_600_000
-    )
+    zone = Zone.create!(name: "Beds", publish_interval_ms: 3_600_000)
 
     get "/setup_api/bootstrap", as: :json
 
@@ -80,19 +75,10 @@ class SetupApiTest < ActionDispatch::IntegrationTest
       mqtt_password: "secret123",
       irrigation_line_count: 2
     )
-    crop = CropProfile.create!(
-      crop_name: "Lettuce",
-      dry_threshold: 28.0,
-      max_pulse_runtime_sec: 30,
-      daily_max_runtime_sec: 180
-    )
-
     patch "/setup_api/zone",
           params: {
             zone: {
               name: "Front Planter",
-              crop_profile_id: crop.id,
-              irrigation_line: 2,
               publish_interval_ms: 7_200_000,
               active: true
             }
@@ -102,12 +88,73 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_response :success
     body = response.parsed_body
     assert_equal "Front Planter", body.dig("first_zone", "name")
-    assert_equal crop.id, body.dig("first_zone", "crop_profile_id")
+    assert_nil body.dig("first_zone", "crop_profile_id")
     assert_equal setting.irrigation_line_count, 2
   end
 
+  test "sensor package provisioning creates the four pre-telemetry channel nodes" do
+    zone = create(:zone, zone_id: "zone1")
+
+    post "/setup_api/provision_zone", params: { zone_id: zone.id, sensor_device_id: "sensor-zone1" }, as: :json
+
+    assert_response :created
+    assert_equal "sensor-zone1", response.parsed_body.dig("zone", "sensor_device_id")
+    assert_equal %w[sensor-zone1-ch0 sensor-zone1-ch1 sensor-zone1-ch2 sensor-zone1-ch3], response.parsed_body.fetch("nodes").map { |node| node.fetch("node_id") }
+    assert_equal [1, 2, 3, 4], zone.reload.nodes.pluck(:irrigation_line).sort
+  end
+
+  test "sensor package provisioning returns exactly the issued four channels in channel order" do
+    zone = create(:zone, zone_id: "zone1")
+
+    post "/setup_api/provision_zone", params: { zone_id: zone.id, sensor_device_id: "sensor-zone1" }, as: :json
+
+    assert_response :created
+    assert_equal %w[sensor-zone1-ch0 sensor-zone1-ch1 sensor-zone1-ch2 sensor-zone1-ch3],
+                 response.parsed_body.fetch("nodes").map { |node| node.fetch("node_id") }
+    assert_equal 4, response.parsed_body.fetch("nodes").size
+  end
+
+  test "sensor package provisioning reports an invalid identity without mutating topology" do
+    zone = create(:zone, zone_id: "zone1")
+    package_id = "a" * (SensorIdentityContract::MAX_PACKAGE_ID_BYTES + 1)
+
+    post "/setup_api/provision_zone", params: { zone_id: zone.id, sensor_device_id: package_id }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_includes response.parsed_body.fetch("errors").first, "at most #{SensorIdentityContract::MAX_PACKAGE_ID_BYTES} bytes"
+    assert_nil zone.reload.sensor_device_id
+    assert_equal 0, zone.nodes.count
+  end
+
+  test "sensor package provisioning rejects caller-supplied whitespace without sanitizing it" do
+    zone = create(:zone, zone_id: "zone1")
+    package_id = " package \""
+    node_count = Node.count
+    assigned_line_count = Node.where.not(irrigation_line: nil).count
+
+    post "/setup_api/provision_zone", params: { zone_id: zone.id, sensor_device_id: package_id }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_includes response.parsed_body.fetch("errors").first, "only ASCII letters"
+    assert_nil zone.reload.sensor_device_id
+    assert_equal node_count, Node.count
+    assert_equal assigned_line_count, Node.where.not(irrigation_line: nil).count
+  end
+
+  test "sensor package provisioning rejects unrelated Zone topology without committing a package binding" do
+    zone = create(:zone, zone_id: "zone1", sensor_device_id: nil)
+    Node.create!(node_id: "legacy-node", zone: zone, irrigation_line: 8, last_seen_at: Time.current)
+
+    post "/setup_api/provision_zone", params: { zone_id: zone.id, sensor_device_id: "sensor-zone1" }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match "contains unrelated node legacy-node", response.parsed_body.fetch("errors").join
+    assert_nil zone.reload.sensor_device_id
+    assert_equal ["legacy-node"], zone.nodes.pluck(:node_id)
+  end
+
   test "node status reports whether a provisioned node has appeared" do
-    zone = create(:zone, irrigation_line: nil)
+    zone = create(:zone)
     node = Node.create!(
       node_id: "sensor-zone1",
       last_seen_at: Time.current,
@@ -127,13 +174,11 @@ class SetupApiTest < ActionDispatch::IntegrationTest
   end
 
   test "bootstrap groups the latest sensor channels by physical device" do
-    channels = 4.times.map do |channel|
-      Node.create!(
-        node_id: "sensor-zone1-ch#{channel}",
-        device_id: "sensor-zone1",
-        last_seen_at: Time.current + channel.seconds,
-        provisioned: true
-      )
+    zone = create(:zone)
+    SensorZoneProvisioner.call(zone: zone, sensor_device_id: "sensor-zone1")
+    channels = zone.nodes.order(:node_id).each_with_index.map do |node, channel|
+      node.update!(last_seen_at: Time.current + channel.seconds, provisioned: true)
+      node
     end
 
     get "/setup_api/bootstrap", as: :json
@@ -147,7 +192,7 @@ class SetupApiTest < ActionDispatch::IntegrationTest
 
   test "assign node binds detected node to first zone and queues global config publish" do
     zone = create(:zone)
-    node = Node.create!(node_id: "sensor-zone1", last_seen_at: Time.current)
+    node = Node.create!(node_id: "sensor-zone1", zone: create(:zone), last_seen_at: Time.current)
 
     assert_enqueued_with(job: ConfigPublishJob) do
       post "/setup_api/assign_node",
@@ -163,12 +208,14 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal zone.zone_id, body.dig("first_zone", "zone_id")
   end
 
-  test "assigning one channel assigns all physical device siblings" do
+  test "assigning one channel cannot split physical device siblings" do
     zone = create(:zone)
+    original_zone = create(:zone)
     channels = 4.times.map do |channel|
       Node.create!(
         node_id: "sensor-zone1-ch#{channel}",
         device_id: "sensor-zone1",
+        zone: original_zone,
         last_seen_at: Time.current
       )
     end
@@ -177,13 +224,14 @@ class SetupApiTest < ActionDispatch::IntegrationTest
          params: { node_id: channels.fetch(1).node_id, zone_id: zone.id },
          as: :json
 
-    assert_response :success
-    assert_equal [zone.id], Node.where(device_id: "sensor-zone1").distinct.pluck(:zone_id)
+    assert_response :unprocessable_entity
+    assert_match "individual channel reassignment is not allowed", response.parsed_body.fetch("errors").join
+    assert_equal [original_zone.id], channels.map { |node| node.reload.zone_id }.uniq
   end
 
   test "node update saves plant crop profile and pump output" do
     ConnectionSetting.create!(irrigation_line_count: 4)
-    zone = create(:zone, irrigation_line: nil)
+    zone = create(:zone)
     crop = create(:crop_profile, crop_name: "Squash")
     node = Node.create!(node_id: "sensor-zone1-ch0", device_id: "sensor-zone1", last_seen_at: Time.current, zone: zone)
 
@@ -191,7 +239,7 @@ class SetupApiTest < ActionDispatch::IntegrationTest
       patch "/setup_api/node",
             params: {
               node_id: node.node_id,
-              name: "Bed One_Ch1",
+              name: "Cherry Tomato",
               crop_profile_id: crop.id,
               irrigation_line: 1
             },
@@ -200,7 +248,7 @@ class SetupApiTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     body = response.parsed_body
-    assert_equal "Bed One_Ch1", body.dig("node", "name")
+    assert_equal "Cherry Tomato", body.dig("node", "name")
     assert_equal crop.id, body.dig("node", "crop_profile_id")
     assert_equal 1, body.dig("node", "irrigation_line")
     assert_equal true, body.dig("node", "watering_configured")
@@ -279,13 +327,22 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal 326, node.moisture_raw_wet
   end
 
-  test "start watering queues a manual watering cycle and reports watering status" do
+  test "start watering queues a node-targeted manual watering cycle and reports watering status" do
+    ConnectionSetting.create!(irrigation_line_count: 1)
+    crop = create(:crop_profile)
     zone = create(:zone)
+    node = Node.create!(
+      node_id: "sensor-zone1",
+      zone: zone,
+      crop_profile: crop,
+      irrigation_line: 1,
+      last_seen_at: Time.current
+    )
 
     response_body = nil
     assert_enqueued_with(job: CommandPublishJob) do
       post "/setup_api/start_watering",
-           params: { zone_id: zone.id },
+           params: { zone_id: zone.id, node_id: node.node_id },
            as: :json
       response_body = response.parsed_body
     end
@@ -294,6 +351,7 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal true, response_body.fetch("queued")
     event = WateringEvent.find_by!(idempotency_key: response_body.fetch("idempotency_key"))
     assert_equal "queued", event.status
+    assert_equal node.node_id, event.node_id
 
     get "/setup_api/watering_status",
         params: { zone_id: zone.id, idempotency_key: event.idempotency_key },
@@ -317,5 +375,46 @@ class SetupApiTest < ActionDispatch::IntegrationTest
     assert_equal true, body.fetch("complete")
     assert_equal event.id, body.dig("event", "id")
     assert_equal status.id, body.dig("actuator_status", "id")
+  end
+
+  test "start watering without a node fails closed" do
+    zone = create(:zone)
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post "/setup_api/start_watering", params: { zone_id: zone.id }, as: :json
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal ["Choose a configured plant node before testing watering."], response.parsed_body.fetch("errors")
+    assert_equal 0, WateringEvent.count
+  end
+
+  test "start watering rejects a node assigned to another zone" do
+    crop = create(:crop_profile)
+    selected_zone = create(:zone)
+    node_zone = create(:zone)
+    node = Node.create!(node_id: "sensor-zone2", zone: node_zone, crop_profile: crop, irrigation_line: 2, last_seen_at: Time.current)
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post "/setup_api/start_watering", params: { zone_id: selected_zone.id, node_id: node.node_id }, as: :json
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal ["Choose a plant node assigned to the selected zone before testing watering."], response.parsed_body.fetch("errors")
+    assert_equal 0, WateringEvent.count
+  end
+
+  test "start watering rejects a node without an irrigation line" do
+    crop = create(:crop_profile)
+    zone = create(:zone)
+    node = Node.create!(node_id: "sensor-zone1", zone: zone, crop_profile: crop, last_seen_at: Time.current)
+
+    assert_no_enqueued_jobs only: CommandPublishJob do
+      post "/setup_api/start_watering", params: { zone_id: zone.id, node_id: node.node_id }, as: :json
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal ["Assign a crop profile and pump output before testing watering for #{node.display_name}."], response.parsed_body.fetch("errors")
+    assert_equal 0, WateringEvent.count
   end
 end

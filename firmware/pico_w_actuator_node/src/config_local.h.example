@@ -8,7 +8,7 @@
 #define VG_DEFAULT_MQTT_USERNAME "victory_garden"
 #define VG_DEFAULT_MQTT_PASSWORD "broker-password"
 #define VG_DEFAULT_NTP_SERVER "pool.ntp.org"
-#define VG_DEFAULT_NODE_ID "pico-w-actuator-zone1"
+#define VG_DEFAULT_NODE_ID "pico-w-actuator"
 #define VG_DEFAULT_ZONE_ID "zone1"
 #define VG_DEFAULT_ACTUATOR_RELAY_GPIO 15u
 #define VG_DEFAULT_ACTUATOR_RELAY_ACTIVE_HIGH true

@@ -157,7 +157,6 @@ def build_system_config(runtime_seconds: int, daily_max_seconds: int, dry_thresh
                 "node_ids": NODE_IDS,
                 "active": True,
                 "allowed_hours": None,
-                "irrigation_line": None,
                 "watering_mode": "node",
             }
         ],
