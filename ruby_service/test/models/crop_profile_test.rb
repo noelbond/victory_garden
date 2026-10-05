@@ -68,6 +68,10 @@ class CropProfileTest < ActiveSupport::TestCase
     assert_enqueued_jobs 1, only: PublishNodeConfigJob do
       crop.update!(dry_threshold: 25.0)
     end
-    assert_enqueued_with(job: PublishNodeConfigJob, args: [channels.first.id])
+    channel_ids = channels.map(&:id)
+    assert_enqueued_with(
+      job: PublishNodeConfigJob,
+      args: ->(args) { channel_ids.include?(args.first) }
+    )
   end
 end

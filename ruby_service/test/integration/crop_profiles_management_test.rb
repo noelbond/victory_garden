@@ -158,4 +158,22 @@ class CropProfilesManagementTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Crop Profile:</strong> Squash"
     assert_select "option[selected]", text: "Squash"
   end
+
+  test "crop profile links reject an unsafe return target" do
+    crop = create(:crop_profile, crop_name: "Tomato")
+    unsafe_target = "javascript:alert(document.domain)"
+
+    get new_crop_profile_path(return_to: unsafe_target)
+
+    assert_response :success
+    assert_select "a", text: "Cancel", href: crop_profiles_path
+    assert_select "input[name='return_to']", count: 0
+    assert_not_includes response.body, unsafe_target
+
+    get crop_profile_path(crop, return_to: unsafe_target)
+
+    assert_response :success
+    assert_select "a", text: "Back to Crops", href: crop_profiles_path
+    assert_not_includes response.body, unsafe_target
+  end
 end

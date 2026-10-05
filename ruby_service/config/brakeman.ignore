@@ -1,0 +1,21 @@
+{
+  "ignored_warnings": [
+    {
+      "fingerprint": "42f0ec13d2ce247e5e9e1d94c7cd6aa8b35d29bc2d4528e82943763df49269a4",
+      "note": "Sort columns are fetched from SORTABLE_COLUMNS only after params[:sort] passes presence_in; both directions are restricted to asc/desc, and tie_breaker values are internal literals. No arbitrary request text reaches Arel.sql."
+    },
+    {
+      "fingerprint": "98b26f60d776fd41ee6f088c833725145be9aac2d7c5b33780241c273622db42",
+      "note": "Rails is pinned to the current 8.0 patch release. The 8.1 upgrade is intentionally tracked as a separate compatibility change; remove this entry during that upgrade."
+    },
+    {
+      "fingerprint": "9ef857e24413e7257cf338a66880fe80a36f17254d127961d56b43014f377663",
+      "note": "The SQL column is a fixed sensor_readings column and both directions are restricted to asc/desc before interpolation. No arbitrary request text reaches Arel.sql."
+    },
+    {
+      "fingerprint": "a11a61fa28baf9e9007a5b8cd77b44024625aa7123879f7277f109fb72582d54",
+      "note": "kind and board only select entries from fixed allowlists; bundle filenames are constants under a trusted root and send_file runs only after the selected path is verified to be a file. Request text cannot form a path segment."
+    }
+  ],
+  "brakeman_version": "8.0.2"
+}

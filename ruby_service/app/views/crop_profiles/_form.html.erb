@@ -10,7 +10,7 @@
     </div>
   <% end %>
 
-  <%= hidden_field_tag :return_to, params[:return_to] if params[:return_to].present? %>
+  <%= hidden_field_tag :return_to, validated_return_path if validated_return_path.present? %>
 
   <div class="form-grid">
     <div class="field">
@@ -52,7 +52,7 @@
   <div style="margin-top: 16px;">
     <%= f.submit class: "btn" %>
     <%= link_to "Cancel",
-                params[:return_to].presence || crop_profiles_path,
+                validated_return_path || crop_profiles_path,
                 class: "btn light",
                 data: { turbo_frame: "_top" } %>
   </div>

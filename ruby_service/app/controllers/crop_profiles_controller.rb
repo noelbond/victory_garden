@@ -1,6 +1,8 @@
 class CropProfilesController < ApplicationController
   include SharedParams
 
+  helper_method :validated_return_path
+
   def index
     @crop_profiles = CropProfile.order(:crop_name)
   end
@@ -46,7 +48,11 @@ class CropProfilesController < ApplicationController
   end
 
   def resolved_return_path(crop_profile)
-    url_from(params[:return_to]).presence || crop_profile_path(crop_profile)
+    validated_return_path || crop_profile_path(crop_profile)
+  end
+
+  def validated_return_path
+    url_from(params[:return_to]).presence
   end
 
   def apply_crop_profile_to_node(crop_profile)

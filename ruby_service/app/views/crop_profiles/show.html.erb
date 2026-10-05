@@ -2,9 +2,9 @@
   <div class="page-header crop-profile-page-header">
     <h1 class="page-title"><%= @crop_profile.crop_name %></h1>
     <div class="dashboard-actions">
-      <%= link_to "Edit", edit_crop_profile_path(@crop_profile, return_to: params[:return_to], zone_id: params[:zone_id]), class: "btn", data: { turbo_frame: "zone_workspace" } %>
-      <%= link_to(params[:return_to].present? ? "Back to Zone" : "Back to Crops",
-                  params[:return_to].presence || crop_profiles_path,
+      <%= link_to "Edit", edit_crop_profile_path(@crop_profile, return_to: validated_return_path, zone_id: params[:zone_id]), class: "btn", data: { turbo_frame: "zone_workspace" } %>
+      <%= link_to(validated_return_path.present? ? "Back to Zone" : "Back to Crops",
+                  validated_return_path || crop_profiles_path,
                   class: "btn light",
                   data: { turbo_frame: "_top" }) %>
     </div>
