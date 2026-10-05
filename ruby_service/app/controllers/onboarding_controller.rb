@@ -437,6 +437,7 @@ class OnboardingController < ApplicationController
     when "watering"
       @watering_zones = Zone.order(:created_at, :id)
       @selected_watering_zone = selected_watering_zone
+      @watering_nodes = @selected_watering_zone&.nodes&.includes(:crop_profile)&.order(:node_id)&.select(&:watering_configured?) || []
       @latest_watering_event = @selected_watering_zone&.watering_events&.order(issued_at: :desc)&.first
     end
   end

@@ -1,26 +1,8 @@
-# Victory Garden Desktop Installer
+# Victory Garden Combined-Node Desktop Installer
 
-This is the macOS-first desktop companion for the Victory Garden install path.
+This directory contains the development/demo provisioning companion for the combined sensor-and-actuator Pico firmware. It supports bench testing and end-to-end demonstrations where one Pico performs both roles.
 
-It is the user-facing setup app that:
-
-- finds the Pi after it boots from the Victory Garden image
-- saves the first Victory Garden settings
-- creates the first bed/zone
-- flashes Pico W and Pico 2 W firmware
-- provisions both Pico boards over USB serial
-- assigns crop profiles and pump outputs per sensor channel
-- captures calibration before validating the calibrated reading and watering cycle
-
-## Current scope
-
-The installer assumes the user already:
-
-- flashed the Victory Garden Pi image with Raspberry Pi Imager
-- booted the Pi
-- connected the Pi to the network
-
-After that, the installer owns the full first-run flow.
+The combined-node topology is not the production architecture. Production installations use separate sensor packages and one dedicated greenhouse-wide actuator controller; use [`desktop_installer/`](../desktop_installer) for that workflow.
 
 ## Tech stack
 
@@ -31,31 +13,17 @@ After that, the installer owns the full first-run flow.
 
 ## Development
 
-From [`desktop_installer/`](../desktop_installer):
+From this directory:
 
 ```bash
 npm install
 npm run tauri:dev
 ```
 
-## Packaging
-
-To build a real macOS app bundle and release artifacts:
+## Local build
 
 ```bash
-./deploy/build_desktop_installer.sh
+npm run tauri:build
 ```
 
-That exports:
-
-- `deploy/releases/Victory Garden Installer.app`
-- `deploy/releases/victory-garden-installer-macos-<version>.zip`
-
-## MVP constraints
-
-- macOS-first BOOTSEL detection is implemented explicitly through `/Volumes`
-- Linux removable-media paths are also checked
-- Windows support is not implemented yet
-- the installer expects the Pi image to be created separately in Raspberry Pi Imager
-- the bundled macOS app is currently unsigned / not notarized
-- the shipped macOS download is a zipped `.app`, not a DMG
+The repository's production desktop-installer release script does not package this combined-node development tool.

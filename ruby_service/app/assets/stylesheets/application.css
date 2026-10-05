@@ -184,6 +184,10 @@ body {
   gap: 16px;
 }
 
+.zone-dashboard-list {
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--border);

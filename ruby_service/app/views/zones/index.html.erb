@@ -24,7 +24,7 @@
   <div class="card metric-card <%= @summary[:zones_watering] > 0 ? "metric-warn" : "metric-ok" %>">
     <div class="metric-label">Watering Now</div>
     <div class="metric-value"><%= @summary[:zones_watering] %></div>
-    <div class="muted">zones with actuator state `RUNNING`</div>
+    <div class="muted">zones with actuator state RUNNING</div>
   </div>
   <div class="card metric-card <%= @summary[:open_fault_zones] > 0 ? "metric-alert" : "metric-ok" %>">
     <div class="metric-label">Open Fault Zones</div>
@@ -33,7 +33,7 @@
   </div>
 </div>
 
-<div class="zone-grid">
+<div class="zone-grid zone-dashboard-list">
   <% @zones.each do |zone| %>
     <% reading = @latest_readings[zone.id] %>
     <% snapshot = @zone_moisture_snapshots[zone.id] %>
@@ -66,7 +66,7 @@
         <div>
           <div class="zone-metric-label">Nodes</div>
           <% if zone.nodes.any? %>
-            <div><%= zone.nodes.sort_by(&:node_id).map(&:node_id).join(", ") %></div>
+            <div><%= zone.nodes.sort_by(&:node_id).map(&:display_name).join(", ") %></div>
           <% else %>
             <div class="muted">No assigned nodes</div>
           <% end %>

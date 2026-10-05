@@ -52,6 +52,41 @@ class OnboardingTest < ActionDispatch::IntegrationTest
     assert_equal 0, WateringEvent.count
   end
 
+  test "watering step lets the operator select a configured node and queues a node-targeted command" do
+    ConnectionSetting.create!(
+      mqtt_host: "localhost",
+      mqtt_port: 1883,
+      mqtt_username: "test-user",
+      mqtt_password: "test-password",
+      irrigation_line_count: 1
+    )
+    crop = create(:crop_profile, max_pulse_runtime_sec: 35)
+    zone = create(:zone, name: "Test Bed")
+    node = Node.create!(
+      node_id: "test-bed-ch0",
+      name: "Test Tomato",
+      zone:,
+      crop_profile: crop,
+      irrigation_line: 1,
+      last_seen_at: Time.current
+    )
+
+    get onboarding_path(step: "watering", zone_id: zone.id)
+
+    assert_response :success
+    assert_select "select[name='node_id'] option[value='#{node.id}']", text: "Test Tomato — output 1"
+
+    assert_enqueued_with(job: CommandPublishJob) do
+      post onboarding_water_now_path, params: { zone_id: zone.id, node_id: node.id }
+    end
+
+    assert_response :redirect
+    event = WateringEvent.order(:id).last
+    assert_equal node.node_id, event.node_id
+    assert_equal "queued", event.status
+    assert_equal "Watering command queued for Test Tomato. Refresh this step after the actuator responds.", flash[:notice]
+  end
+
   test "zone onboarding provisions the canonical four Nodes before telemetry" do
     get onboarding_path(step: "zone")
 

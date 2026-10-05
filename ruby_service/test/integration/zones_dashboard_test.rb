@@ -7,6 +7,7 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
     SensorZoneProvisioner.call(zone: zone, sensor_device_id: "sensor-#{zone.zone_id}")
     node = zone.nodes.find_by!(node_id: "sensor-#{zone.zone_id}-ch0")
     node.update!(
+      name: "Cherry Tomato A",
       reported_zone_id: zone.zone_id,
       last_seen_at: 2.minutes.ago,
       provisioned: true,
@@ -57,8 +58,10 @@ class ZonesDashboardTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Watering Now"
     assert_includes response.body, "Open Fault Zones"
     assert_includes response.body, "Greenhouse Zone 1"
+    assert_includes response.body, "Cherry Tomato A"
     assert_includes response.body, "85.0%"
     assert_includes response.body, "RUNNING"
+    refute_includes response.body, "`RUNNING`"
     assert_includes response.body, "1 fault"
     refute_includes response.body, stop_watering_zone_path(zone)
   end

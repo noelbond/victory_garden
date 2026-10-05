@@ -63,36 +63,63 @@ Seeds are applied by:
 
 ## Demo UI Seed Data
 
-For the Reading History page and broader operator UI smoke checks, use the separate demo seed script:
+The demo seed tool has two development/test scenarios:
+
+- `standard` is the existing error-heavy UI dataset used for operator smoke checks.
+- `portfolio` is a healthy, fully synthetic screenshot dataset with canonical sensor-package topology, 30 days of telemetry, and completed node-targeted watering history.
 
 Warning:
 
 - local development and test use only by default
-- overwrites `ConnectionSetting` with demo/local broker values
-- upserts demo crop profiles and demo zones with canonical IDs such as `tomato`, `basil`, `zone1`, `zone2`, and `zone3`
-- recreates demo readings, watering events, actuator statuses, and demo faults
+- both scenarios change application records and must use a disposable database
+- the portfolio scenario refuses to overwrite non-portfolio application data
+- neither scenario creates MQTT or LoRa status files or proves service connectivity
 - must not be used as production bootstrap data
+
+### Standard scenario
+
+The existing scenario remains the default:
 
 ```bash
 cd ruby_service
 ./bin/dev-rails runner script/seed_demo_data.rb
 ```
 
-If you intentionally need to run it outside development/test, use an explicit override:
+It creates varied healthy, stale, error, watering, and fault states for UI validation. It is not intended for portfolio screenshots.
+
+### Portfolio scenario
+
+Create an empty, dedicated local database and load the schema without the normal starter seeds:
 
 ```bash
 cd ruby_service
-ALLOW_DEMO_SEED=1 ./bin/dev-rails runner script/seed_demo_data.rb
+createdb victory_garden_portfolio_demo
+
+DATABASE_URL=postgresql:///victory_garden_portfolio_demo \
+  ./bin/dev-rails db:schema:load
+
+DATABASE_URL=postgresql:///victory_garden_portfolio_demo \
+  DEMO_SCENARIO=portfolio \
+  ./bin/dev-rails runner script/seed_demo_data.rb
+
+DATABASE_URL=postgresql:///victory_garden_portfolio_demo \
+  LORA_ENABLED=false \
+  ./bin/dev-rails server -p 3001
 ```
 
-This script creates:
+Then open `http://localhost:3001`.
 
-- multiple zones
-- assigned and unassigned demo nodes
-- varied sensor readings across multiple dates
-- completed watering history for trend charts
+The portfolio scenario creates:
 
-It is intended for local UI validation, not production bootstrap.
+- two synthetic Zones, each bound to one synthetic four-channel sensor package
+- friendly Node names, crop profiles, calibration, supported irrigation lines, and applied config acknowledgements
+- deterministic moisture, temperature, humidity, battery, and RSSI history covering the previous 30 days
+- a fresh reading for every Node and completed WateringEvents correlated to their Node IDs
+- completed actuator history and no unresolved faults
+
+The local broker values are synthetic configuration data used only to satisfy the normal onboarding readiness checks. Seed generation uses a non-performing job adapter and does not connect to a broker, publish commands, alter hardware, or fabricate MQTT/LoRa health. Service status remains whatever the separately launched local runtime truthfully reports.
+
+Do not point these commands at the active Pi database, production, or a development database containing useful data. The portfolio scenario cannot be enabled with the production override used by the standard scenario.
 
 ## Important Note
 

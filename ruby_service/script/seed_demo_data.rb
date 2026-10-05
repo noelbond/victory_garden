@@ -1,3 +1,14 @@
+demo_scenario = ENV.fetch("DEMO_SCENARIO", "standard")
+supported_demo_scenarios = %w[standard portfolio]
+
+unless supported_demo_scenarios.include?(demo_scenario)
+  abort "Unknown DEMO_SCENARIO=#{demo_scenario.inspect}. Expected one of: #{supported_demo_scenarios.join(', ')}."
+end
+
+if demo_scenario == "portfolio" && !Rails.env.development? && !Rails.env.test?
+  abort "The portfolio demo scenario only runs in development or test. Use an isolated local database."
+end
+
 unless Rails.env.development? || Rails.env.test? || ENV["ALLOW_DEMO_SEED"] == "1"
   abort <<~MESSAGE
     seed_demo_data.rb only runs in development or test by default.
@@ -6,6 +17,16 @@ unless Rails.env.development? || Rails.env.test? || ENV["ALLOW_DEMO_SEED"] == "1
     If you intentionally need to run it elsewhere, re-run with ALLOW_DEMO_SEED=1.
   MESSAGE
 end
+
+if demo_scenario == "portfolio"
+  require Rails.root.join("script/portfolio_demo_data")
+
+  # Demo generation must never publish config or commands through model
+  # callbacks. This adapter is process-local; a subsequently launched server
+  # uses its normal environment configuration.
+  ActiveJob::Base.queue_adapter = :test
+  PortfolioDemoData.seed!
+else
 
 now = Time.current.change(sec: 0)
 
@@ -427,3 +448,4 @@ puts "- Zones: #{Zone.order(:zone_id).pluck(:zone_id).join(', ')}"
 puts "- Demo provisioned nodes: #{Node.where('node_id LIKE ?', 'demo-zone%').count}"
 puts "- Demo readings: #{SensorReading.where('node_id LIKE ?', 'demo-%').count}"
 puts "- Demo completed waterings: #{WateringEvent.where('idempotency_key LIKE ? AND status = ?', 'demo-%', 'completed').count}"
+end

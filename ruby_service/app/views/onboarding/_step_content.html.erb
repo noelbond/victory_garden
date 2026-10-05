@@ -570,10 +570,22 @@
       </div>
     </div>
 
-    <%= form_with url: onboarding_water_now_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :post do %>
-      <%= hidden_field_tag :zone_id, @selected_watering_zone.id %>
+    <% if @watering_nodes.any? %>
+      <%= form_with url: onboarding_water_now_path(sensor_board: selected_firmware_board("sensor"), actuator_board: selected_firmware_board("actuator")), method: :post do %>
+        <%= hidden_field_tag :zone_id, @selected_watering_zone.id %>
+        <div class="field">
+          <%= label_tag :node_id, "Plant Node" %>
+          <%= select_tag :node_id, options_for_select(@watering_nodes.map { |node| ["#{node.display_name} — output #{node.irrigation_line}", node.id] }) %>
+        </div>
+        <div class="dashboard-actions wizard-action-row">
+          <%= submit_tag "Water Now", class: "btn" %>
+          <%= link_to "Refresh", onboarding_step_path("watering", zone_id: @selected_watering_zone.id), class: "btn light" %>
+        </div>
+      <% end %>
+    <% else %>
+      <p class="muted">Assign a crop profile and logical irrigation line to a plant node before running the watering test.</p>
       <div class="dashboard-actions wizard-action-row">
-        <%= submit_tag "Water Now", class: "btn" %>
+        <%= link_to "Open Nodes", nodes_path, class: "btn light" %>
         <%= link_to "Refresh", onboarding_step_path("watering", zone_id: @selected_watering_zone.id), class: "btn light" %>
       </div>
     <% end %>
