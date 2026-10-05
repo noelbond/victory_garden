@@ -293,7 +293,7 @@ def start_controller(args: argparse.Namespace, python_root: Path) -> subprocess.
     if args.mqtt_password:
         command.extend(["--mqtt-password", args.mqtt_password])
 
-    print(f"[e2e] starting controller: {' '.join(command)}", flush=True)
+    print("[e2e] starting controller", flush=True)
     return subprocess.Popen(
         command,
         cwd=python_root,
@@ -474,7 +474,7 @@ def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run an accelerated live MQTT/Pico end-to-end watering test.")
-    parser.add_argument("--mqtt-host", default="192.168.4.36")
+    parser.add_argument("--mqtt-host", default=os.environ.get("MQTT_HOST"))
     parser.add_argument("--mqtt-port", type=int, default=1883)
     parser.add_argument("--mqtt-username", default=os.environ.get("MQTT_USERNAME", "victory_garden"))
     parser.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
@@ -494,6 +494,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if not args.mqtt_host:
+        parser.error("--mqtt-host or MQTT_HOST is required")
     if args.runtime_seconds <= 0:
         parser.error("--runtime-seconds must be positive")
     if args.daily_max_seconds < args.runtime_seconds:

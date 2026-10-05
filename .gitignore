@@ -86,9 +86,6 @@ build-iPhoneSimulator/
 # Rails credentials
 config/master.key
 
-# OS-specific
-*.lock
-
 # App-specific state
 python_tools/state.json
 
@@ -96,3 +93,12 @@ python_tools/controller_runtime.json
 
 # Release packaging
 deploy/releases/
+
+# Local development tooling (not part of the public project)
+.aider*
+.claude/
+.codex/
+AGENTS.md
+AIDER_RULES.md
+AI_PROJECT_CONTEXT.md
+CLAUDE.md
