@@ -1,6 +1,6 @@
 # Victory Garden
 
-**A Rails-centered, local-first distributed control system for provisioning, monitoring, and safely coordinating greenhouse sensors and irrigation hardware.**
+**Rails-centered distributed greenhouse control system using PostgreSQL, Python, MQTT, Raspberry Pi, and Pico W firmware.**
 
 Victory Garden runs on a Raspberry Pi and connects a Rails 8 control plane to physical Pico W sensor and actuator nodes. Rails and PostgreSQL manage configuration, device state, history, and operator workflows; a Python controller makes automatic irrigation decisions; Mosquitto carries MQTT messages; and Pico firmware reads sensors and enforces local actuator safety.
 
